@@ -50,7 +50,7 @@ const app = express();
 // ═══════════════════════════════════════════════════════════════
 
 app.use(cors({
-  origin: FRONTEND_URL,
+  origin: 'https://ocean-app-h1o3-f1f0h8pn2-amanrk7s-projects.vercel.app/',
   credentials: true,
   optionsSuccessStatus: 200
 }));
