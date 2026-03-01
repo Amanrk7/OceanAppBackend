@@ -54,13 +54,14 @@ const app = express();
 //   credentials: true,
 //   optionsSuccessStatus: 200
 // }));
-// app.use(cors({
-//   origin: 'https://ocean-app-h1o3.vercel.app',  // ✅ no trailing slash, correct URL
-//   credentials: true,
-//   optionsSuccessStatus: 200
-// }));
 
-app.use(cors());
+app.use(cors({
+  origin: 'https://ocean-app-h1o3.vercel.app',  // ✅ no trailing slash, correct URL
+  credentials: true,
+  optionsSuccessStatus: 200
+}));
+
+// app.use(cors());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
