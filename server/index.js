@@ -166,13 +166,19 @@ app.post('/api/login', async (req, res) => {
       data: { lastLoginAt: new Date() }
     });
 
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-
+    // res.cookie('token', token, {
+    //   httpOnly: true,
+    //   secure: process.env.NODE_ENV === 'production',
+    //   sameSite: 'strict',
+    //   maxAge: 7 * 24 * 60 * 60 * 1000
+    // });
+res.cookie('token', token, {
+  httpOnly: true,
+  secure: true,              // ✅ must be true for cross-domain
+  sameSite: 'none',          // ✅ change from 'strict' to 'none'
+  maxAge: 7 * 24 * 60 * 60 * 1000
+});
+   
     res.json({
       success: true,
       token,
