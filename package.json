@@ -1,6 +1,7 @@
 {
   "name": "oceanbets-dashboard",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
     "server": "node server/index.js",
     "dev": "nodemon server/index.js",
@@ -9,7 +10,8 @@
     "db:studio": "prisma studio",
     "db:seed": "node prisma/seed.js",
     "db:reset": "prisma migrate reset --force",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "build": "npx prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
