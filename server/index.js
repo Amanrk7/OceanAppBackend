@@ -49,8 +49,13 @@ const app = express();
 // MIDDLEWARE
 // ═══════════════════════════════════════════════════════════════
 
+// app.use(cors({
+//   origin: 'https://ocean-app-h1o3-f1f0h8pn2-amanrk7s-projects.vercel.app/',
+//   credentials: true,
+//   optionsSuccessStatus: 200
+// }));
 app.use(cors({
-  origin: 'https://ocean-app-h1o3-f1f0h8pn2-amanrk7s-projects.vercel.app/',
+  origin: 'https://ocean-app-h1o3.vercel.app',  // ✅ no trailing slash, correct URL
   credentials: true,
   optionsSuccessStatus: 200
 }));
