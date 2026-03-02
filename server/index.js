@@ -1799,9 +1799,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     if (anyBonus && !gameId) {
       return res.status(400).json({ error: 'gameId is required when any bonus is applied' });
     }
-   
-    const gameMatch = notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
-    const gameName = gameMatch ? gameMatch[1].trim() : null;
+  
    
     // ── Fetch player (need referredBy to check for referrer) ──────────────
     const player = await prisma.user.findUnique({
@@ -1841,14 +1839,23 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
 
     // ── Fetch game if any bonus applies ───────────────────────────────────
-    let game = null;
-    if (anyBonus) {
-      game = await prisma.game.findUnique({
-        where: { id: gameId },
-        select: { id: true, name: true, pointStock: true },
-      });
-      if (!game) return res.status(404).json({ error: 'Game not found' });
-    }
+    // let game = null;
+    // if (anyBonus) {
+    //   game = await prisma.game.findUnique({
+    //     where: { id: gameId },
+    //     select: { id: true, name: true, pointStock: true },
+    //   });
+    //   if (!game) return res.status(404).json({ error: 'Game not found' });
+    // }
+
+   let game = null;
+if (gameId) {
+  game = await prisma.game.findUnique({
+    where: { id: gameId },
+    select: { id: true, name: true, pointStock: true },
+  });
+  if (!game) return res.status(404).json({ error: 'Game not found' });
+}
     // console.log("game is :", game.name);
 
     // ── Compute bonus amounts ─────────────────────────────────────────────
@@ -1860,13 +1867,22 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     //  • matchAmt    → deduct 1× (player only)
     //  • specialAmt  → deduct 1× (player only)
     //  • referralAmt → deduct 2× (player + referrer each receive it)
-    const totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
+    // const totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
 
-    if (game && totalGameDeduction > game.pointStock) {
-      return res.status(400).json({
-        error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
-      });
-    }
+    // if (game && totalGameDeduction > game.pointStock) {
+    //   return res.status(400).json({
+    //     error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
+    //   });
+    // }
+
+   if (anyBonus) {
+  const totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
+  if (totalGameDeduction > game.pointStock) {
+    return res.status(400).json({
+      error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
+    });
+  }
+}
     // console.log("game is :", game.name);
 
     // ── Streak update ─────────────────────────────────────────────────────
@@ -1914,7 +1930,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
           description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
           notes: notes || null,
           gameId: game?.id || null,
-          gameName: gameName || null,
+          gameName: game?.name || null,  
           paymentMethod: null,
         },
       })
