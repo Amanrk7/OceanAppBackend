@@ -1846,7 +1846,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       });
       if (!game) return res.status(404).json({ error: 'Game not found' });
     }
-    console.log("game is :", game.name);
+    // console.log("game is :", game.name);
 
     // ── Compute bonus amounts ─────────────────────────────────────────────
     const matchAmt = bonusMatch ? depositAmt * 0.5 : 0;
@@ -1864,7 +1864,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
         error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
       });
     }
-    console.log("game is :", game.name);
+    // console.log("game is :", game.name);
 
     // ── Streak update ─────────────────────────────────────────────────────
     const now = new Date();
@@ -1900,7 +1900,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     );
 
     // 3. DEPOSIT transaction for player
-    console.log("game is :", game.name);
+    // console.log("game is :", game.name);
     ops.push(
       prisma.transaction.create({
         data: {
@@ -2297,9 +2297,7 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       const gameName = gameMatch ? gameMatch[1].trim() : null;
       const balanceBefore = gameMatch?.[2] ? parseFloat(gameMatch[2]) : null;
       const balanceAfter = gameMatch?.[3] ? parseFloat(gameMatch[3]) : null;
-     console.log("gameMatch: ", gameMatch);
-     console.log("balanceBefore: ", balanceBefore);
-     console.log("balanceAfter: ", balanceAfter);
+  
      
      
       return {
