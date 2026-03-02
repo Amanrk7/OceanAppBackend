@@ -1900,7 +1900,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     );
 
     // 3. DEPOSIT transaction for player
-    // console.log("game is :", game.name);
+    console.log("game is :", game?.name || "game-name-check");
     ops.push(
       prisma.transaction.create({
         data: {
@@ -1911,7 +1911,6 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
           description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
           notes: notes || null,
           gameId: game?.id || null,
-          gameName: game?.name || "game-name-check",
           paymentMethod: null,
         },
       })
