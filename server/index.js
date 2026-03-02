@@ -2273,6 +2273,7 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         }
       }
 
+     console.log("Transactions data: ", formatted);
       // Extract wallet info from description or payment method
       let walletMethod = t.paymentMethod || 'Unknown';
       let walletName = 'Account';
