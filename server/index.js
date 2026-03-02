@@ -1908,6 +1908,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
           description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
           notes: notes || null,
           gameId: game?.id || null,
+          gameName: game?.name || "game-name-check",
           paymentMethod: null,
         },
       })
