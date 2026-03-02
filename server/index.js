@@ -2273,7 +2273,6 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         }
       }
 
-     console.log("Transactions data: ", formatted);
       // Extract wallet info from description or payment method
       let walletMethod = t.paymentMethod || 'Unknown';
       let walletName = 'Account';
@@ -2294,6 +2293,11 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       const gameName = gameMatch ? gameMatch[1].trim() : null;
       const balanceBefore = gameMatch?.[2] ? parseFloat(gameMatch[2]) : null;
       const balanceAfter = gameMatch?.[3] ? parseFloat(gameMatch[3]) : null;
+     console.log("gameMatch: ", gameMatch);
+     console.log("balanceBefore: ", balanceBefore);
+     console.log("balanceAfter: ", balanceAfter);
+     
+     
       return {
         id: `TXN${String(t.id).padStart(6, '0')}`,
         playerId: t.userId,
