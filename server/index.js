@@ -1800,7 +1800,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'gameId is required when any bonus is applied' });
     }
    
-    const gameMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
+    const gameMatch = notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
     const gameName = gameMatch ? gameMatch[1].trim() : null;
    
     // ── Fetch player (need referredBy to check for referrer) ──────────────
