@@ -1799,7 +1799,10 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     if (anyBonus && !gameId) {
       return res.status(400).json({ error: 'gameId is required when any bonus is applied' });
     }
-
+   
+    const gameMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
+    const gameName = gameMatch ? gameMatch[1].trim() : null;
+   
     // ── Fetch player (need referredBy to check for referrer) ──────────────
     const player = await prisma.user.findUnique({
       where: { id: parseInt(playerId) },
@@ -1911,6 +1914,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
           description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
           notes: notes || null,
           gameId: game?.id || null,
+          gameName: gameName || null,
           paymentMethod: null,
         },
       })
