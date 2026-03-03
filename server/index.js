@@ -1874,11 +1874,11 @@ if (gameId) {
     //     error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
     //   });
     // }
-
+   let totalGameDeduction = 0;
    if (anyBonus) {
-  const totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
-  if (totalGameDeduction > game.pointStock) {
-    return res.status(400).json({
+     totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
+   if (totalGameDeduction > game.pointStock) {
+     return res.status(400).json({
       error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
     });
   }
