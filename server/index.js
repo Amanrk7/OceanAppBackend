@@ -1782,7 +1782,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       notes,
       bonusMatch = false,
       bonusSpecial = false,
-      bonusReferral = false,   // ← NEW: admin checks this to grant referral bonus
+      bonusReferral = false,
     } = req.body;
 
     // ── Basic validation ──────────────────────────────────────────────────
@@ -1799,9 +1799,8 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     if (anyBonus && !gameId) {
       return res.status(400).json({ error: 'gameId is required when any bonus is applied' });
     }
-  
-   
-    // ── Fetch player (need referredBy to check for referrer) ──────────────
+
+    // ── Fetch player ──────────────────────────────────────────────────────
     const player = await prisma.user.findUnique({
       where: { id: parseInt(playerId) },
       select: {
@@ -1811,7 +1810,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
         tier: true,
         currentStreak: true,
         lastPlayedDate: true,
-        referredBy: true,   // FK integer — tells us who referred this player
+        referredBy: true,
       },
     });
     if (!player) return res.status(404).json({ error: 'Player not found' });
@@ -1826,7 +1825,6 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
         select: { id: true, name: true, balance: true },
       });
       if (!referrer) {
-        // Referrer was deleted — skip silently rather than blocking the deposit
         console.warn(`[deposit] referrer ID ${player.referredBy} not found — skipping referral bonus`);
       }
     }
@@ -1838,52 +1836,32 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
 
-    // ── Fetch game if any bonus applies ───────────────────────────────────
-    // let game = null;
-    // if (anyBonus) {
-    //   game = await prisma.game.findUnique({
-    //     where: { id: gameId },
-    //     select: { id: true, name: true, pointStock: true },
-    //   });
-    //   if (!game) return res.status(404).json({ error: 'Game not found' });
-    // }
+    // Capture wallet balance before any changes
+    const walletBalanceBefore = parseFloat(wallet.balance);
 
-   let game = null;
-if (gameId) {
-  game = await prisma.game.findUnique({
-    where: { id: gameId },
-    select: { id: true, name: true, pointStock: true },
-  });
-  if (!game) return res.status(404).json({ error: 'Game not found' });
-}
-    // console.log("game is :", game.name);
+    // ── Fetch game whenever gameId is provided (not just for bonuses) ──────
+    let game = null;
+    if (gameId) {
+      game = await prisma.game.findUnique({
+        where: { id: gameId },
+        select: { id: true, name: true, pointStock: true },
+      });
+      if (!game) return res.status(404).json({ error: 'Game not found' });
+    }
 
     // ── Compute bonus amounts ─────────────────────────────────────────────
-    const matchAmt = bonusMatch ? depositAmt * 0.5 : 0;
-    const specialAmt = bonusSpecial ? depositAmt * 0.2 : 0;
-    const referralAmt = bonusReferral && referrer ? depositAmt * 0.5 : 0;
+    const matchAmt    = bonusMatch                      ? depositAmt * 0.5 : 0;
+    const specialAmt  = bonusSpecial                    ? depositAmt * 0.2 : 0;
+    const referralAmt = bonusReferral && referrer       ? depositAmt * 0.5 : 0;
 
-    // Game stock needed:
-    //  • matchAmt    → deduct 1× (player only)
-    //  • specialAmt  → deduct 1× (player only)
-    //  • referralAmt → deduct 2× (player + referrer each receive it)
-    // const totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
+    // Stock deduction only applies when bonuses are used
+    const totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
 
-    // if (game && totalGameDeduction > game.pointStock) {
-    //   return res.status(400).json({
-    //     error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
-    //   });
-    // }
-   let totalGameDeduction = 0;
-   if (anyBonus) {
-     totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
-   if (totalGameDeduction > game.pointStock) {
-     return res.status(400).json({
-      error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
-    });
-  }
-}
-    // console.log("game is :", game.name);
+    if (anyBonus && game && totalGameDeduction > game.pointStock) {
+      return res.status(400).json({
+        error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
+      });
+    }
 
     // ── Streak update ─────────────────────────────────────────────────────
     const now = new Date();
@@ -1919,7 +1897,6 @@ if (gameId) {
     );
 
     // 3. DEPOSIT transaction for player
-    console.log("game is :", game?.name || "game-name-check");
     ops.push(
       prisma.transaction.create({
         data: {
@@ -1930,15 +1907,14 @@ if (gameId) {
           description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
           notes: notes || null,
           gameId: game?.id || null,
-          gameName: game?.name || null,  
           paymentMethod: null,
         },
       })
     );
 
-    // 4. Game stock deduction
-    if (game && totalGameDeduction > 0) {
-      const newStock = game.pointStock - totalGameDeduction;
+    // 4. Game stock deduction (only when bonuses apply)
+    if (anyBonus && game && totalGameDeduction > 0) {
+      const newStock  = game.pointStock - totalGameDeduction;
       const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
       ops.push(
         prisma.game.update({
@@ -2006,8 +1982,8 @@ if (gameId) {
 
     // ── 7. Referral bonus — player side ───────────────────────────────────
     if (referralAmt > 0 && referrer) {
-      const playerBalBeforeRef = balanceBefore + matchAmt + specialAmt; // balance just before referral credit
-      const playerBalAfterRef = playerBalBeforeRef + referralAmt;
+      const playerBalBeforeRef = balanceBefore + matchAmt + specialAmt;
+      const playerBalAfterRef  = playerBalBeforeRef + referralAmt;
 
       ops.push(
         prisma.bonus.create({
@@ -2036,16 +2012,14 @@ if (gameId) {
 
       // ── 8. Referral bonus — REFERRER side ─────────────────────────────
       const referrerBalBefore = parseFloat(referrer.balance);
-      const referrerBalAfter = referrerBalBefore + referralAmt;
+      const referrerBalAfter  = referrerBalBefore + referralAmt;
 
-      // Credit referrer balance
       ops.push(
         prisma.user.update({
           where: { id: referrer.id },
           data: { balance: { increment: referralAmt } },
         })
       );
-      // Referrer Bonus record
       ops.push(
         prisma.bonus.create({
           data: {
@@ -2058,7 +2032,6 @@ if (gameId) {
           },
         })
       );
-      // Referrer BONUS Transaction (shows in their history)
       ops.push(
         prisma.transaction.create({
           data: {
@@ -2074,16 +2047,18 @@ if (gameId) {
     }
 
     // ── Execute all ops atomically ────────────────────────────────────────
-    const results = await prisma.$transaction(ops);
+    const results       = await prisma.$transaction(ops);
     const updatedPlayer = results[0];
     const updatedWallet = results[1];
-    const depositTx = results[2];
+    const depositTx     = results[2];
+
+    const walletBalanceAfter = parseFloat(updatedWallet.balance);
 
     // ── Build response summary ────────────────────────────────────────────
     const bonusesApplied = [];
-    if (bonusMatch) bonusesApplied.push(`Match Bonus +$${matchAmt.toFixed(2)}`);
-    if (bonusSpecial) bonusesApplied.push(`Special Bonus +$${specialAmt.toFixed(2)}`);
-    if (referralAmt > 0 && referrer) bonusesApplied.push(`Referral Bonus +$${referralAmt.toFixed(2)} to both ${player.name} & ${referrer.name}`);
+    if (bonusMatch)                       bonusesApplied.push(`Match Bonus +$${matchAmt.toFixed(2)}`);
+    if (bonusSpecial)                     bonusesApplied.push(`Special Bonus +$${specialAmt.toFixed(2)}`);
+    if (referralAmt > 0 && referrer)      bonusesApplied.push(`Referral Bonus +$${referralAmt.toFixed(2)} to both ${player.name} & ${referrer.name}`);
 
     res.status(201).json({
       success: true,
@@ -2093,26 +2068,28 @@ if (gameId) {
         `Wallet ${walletName || wallet.name} updated.`,
       ].join(' '),
       transaction: {
-        id: depositTx.id,
-        playerId: player.id,
-        playerName: player.name,
-        type: 'Deposit',
-        amount: depositAmt,
+        id:                 depositTx.id,
+        playerId:           player.id,
+        playerName:         player.name,
+        type:               'Deposit',
+        amount:             depositAmt,
         walletId,
-        walletMethod: walletMethod || wallet.method,
-        walletName: walletName || wallet.name,
-        gameName: game?.name || null,
+        walletMethod:       walletMethod || wallet.method,
+        walletName:         walletName   || wallet.name,
+        walletBalanceBefore,                              // ← wallet balance before deposit
+        walletBalanceAfter,                               // ← wallet balance after deposit
+        gameName:           game?.name   || null,         // ← now visible for plain deposits too
         balanceBefore,
-        balanceAfter: parseFloat(updatedPlayer.balance),
-        status: 'COMPLETED',
-        timestamp: depositTx.createdAt,
+        balanceAfter:       parseFloat(updatedPlayer.balance),
+        status:             'COMPLETED',
+        timestamp:          depositTx.createdAt,
         referralBonus: referralAmt > 0 && referrer
           ? { referrerId: referrer.id, referrerName: referrer.name, amount: referralAmt }
           : null,
       },
       data: {
         playerBalance: parseFloat(updatedPlayer.balance),
-        walletBalance: parseFloat(updatedWallet.balance),
+        walletBalance: walletBalanceAfter,
       },
     });
 
