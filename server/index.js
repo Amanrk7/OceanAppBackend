@@ -457,6 +457,8 @@ function shapePlayer(user) {
   const weeklyDepositTotal = (user.transactions || [])
     .filter(t => t.type === 'DEPOSIT' && t.status === 'COMPLETED' && new Date(t.createdAt) >= sevenDaysAgo)
     .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+
+
      
       return {
         id: t.id,
@@ -1605,13 +1607,13 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
 
     const depositAmt  = parseFloat(amount);
     const feeAmt      = parseFloat(fee) || 0;
-    const receivedAmt = depositAmt - feeAmt;   // amount credited to player & wallet
+    // ★ Full deposit amount goes to player. Wallet is credited with (depositAmt - feeAmt).
 
     if (isNaN(depositAmt) || depositAmt <= 0) {
       return res.status(400).json({ error: 'amount must be a positive number' });
     }
-    if (feeAmt < 0 || feeAmt >= depositAmt) {
-      return res.status(400).json({ error: 'fee must be between 0 and the deposit amount' });
+    if (feeAmt < 0 || feeAmt > depositAmt) {
+      return res.status(400).json({ error: 'fee must be 0 or more and cannot exceed the deposit amount' });
     }
 
     // ── Fetch player ────────────────────────────────────────────────────────
@@ -1690,10 +1692,10 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     const referralAmt = bonusReferral && referrer       ? depositAmt * 0.5 : 0;
 
     // ── Game stock deduction ────────────────────────────────────────────────
-    // receivedAmt deducts as the credited deposit; bonuses also deduct.
+    // Full depositAmt deducts from game stock; bonuses also deduct.
     // Referral costs ×2 because both player and referrer each receive it.
     const totalGameDeduction =
-      receivedAmt +
+      depositAmt +
       matchAmt +
       specialAmt +
       (referralAmt * (referrer ? 2 : 1));
@@ -1718,7 +1720,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     // ── Build atomic operations ─────────────────────────────────────────────
     const ops = [];
 
-    const totalPlayerCredit = receivedAmt + matchAmt + specialAmt + referralAmt;
+    const totalPlayerCredit = depositAmt + matchAmt + specialAmt + referralAmt; // ★ Full amount to player
     const balanceAfter      = balanceBefore + totalPlayerCredit;
 
     // 1. Update player balance + streak
@@ -1729,15 +1731,16 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       })
     );
 
-    // 2. Add receivedAmt (not full depositAmt) to wallet — fee stays outside
+    // 2. Credit wallet with (depositAmt - feeAmt). Fee is deducted as revenue; player keeps full amount.
+    const walletCredit = depositAmt - feeAmt;  // e.g. $10 deposit, $2 fee → $8 to wallet
     ops.push(
       prisma.wallet.update({
         where: { id: parseInt(walletId) },
-        data: { balance: { increment: receivedAmt } },
+        data: { balance: { increment: walletCredit } },
       })
     );
 
-    // 3. DEPOSIT transaction — store fee + receivedAmt in notes
+    // 3. DEPOSIT transaction — store fee in notes (full amount goes to player)
     ops.push(
       prisma.transaction.create({
         data: {
@@ -1746,14 +1749,14 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
           amount:        new Prisma.Decimal(depositAmt.toString()),
           status:        'COMPLETED',
           description:   `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
-          notes:         `fee:${feeAmt.toFixed(2)}|receivedAmt:${receivedAmt.toFixed(2)}|${notes || ''}`,
+          notes:         `fee:${feeAmt.toFixed(2)}|walletCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|${notes || ''}`,
           gameId:        game.id,
           paymentMethod: null,
         },
       })
     );
 
-    // 4. Game stock deduction (receivedAmt + all bonuses)
+    // 4. Game stock deduction (full depositAmt + all bonuses)
     const newStock  = game.pointStock - totalGameDeduction;
     const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
     ops.push(
@@ -1901,7 +1904,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     res.status(201).json({
       success: true,
       message: [
-        `Deposit of $${depositAmt.toFixed(2)} recorded (fee $${feeAmt.toFixed(2)}, received $${receivedAmt.toFixed(2)}) for ${player.name}.`,
+        `Deposit of $${depositAmt.toFixed(2)} recorded. Player credited $${depositAmt.toFixed(2)}, wallet credited $${walletCredit.toFixed(2)} (fee $${feeAmt.toFixed(2)}) for ${player.name}.`,
         ...bonusesApplied,
         `Wallet ${walletName || wallet.name} updated.`,
       ].join(' '),
@@ -1912,7 +1915,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
         type:               'Deposit',
         amount:             depositAmt,
         fee:                feeAmt,
-        receivedAmt:        receivedAmt,
+        walletCredit:       walletCredit,
         walletId,
         walletMethod:       walletMethod || wallet.method,
         walletName:         walletName   || wallet.name,
@@ -1938,7 +1941,6 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Deposit failed: ' + err.message });
   }
 });
-
 // ══════════════════════════════════════════════════════════════
 // ✅ FIXED: POST /api/transactions/cashout
 // ══════════════════════════════════════════════════════════════
@@ -2118,11 +2120,9 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
       const balanceAfter  = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
 
-      // ── NEW: parse fee + receivedAmt from deposit notes ──────────────────
-      const feeMatch         = t.notes?.match(/^fee:([\d.]+)/);
-      const receivedAmtMatch = t.notes?.match(/receivedAmt:([\d.]+)/);
-      const fee         = feeMatch         ? parseFloat(feeMatch[1])         : null;
-      const receivedAmt = receivedAmtMatch ? parseFloat(receivedAmtMatch[1]) : null;
+      // ── Parse fee from deposit notes ─────────────────────────────────────
+      const feeMatch = t.notes?.match(/^fee:([\d.]+)/);
+      const fee      = feeMatch ? parseFloat(feeMatch[1]) : null;
 
       return {
         id:           `TXN${String(t.id).padStart(6, '0')}`,
@@ -2133,7 +2133,6 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         bonusType,
         amount:       parseFloat(t.amount),
         fee,
-        receivedAmt,
         walletMethod,
         walletName,
         gameName,
