@@ -1779,118 +1779,332 @@ const gameStatus = (stock) =>
 //     for deposits where the snapshot wasn't embedded in notes
 // ══════════════════════════════════════════════════════════════
 
-app.get('/api/transactions', authMiddleware, async (req, res) => {
+app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
   try {
-    const { page = 1, limit = 10, type = '', status = '' } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const {
+      playerId,
+      amount,
+      walletId,
+      walletMethod,
+      walletName,
+      gameId,
+      notes,
+      bonusMatch = false,
+      bonusSpecial = false,
+      bonusReferral = false,
+    } = req.body;
 
-    let where = {};
-    if (type)   where.type   = type;
-    if (status) where.status = status;
+    // ── Basic validation ──────────────────────────────────────────────────
+    if (!playerId || !amount || !walletId) {
+      return res.status(400).json({ error: 'playerId, amount and walletId are required' });
+    }
 
-    const [transactions, total] = await Promise.all([
-      prisma.transaction.findMany({
-        where,
-        include: {
-          user: {
-            select: { id: true, name: true, email: true },
-          },
-          // ✅ FIX 1: join game table so plain deposits can show game name
-          game: {
-            select: { id: true, name: true },
-          },
+    const depositAmt = parseFloat(amount);
+    if (isNaN(depositAmt) || depositAmt <= 0) {
+      return res.status(400).json({ error: 'amount must be a positive number' });
+    }
+
+    const anyBonus = bonusMatch || bonusSpecial || bonusReferral;
+    if (anyBonus && !gameId) {
+      return res.status(400).json({ error: 'gameId is required when any bonus is applied' });
+    }
+
+    // ── Fetch player ──────────────────────────────────────────────────────
+    const player = await prisma.user.findUnique({
+      where: { id: parseInt(playerId) },
+      select: {
+        id: true,
+        name: true,
+        balance: true,
+        tier: true,
+        currentStreak: true,
+        lastPlayedDate: true,
+        referredBy: true,
+      },
+    });
+    if (!player) return res.status(404).json({ error: 'Player not found' });
+
+    const balanceBefore = parseFloat(player.balance);
+
+    // ── Fetch referrer if referral bonus requested ─────────────────────────
+    let referrer = null;
+    if (bonusReferral && player.referredBy) {
+      referrer = await prisma.user.findUnique({
+        where: { id: player.referredBy },
+        select: { id: true, name: true, balance: true },
+      });
+      if (!referrer) {
+        console.warn(`[deposit] referrer ID ${player.referredBy} not found — skipping referral bonus`);
+      }
+    }
+
+    // ── Fetch wallet ──────────────────────────────────────────────────────
+    const wallet = await prisma.wallet.findUnique({
+      where: { id: parseInt(walletId) },
+      select: { id: true, name: true, method: true, balance: true },
+    });
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+
+    // Capture wallet balance before any changes
+    const walletBalanceBefore = parseFloat(wallet.balance);
+
+    // ── Fetch game whenever gameId is provided (not just for bonuses) ──────
+    let game = null;
+    if (gameId) {
+      game = await prisma.game.findUnique({
+        where: { id: gameId },
+        select: { id: true, name: true, pointStock: true },
+      });
+      if (!game) return res.status(404).json({ error: 'Game not found' });
+    }
+
+    // ── Compute bonus amounts ─────────────────────────────────────────────
+    const matchAmt    = bonusMatch                      ? depositAmt * 0.5 : 0;
+    const specialAmt  = bonusSpecial                    ? depositAmt * 0.2 : 0;
+    const referralAmt = bonusReferral && referrer       ? depositAmt * 0.5 : 0;
+
+    // Stock deduction only applies when bonuses are used
+    const totalGameDeduction = matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
+
+    if (anyBonus && game && totalGameDeduction > game.pointStock) {
+      return res.status(400).json({
+        error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts`,
+      });
+    }
+
+    // ── Streak update ─────────────────────────────────────────────────────
+    const now = new Date();
+    const lastPlayed = player.lastPlayedDate ? new Date(player.lastPlayedDate) : null;
+    let newStreak = player.currentStreak || 0;
+
+    if (!lastPlayed) {
+      newStreak = 1;
+    } else if (!sameDay(lastPlayed, now)) {
+      newStreak = isYesterday(lastPlayed, now) ? newStreak + 1 : 1;
+    }
+
+    // ── Build atomic operations ───────────────────────────────────────────
+    const ops = [];
+
+    const totalPlayerCredit = depositAmt + matchAmt + specialAmt + referralAmt;
+    const balanceAfter = balanceBefore + totalPlayerCredit;
+
+    // 1. Update player balance + streak
+    ops.push(
+      prisma.user.update({
+        where: { id: parseInt(playerId) },
+        data: { balance: balanceAfter, currentStreak: newStreak, lastPlayedDate: now },
+      })
+    );
+
+    // 2. Add to wallet balance (deposit flows IN)
+    ops.push(
+      prisma.wallet.update({
+        where: { id: parseInt(walletId) },
+        data: { balance: { increment: depositAmt } },
+      })
+    );
+
+    // 3. DEPOSIT transaction for player
+    ops.push(
+      prisma.transaction.create({
+        data: {
+          userId: parseInt(playerId),
+          type: 'DEPOSIT',
+          amount: new Prisma.Decimal(depositAmt.toString()),
+          status: 'COMPLETED',
+          description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+          notes: notes || null,
+          gameId: game?.id || null,
+          paymentMethod: null,
         },
-        skip,
-        take: parseInt(limit),
-        orderBy: { createdAt: 'desc' },
-      }),
-      prisma.transaction.count({ where }),
-    ]);
+      })
+    );
 
-    const formatted = transactions.map(t => {
-      // ── Determine display type ──────────────────────────────────────────
-      let type      = t.type;
-      let bonusType = null;
+    // 4. Game stock deduction (only when bonuses apply)
+    if (anyBonus && game && totalGameDeduction > 0) {
+      const newStock  = game.pointStock - totalGameDeduction;
+      const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+      ops.push(
+        prisma.game.update({
+          where: { id: gameId },
+          data: { pointStock: newStock, status: newStatus },
+        })
+      );
+    }
 
-      if (t.type === 'DEPOSIT') {
-        type = 'Deposit';
-      } else if (t.type === 'WITHDRAWAL') {
-        type = 'Cashout';
-      } else if (t.type === 'BONUS') {
-        if (t.description?.includes('Match')) {
-          type = 'Match Bonus';   bonusType = 'match';
-        } else if (t.description?.includes('Special')) {
-          type = 'Special Bonus'; bonusType = 'special';
-        } else if (t.description?.includes('Streak')) {
-          type = 'Streak Bonus';  bonusType = 'streak';
-        } else if (t.description?.includes('Referral')) {
-          type = 'Referral Bonus'; bonusType = 'referral';
-        } else {
-          type = 'Bonus';
-        }
-      }
+    // ── 5. Match bonus (player only) ──────────────────────────────────────
+    if (bonusMatch) {
+      ops.push(
+        prisma.bonus.create({
+          data: {
+            userId: parseInt(playerId),
+            type: 'DEPOSIT_MATCH',
+            amount: new Prisma.Decimal(matchAmt.toString()),
+            description: `Match Bonus - 50% of $${depositAmt.toFixed(2)}`,
+            claimed: true,
+            claimedAt: now,
+          },
+        })
+      );
+      ops.push(
+        prisma.transaction.create({
+          data: {
+            userId: parseInt(playerId),
+            type: 'BONUS',
+            amount: new Prisma.Decimal(matchAmt.toString()),
+            status: 'COMPLETED',
+            description: `Match Bonus from ${game.name} - 50% of $${depositAmt.toFixed(2)}`,
+            notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}`,
+          },
+        })
+      );
+    }
 
-      // ── Extract wallet info from description ────────────────────────────
-      // Format: "Deposit via PAYPAL - Main Account"
-      let walletMethod = t.paymentMethod || 'Unknown';
-      let walletName   = 'Account';
+    // ── 6. Special bonus (player only) ───────────────────────────────────
+    if (bonusSpecial) {
+      ops.push(
+        prisma.bonus.create({
+          data: {
+            userId: parseInt(playerId),
+            type: 'CUSTOM',
+            amount: new Prisma.Decimal(specialAmt.toString()),
+            description: `Special Bonus - 20% of $${depositAmt.toFixed(2)}`,
+            claimed: true,
+            claimedAt: now,
+          },
+        })
+      );
+      ops.push(
+        prisma.transaction.create({
+          data: {
+            userId: parseInt(playerId),
+            type: 'BONUS',
+            amount: new Prisma.Decimal(specialAmt.toString()),
+            status: 'COMPLETED',
+            description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`,
+            notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}`,
+          },
+        })
+      );
+    }
 
-      const walletMatch = t.description?.match(/via ([^ ]+) - (.*?)$/);
-      if (walletMatch) {
-        walletMethod = walletMatch[1];
-        walletName   = walletMatch[2];
-      }
+    // ── 7. Referral bonus — player side ───────────────────────────────────
+    if (referralAmt > 0 && referrer) {
+      const playerBalBeforeRef = balanceBefore + matchAmt + specialAmt;
+      const playerBalAfterRef  = playerBalBeforeRef + referralAmt;
 
-      // ── Extract game name ───────────────────────────────────────────────
-      // Priority 1: parse from notes  "From game: GameName|balanceBefore:…"
-      // Priority 2: joined game relation (covers plain deposits with a gameId)
-      const noteMatch = t.notes?.match(
-        /From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/
+      ops.push(
+        prisma.bonus.create({
+          data: {
+            userId: parseInt(playerId),
+            type: 'REFERRAL',
+            amount: new Prisma.Decimal(referralAmt.toString()),
+            description: `Referral Bonus from ${game.name} — referred by ${referrer.name}`,
+            claimed: true,
+            claimedAt: now,
+          },
+        })
+      );
+      ops.push(
+        prisma.transaction.create({
+          data: {
+            userId: parseInt(playerId),
+            type: 'BONUS',
+            amount: new Prisma.Decimal(referralAmt.toString()),
+            status: 'COMPLETED',
+            description: `Referral Bonus from ${game.name} — referred by ${referrer.name}`,
+            notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${playerBalBeforeRef.toFixed(2)}|balanceAfter:${playerBalAfterRef.toFixed(2)}`,
+          },
+        })
       );
 
-      const gameName =
-        noteMatch
-          ? noteMatch[1].trim()
-          : t.game?.name || null;   // ✅ FIX 2: fallback for plain deposits
+      // ── 8. Referral bonus — REFERRER side ─────────────────────────────
+      const referrerBalBefore = parseFloat(referrer.balance);
+      const referrerBalAfter  = referrerBalBefore + referralAmt;
 
-      // ── Extract balance snapshots from notes ────────────────────────────
-      // For bonus transactions the snapshot is embedded in notes.
-      // For plain deposits it isn't, so these will be null (no change needed).
-      const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
-      const balanceAfter  = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
+      ops.push(
+        prisma.user.update({
+          where: { id: referrer.id },
+          data: { balance: { increment: referralAmt } },
+        })
+      );
+      ops.push(
+        prisma.bonus.create({
+          data: {
+            userId: referrer.id,
+            type: 'REFERRAL',
+            amount: new Prisma.Decimal(referralAmt.toString()),
+            description: `Referral Bonus from ${game.name} — ${player.name}'s $${depositAmt.toFixed(2)} deposit`,
+            claimed: true,
+            claimedAt: now,
+          },
+        })
+      );
+      ops.push(
+        prisma.transaction.create({
+          data: {
+            userId: referrer.id,
+            type: 'BONUS',
+            amount: new Prisma.Decimal(referralAmt.toString()),
+            status: 'COMPLETED',
+            description: `Referral Bonus from ${game.name} — ${player.name}'s $${depositAmt.toFixed(2)} deposit`,
+            notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${referrerBalBefore.toFixed(2)}|balanceAfter:${referrerBalAfter.toFixed(2)}`,
+          },
+        })
+      );
+    }
 
-      return {
-        id:           `TXN${String(t.id).padStart(6, '0')}`,
-        playerId:     t.userId,
-        playerName:   t.user?.name  || '—',
-        email:        t.user?.email || '—',
-        type,
-        bonusType,
-        amount:       parseFloat(t.amount),
-        walletMethod,
-        walletName,
-        gameName,       // ← now populated for plain deposits too
+    // ── Execute all ops atomically ────────────────────────────────────────
+    const results       = await prisma.$transaction(ops);
+    const updatedPlayer = results[0];
+    const updatedWallet = results[1];
+    const depositTx     = results[2];
+
+    const walletBalanceAfter = parseFloat(updatedWallet.balance);
+
+    // ── Build response summary ────────────────────────────────────────────
+    const bonusesApplied = [];
+    if (bonusMatch)                       bonusesApplied.push(`Match Bonus +$${matchAmt.toFixed(2)}`);
+    if (bonusSpecial)                     bonusesApplied.push(`Special Bonus +$${specialAmt.toFixed(2)}`);
+    if (referralAmt > 0 && referrer)      bonusesApplied.push(`Referral Bonus +$${referralAmt.toFixed(2)} to both ${player.name} & ${referrer.name}`);
+
+    res.status(201).json({
+      success: true,
+      message: [
+        `Deposit of $${depositAmt.toFixed(2)} recorded for ${player.name}.`,
+        ...bonusesApplied,
+        `Wallet ${walletName || wallet.name} updated.`,
+      ].join(' '),
+      transaction: {
+        id:                 depositTx.id,
+        playerId:           player.id,
+        playerName:         player.name,
+        type:               'Deposit',
+        amount:             depositAmt,
+        walletId,
+        walletMethod:       walletMethod || wallet.method,
+        walletName:         walletName   || wallet.name,
+        walletBalanceBefore,                              // ← wallet balance before deposit
+        walletBalanceAfter,                               // ← wallet balance after deposit
+        gameName:           game?.name   || null,         // ← now visible for plain deposits too
         balanceBefore,
-        balanceAfter,
-        status:       t.status,
-        timestamp:    fmtTX(t.createdAt),
-        date:         fmtTXDate(t.createdAt),
-      };
-    });
-
-    res.json({
-      data: formatted,
-      pagination: {
-        page:  parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / parseInt(limit)),
+        balanceAfter:       parseFloat(updatedPlayer.balance),
+        status:             'COMPLETED',
+        timestamp:          depositTx.createdAt,
+        referralBonus: referralAmt > 0 && referrer
+          ? { referrerId: referrer.id, referrerName: referrer.name, amount: referralAmt }
+          : null,
+      },
+      data: {
+        playerBalance: parseFloat(updatedPlayer.balance),
+        walletBalance: walletBalanceAfter,
       },
     });
 
   } catch (err) {
-    console.error('Get transactions error:', err);
-    res.status(500).json({ error: 'Failed to fetch transactions' });
+    console.error('Deposit error:', err);
+    res.status(500).json({ error: 'Deposit failed: ' + err.message });
   }
 });
 
@@ -2013,13 +2227,22 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // ✅ FIXED: GET /api/transactions
 // ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// ✅ FIXED: GET /api/transactions
+// Changes:
+//  1. Added `game` relation to include so plain deposits can resolve game name
+//  2. gameName now falls back to t.game?.name when notes parsing returns null
+//  3. balanceBefore / balanceAfter also fall back to transaction-level fields
+//     for deposits where the snapshot wasn't embedded in notes
+// ══════════════════════════════════════════════════════════════
+
 app.get('/api/transactions', authMiddleware, async (req, res) => {
   try {
     const { page = 1, limit = 10, type = '', status = '' } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     let where = {};
-    if (type) where.type = type;
+    if (type)   where.type   = type;
     if (status) where.status = status;
 
     const [transactions, total] = await Promise.all([
@@ -2027,99 +2250,101 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         where,
         include: {
           user: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            }
-          }
+            select: { id: true, name: true, email: true },
+          },
+          // ✅ FIX 1: join game table so plain deposits can show game name
+          game: {
+            select: { id: true, name: true },
+          },
         },
         skip,
         take: parseInt(limit),
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: 'desc' },
       }),
-      prisma.transaction.count({ where })
+      prisma.transaction.count({ where }),
     ]);
 
-    // ✅ FIXED: Properly format transactions with ALL required fields
     const formatted = transactions.map(t => {
-      // Determine transaction type display
-      let type = t.type;
+      // ── Determine display type ──────────────────────────────────────────
+      let type      = t.type;
       let bonusType = null;
 
-      if (t.type === 'DEPOSIT') type = 'Deposit';
-      else if (t.type === 'WITHDRAWAL') type = 'Cashout';
-      else if (t.type === 'BONUS') {
-        // Parse bonus type from description
+      if (t.type === 'DEPOSIT') {
+        type = 'Deposit';
+      } else if (t.type === 'WITHDRAWAL') {
+        type = 'Cashout';
+      } else if (t.type === 'BONUS') {
         if (t.description?.includes('Match')) {
-          type = 'Match Bonus';
-          bonusType = 'match';
+          type = 'Match Bonus';   bonusType = 'match';
         } else if (t.description?.includes('Special')) {
-          type = 'Special Bonus';
-          bonusType = 'special';
+          type = 'Special Bonus'; bonusType = 'special';
         } else if (t.description?.includes('Streak')) {
-          type = 'Streak Bonus';
-          bonusType = 'streak';
+          type = 'Streak Bonus';  bonusType = 'streak';
         } else if (t.description?.includes('Referral')) {
-          type = 'Referral Bonus';
-          bonusType = 'referral';
+          type = 'Referral Bonus'; bonusType = 'referral';
         } else {
           type = 'Bonus';
         }
       }
 
-      // Extract wallet info from description or payment method
+      // ── Extract wallet info from description ────────────────────────────
+      // Format: "Deposit via PAYPAL - Main Account"
       let walletMethod = t.paymentMethod || 'Unknown';
-      let walletName = 'Account';
+      let walletName   = 'Account';
 
-      // Try to parse from description: "Deposit via PAYPAL - Main Account"
-      const match = t.description?.match(/via ([^ ]+) - (.*?)$/);
-      if (match) {
-        walletMethod = match[1];
-        walletName = match[2];
+      const walletMatch = t.description?.match(/via ([^ ]+) - (.*?)$/);
+      if (walletMatch) {
+        walletMethod = walletMatch[1];
+        walletName   = walletMatch[2];
       }
 
-      // // Extract game name from notes
-      // const gameMatch = t.notes?.match(/From game: (.*?)$/);
+      // ── Extract game name ───────────────────────────────────────────────
+      // Priority 1: parse from notes  "From game: GameName|balanceBefore:…"
+      // Priority 2: joined game relation (covers plain deposits with a gameId)
+      const noteMatch = t.notes?.match(
+        /From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/
+      );
 
-      // const gameName = gameMatch ? gameMatch[1] : null;
-      const gameMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
+      const gameName =
+        noteMatch
+          ? noteMatch[1].trim()
+          : t.game?.name || null;   // ✅ FIX 2: fallback for plain deposits
 
-      const gameName = gameMatch ? gameMatch[1].trim() : null;
-      const balanceBefore = gameMatch?.[2] ? parseFloat(gameMatch[2]) : null;
-      const balanceAfter = gameMatch?.[3] ? parseFloat(gameMatch[3]) : null;
-  
-     
-     
+      // ── Extract balance snapshots from notes ────────────────────────────
+      // For bonus transactions the snapshot is embedded in notes.
+      // For plain deposits it isn't, so these will be null (no change needed).
+      const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
+      const balanceAfter  = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
+
       return {
-        id: `TXN${String(t.id).padStart(6, '0')}`,
-        playerId: t.userId,
-        playerName: t.user?.name || '—',
-        email: t.user?.email || '—',
+        id:           `TXN${String(t.id).padStart(6, '0')}`,
+        playerId:     t.userId,
+        playerName:   t.user?.name  || '—',
+        email:        t.user?.email || '—',
         type,
         bonusType,
-        amount: parseFloat(t.amount),
+        amount:       parseFloat(t.amount),
         walletMethod,
         walletName,
-        gameName,
-        // ✅ These will be populated from a separate query or stored in transaction
-        balanceBefore,  // Need to fetch separately
-        balanceAfter,   // Need to fetch separately
-        status: t.status,
-        timestamp: fmtTX(t.createdAt),
-        date: fmtTXDate(t.createdAt),
+        gameName,       // ← now populated for plain deposits too
+        balanceBefore,
+        balanceAfter,
+        status:       t.status,
+        timestamp:    fmtTX(t.createdAt),
+        date:         fmtTXDate(t.createdAt),
       };
     });
 
     res.json({
       data: formatted,
       pagination: {
-        page: parseInt(page),
+        page:  parseInt(page),
         limit: parseInt(limit),
         total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
+        pages: Math.ceil(total / parseInt(limit)),
+      },
     });
+
   } catch (err) {
     console.error('Get transactions error:', err);
     res.status(500).json({ error: 'Failed to fetch transactions' });
