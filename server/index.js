@@ -1371,7 +1371,8 @@ app.post('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
     // ── Determine bonus label from bonusType ────────────────────────────────
     const isStreak = bonusType === 'streak';
     const isReferral = bonusType === 'referral';
-    const bonusLabel = isStreak ? 'Streak Bonus' : isReferral ? 'Referral Bonus' : 'Bonus';
+    const bonusLabel = isStreak ? 'Streak Bonus' : isReferral ? 'Referral Bonus' : (bonusType || 'Bonus');
+
 
     // ── Referral: also grant to referrer, so game deducts 2× ────────────────
     let referrer = null;
@@ -2158,6 +2159,10 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         else if (t.description?.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
         else if (t.description?.includes('Streak')) { type = 'Streak Bonus'; bonusType = 'streak'; }
         else if (t.description?.includes('Referral')) { type = 'Referral Bonus'; bonusType = 'referral'; }
+        else if (t.description) {
+          const fromIdx = t.description.indexOf(' from ');
+          type = fromIdx > 0 ? t.description.slice(0, fromIdx).trim() : 'Bonus';
+        }
         else { type = 'Bonus'; }
       }
 
