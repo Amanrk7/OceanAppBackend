@@ -1307,7 +1307,9 @@ app.get('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
 
       // ── Extract game name from description ────────────────────────────
       // Format: "Streak Bonus from GameName" or "Bonus from GameName — notes"
-      const gameMatch = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
+      // const gameMatch = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
+     // FIXED — matches ANY label before " from ":
+      const gameMatch = desc.match(/^.+? from ([^—\n]+?)(?:\s*—|$)/);
       const gameName = gameMatch ? gameMatch[1].trim() : '—';
 
       // ── Parse balance snapshots from notes ────────────────────────────
