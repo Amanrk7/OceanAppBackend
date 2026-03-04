@@ -252,75 +252,88 @@ app.get('/api/user', authMiddleware, async (req, res) => {
  * GET /api/players
  * Get all players with pagination and filtering
  */
+
+// ══════════════════════════════════════════════════════════════
+// FIXED: GET /api/players
+//
+// Root-cause fixes:
+//  1. Fetch ALL matching players first (no skip/take at DB level).
+//  2. Compute dynamic status for every player from the last-deposit map.
+//  3. Filter by status BEFORE paginating.
+//  4. Paginate in memory — so page counts and totals are always correct.
+//
+// Drop this entire block in place of the existing GET /api/players route.
+// ══════════════════════════════════════════════════════════════
+
 app.get('/api/players', authMiddleware, async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', status = '' } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const pageNum  = parseInt(page,  10);
+    const limitNum = parseInt(limit, 10);
 
-    let where = { role: 'PLAYER' };
-
+    // ── 1. Build search filter (no status — computed dynamically) ──────────
+    const where = { role: 'PLAYER' };
     if (search) {
       where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { username: { contains: search, mode: 'insensitive' } }
+        { name:     { contains: search, mode: 'insensitive' } },
+        { email:    { contains: search, mode: 'insensitive' } },
+        { username: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    const [players, total] = await Promise.all([
-      prisma.user.findMany({
-        where,
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          email: true,
-          phone: true,
-          status: true,
-          balance: true,
-          tier: true,
-          tierPoints: true,
-          gamesPlayed: true,
-          winStreak: true,
-          currentStreak: true,
-          playTimeMinutes: true,
-          lastPlayedDate: true,
-          cashoutLimit: true,
-          source: true,
-          facebook: true,
-          telegram: true,
-          instagram: true,
-          twitterX: true,
-          snapchat: true,
-          createdAt: true,
-          lastLoginAt: true,
-          bonuses: {
-            where: { claimed: false },
-            select: { amount: true }
-          },
-          referrals: {
-            select: { id: true }
-          }
+    // ── 2. Fetch ALL matching players (no skip/take yet) ───────────────────
+    //    We must do this before filtering by dynamic status because that
+    //    status is derived from transaction history, not a DB column.
+    const allPlayers = await prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        username: true,
+        name: true,
+        email: true,
+        phone: true,
+        status: true,
+        balance: true,
+        tier: true,
+        tierPoints: true,
+        gamesPlayed: true,
+        winStreak: true,
+        currentStreak: true,
+        playTimeMinutes: true,
+        lastPlayedDate: true,
+        cashoutLimit: true,
+        source: true,
+        facebook: true,
+        telegram: true,
+        instagram: true,
+        twitterX: true,
+        snapchat: true,
+        createdAt: true,
+        lastLoginAt: true,
+        bonuses: {
+          where: { claimed: false },
+          select: { amount: true },
         },
-        skip,
-        take: parseInt(limit),
-        orderBy: { createdAt: 'desc' }
-      }),
-      prisma.user.count({ where })
-    ]);
+        referrals: {
+          select: { id: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
-    // ── Dynamic status from last deposit date ──────────────────────────────
-    const now = new Date();
-    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-    const twoDaysAgo = new Date(todayStart); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+    // ── 3. Compute dynamic status thresholds ───────────────────────────────
+    const now          = new Date();
+    const todayStart   = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const twoDaysAgo   = new Date(todayStart); twoDaysAgo.setDate(twoDaysAgo.getDate()   - 2);
     const sevenDaysAgo = new Date(todayStart); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
+    // One batch query for last deposit per player
     const lastDeposits = await prisma.transaction.groupBy({
-      by: ['userId'],
+      by:    ['userId'],
       where: {
-        type: 'DEPOSIT',
+        type:   'DEPOSIT',
         status: 'COMPLETED',
-        userId: { in: players.map(p => p.id) },
+        userId: { in: allPlayers.map(p => p.id) },
       },
       _max: { createdAt: true },
     });
@@ -330,75 +343,82 @@ app.get('/api/players', authMiddleware, async (req, res) => {
 
     const computeStatus = (playerId) => {
       const lastDep = lastDepositMap[playerId];
-      if (!lastDep) return 'INACTIVE';
-      if (lastDep >= todayStart) return 'ACTIVE';
-      if (lastDep >= twoDaysAgo) return 'CRITICAL';
-      if (lastDep >= sevenDaysAgo) return 'HIGHLY_CRITICAL';
+      if (!lastDep)               return 'INACTIVE';
+      if (lastDep >= todayStart)  return 'ACTIVE';
+      if (lastDep >= twoDaysAgo)  return 'CRITICAL';
+      if (lastDep >= sevenDaysAgo)return 'HIGHLY_CRITICAL';
       return 'INACTIVE';
     };
-    // ──────────────────────────────────────────────────────────────────────
 
-    // Apply status filter AFTER dynamic computation
-    let filteredPlayers = players;
-    if (status) {
-      filteredPlayers = players.filter(p => computeStatus(p.id) === status);
-    }
+    // ── 4. Apply status filter AFTER dynamic computation ───────────────────
+    const statusFiltered = status
+      ? allPlayers.filter(p => computeStatus(p.id) === status)
+      : allPlayers;
 
-    const formatted = filteredPlayers.map(p => {
+    // ── 5. Paginate in memory (now counts are always correct) ──────────────
+    const total     = statusFiltered.length;
+    const paginated = statusFiltered.slice(
+      (pageNum - 1) * limitNum,
+      pageNum * limitNum,
+    );
+
+    // ── 6. Shape the response ──────────────────────────────────────────────
+    const formatted = paginated.map(p => {
       const dynamicStatus = computeStatus(p.id);
-
       return {
-        id: p.id,
-        name: p.name,
-        email: p.email,
-        phone: p.phone,
-        status: dynamicStatus,
-        balance: parseFloat(p.balance),
-        tier: p.tier,
-        tierPoints: p.tierPoints,
+        id:           p.id,
+        name:         p.name,
+        email:        p.email,
+        phone:        p.phone,
+        status:       dynamicStatus,
+        balance:      parseFloat(p.balance),
+        tier:         p.tier,
+        tierPoints:   p.tierPoints,
         cashoutLimit: parseFloat(p.cashoutLimit || 250),
-        source: p.source,
-        attendance: dynamicStatus === 'ACTIVE' ? 'active'
-          : dynamicStatus === 'CRITICAL' ? 'critical'
-          : dynamicStatus === 'HIGHLY_CRITICAL' ? 'highly-critical'
-          : 'inactive',
+        source:       p.source,
+        attendance:   dynamicStatus === 'ACTIVE'          ? 'active'
+                    : dynamicStatus === 'CRITICAL'         ? 'critical'
+                    : dynamicStatus === 'HIGHLY_CRITICAL'  ? 'highly-critical'
+                    : 'inactive',
         streak: {
           currentStreak: p.currentStreak || 0,
           lastPlayedDate: p.lastPlayedDate,
-          streakBonus: p.currentStreak >= 7 ? 10.00
-            : p.currentStreak >= 3 ? 5.00
-            : 0,
+          streakBonus:
+            p.currentStreak >= 7 ? 10.00 :
+            p.currentStreak >= 3 ?  5.00 : 0,
         },
         tierProgress: {
-          currentTier: p.tier,
+          currentTier:     p.tier,
           playTimeMinutes: p.playTimeMinutes || 0,
         },
         socials: {
-          email: p.email,
-          phone: p.phone,
-          facebook: p.facebook,
-          telegram: p.telegram,
+          email:     p.email,
+          phone:     p.phone,
+          facebook:  p.facebook,
+          telegram:  p.telegram,
           instagram: p.instagram,
-          x: p.twitterX,
-          snapchat: p.snapchat,
+          x:         p.twitterX,
+          snapchat:  p.snapchat,
         },
         bonusTracker: {
-          availableBonus: p.bonuses.reduce((sum, b) => sum + parseFloat(b.amount), 0),
+          availableBonus: p.bonuses.reduce(
+            (sum, b) => sum + parseFloat(b.amount), 0,
+          ),
         },
         referralsList: p.referrals.map(r => r.id),
-        lastLoginAt: fmtTX(p.lastLoginAt),
-        createdAt: fmtTXDate(p.createdAt),
+        lastLoginAt:   fmtTX(p.lastLoginAt),
+        createdAt:     fmtTXDate(p.createdAt),
       };
     });
 
     res.json({
       data: formatted,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: status ? filteredPlayers.length : total,
-        pages: Math.ceil((status ? filteredPlayers.length : total) / parseInt(limit))
-      }
+        page:  pageNum,
+        limit: limitNum,
+        total,                                       // ← always the filtered total
+        pages: Math.ceil(total / limitNum) || 1,
+      },
     });
 
   } catch (err) {
@@ -406,163 +426,6 @@ app.get('/api/players', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch players' });
   }
 });
-
-
-// ── Shared constants ──────────────────────────────────────────
-const TIER_CASHOUT = { BRONZE: 250, SILVER: 500, GOLD: 750 };
-
-// Maps DB UserStatus → attendance string used by PlayerDashboard
-const statusToAttendance = (status) => {
-  const map = {
-    ACTIVE: 'active',
-    CRITICAL: 'critical',
-    HIGHLY_CRITICAL: 'highly-critical',
-    INACTIVE: 'inactive',
-  };
-  return map[status] || 'active';
-};
-
-// Shape a raw Prisma user row → the nested structure PlayerDashboard expects
-function shapePlayer(user) {
-  const tierReqs = { BRONZE: 6000, SILVER: 12000, GOLD: null };
-  const nextReq = tierReqs[user.tier];
-  const progressPct = nextReq
-    ? Math.min(100, Math.round((user.playTimeMinutes / nextReq) * 100))
-    : 100;
-
-  const claimed = (user.bonuses || []).filter(b => b.claimed);
-  const unclaimed = (user.bonuses || []).filter(b => !b.claimed);
-  const totalBonusEarned = claimed.reduce((s, b) => s + parseFloat(b.amount), 0);
-  const usedBonus = claimed.reduce((s, b) => s + parseFloat(b.wagerMet || 0), 0);
-  const availableBonus = unclaimed.reduce((s, b) => s + parseFloat(b.amount), 0);
-
-  const referralsList = (user.referrals || []).map(r => ({
-    id: r.id, name: r.name, username: r.username,
-  }));
-  const friendsList = [...(user.friends || []), ...(user.friendOf || [])].map(f => ({
-    id: f.id, name: f.name, username: f.username,
-  }));
-
-  // ── Transaction history (last 30 days) ───────────────────────────────────
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-  const transactionHistory = (user.transactions || [])
-    .filter(t => new Date(t.createdAt) >= thirtyDaysAgo)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .map(t => {
-      // ── Determine type label ─────────────────────────────────────────────
-      let type = 'other';
-      const desc = t.description || '';
-
-      if (t.type === 'DEPOSIT') type = 'deposit';
-      else if (t.type === 'WITHDRAWAL') type = 'cashout';
-      else if (t.type === 'REFERRAL') type = 'Referral Bonus';
-      else if (t.type === 'BONUS') {
-        // Parse subtype from description text
-        if (desc.includes('Streak Bonus')) type = 'Streak Bonus';
-        else if (desc.includes('Referral Bonus')) type = 'Referral Bonus';
-        else if (desc.includes('Match Bonus')) type = 'Match Bonus';
-        else if (desc.includes('Special Bonus')) type = 'Special Bonus';
-        else if (desc.startsWith('Bonus from')) type = 'Bonus';
-        else type = 'bonus_credited';
-      }
-
-      // ── Extract wallet info ──────────────────────────────────────────────
-      // Description format: "Deposit via PAYPAL - Main Account"
-      const walletMatch = desc.match(/via ([^ ]+) - (.+)$/);
-      const walletMethod = walletMatch?.[1] || null;
-      const walletName = walletMatch?.[2] || null;
-
-      // ── Extract game name ────────────────────────────────────────────────
-      let gameName = null;
-      // New format in description: "Streak Bonus from GameName — notes"
-      const fromGameDesc = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
-      if (fromGameDesc) gameName = fromGameDesc[1].trim();
-      // Notes format: "gameId:xxx|From game: GameName"  OR  "From game: GameName"
-      if (!gameName) {
-        const noteGameMatch = (t.notes || '').match(/From game: ([^\|]+?)(?:\||$)/);
-        if (noteGameMatch) gameName = noteGameMatch[1].trim();
-      }
-
-     // ── Weekly deposit total (last 7 days) ───────────────────────────────────
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const weeklyDepositTotal = (user.transactions || [])
-    .filter(t => t.type === 'DEPOSIT' && t.status === 'COMPLETED' && new Date(t.createdAt) >= sevenDaysAgo)
-    .reduce((sum, t) => sum + parseFloat(t.amount), 0);
-
-
-     
-      return {
-        id: t.id,
-        type,
-        amount: parseFloat(t.amount),
-        status: t.status,
-        walletMethod,
-        walletName,
-        gameName,
-        // date: new Date(t.createdAt).toLocaleDateString('en-US', {
-        //   month: 'short', day: 'numeric', year: 'numeric',
-        // }),
-       weeklyDepositTotal: parseFloat(weeklyDepositTotal.toFixed(2)),
-        date: fmtTXDate(t.createdAt),
-      };
-    });
-
-  const streakBonus = (user.currentStreak || 0) * 0.5;
-
-  return {
-    id: user.id,
-    name: user.name,
-    username: user.username,
-    email: user.email,
-    phone: user.phone || null,
-    tier: user.tier,
-    status: user.status,
-    attendance: statusToAttendance(user.status),
-    balance: parseFloat(user.balance),
-    cashoutLimit: parseFloat(user.cashoutLimit),
-    source: user.source || '—',
-    createdAt: user.createdAt,
-    lastLoginAt: user.lastLoginAt,
-
-    socials: {
-      email: user.email,
-      phone: user.phone || null,
-      facebook: user.facebook || null,
-      telegram: user.telegram || null,
-      instagram: user.instagram || null,
-      x: user.twitterX || null,
-      snapchat: user.snapchat || null,
-    },
-
-    // ✅ NEW: who referred this player (from the included `referrer` relation)
-    referredBy: user.referrer
-      ? { id: user.referrer.id, name: user.referrer.name, username: user.referrer.username }
-      : null,
-
-    streak: {
-      currentStreak: user.currentStreak || 0,
-      streakBonus,
-      // lastPlayedDate: user.lastPlayedDate
-      //   ? new Date(user.lastPlayedDate).toLocaleDateString('en-US', {
-      //     month: 'short', day: 'numeric', year: 'numeric',
-      //   })
-      //   : '—',
-      lastPlayedDate: fmtTXDate(user.lastPlayedDate),
-    },
-
-    tierProgress: {
-      playTimeMinutes: user.playTimeMinutes || 0,
-      progressPercentage: progressPct,
-      nextTierRequirement: nextReq,
-    },
-
-    bonusTracker: { availableBonus, totalBonusEarned, usedBonus },
-    referralsList,
-    friendsList,
-    transactionHistory,
-  };
-}
 
 // ══════════════════════════════════════════════════════════════
 // 1.  POST /api/create-new-player
