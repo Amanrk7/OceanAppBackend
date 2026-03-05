@@ -910,10 +910,10 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     } = req.body;
 
     const updateData = {};
-    if (name         !== undefined) updateData.name         = name.trim();
-    if (email        !== undefined) updateData.email        = email.trim();
-    if (phone        !== undefined) updateData.phone        = phone?.trim() || null;
-    if (tier         !== undefined) {
+    if (name !== undefined) updateData.name = name.trim();
+    if (email !== undefined) updateData.email = email.trim();
+    if (phone !== undefined) updateData.phone = phone?.trim() || null;
+    if (tier !== undefined) {
       updateData.tier = tier;
       // Auto-adjust cashoutLimit when tier changes (unless caller explicitly sets it)
       if (cashoutLimit === undefined) {
@@ -921,17 +921,17 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       }
     }
     if (cashoutLimit !== undefined) updateData.cashoutLimit = parseFloat(cashoutLimit);
-    if (status       !== undefined) updateData.status       = status;
-    if (balance      !== undefined) updateData.balance      = parseFloat(balance);
-    if (facebook     !== undefined) updateData.facebook     = facebook    || null;
-    if (telegram     !== undefined) updateData.telegram     = telegram    || null;
-    if (instagram    !== undefined) updateData.instagram    = instagram   || null;
-    if (x            !== undefined) updateData.twitterX     = x           || null;
-    if (snapchat     !== undefined) updateData.snapchat     = snapchat    || null;
-    if (source       !== undefined) updateData.source       = source      || null;
+    if (status !== undefined) updateData.status = status;
+    if (balance !== undefined) updateData.balance = parseFloat(balance);
+    if (facebook !== undefined) updateData.facebook = facebook || null;
+    if (telegram !== undefined) updateData.telegram = telegram || null;
+    if (instagram !== undefined) updateData.instagram = instagram || null;
+    if (x !== undefined) updateData.twitterX = x || null;
+    if (snapchat !== undefined) updateData.snapchat = snapchat || null;
+    if (source !== undefined) updateData.source = source || null;
 
     // ── FIX: streak fields ────────────────────────────────────────────────
-    if (currentStreak  !== undefined) updateData.currentStreak  = parseInt(currentStreak, 10);
+    if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
     if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
 
     const updated = await prisma.user.update({
@@ -1319,7 +1319,7 @@ app.get('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
       // ── Extract game name from description ────────────────────────────
       // Format: "Streak Bonus from GameName" or "Bonus from GameName — notes"
       // const gameMatch = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
-     // FIXED — matches ANY label before " from ":
+      // FIXED — matches ANY label before " from ":
       const gameMatch = desc.match(/^.+? from ([^—\n]+?)(?:\s*—|$)/);
       const gameName = gameMatch ? gameMatch[1].trim() : '—';
 
@@ -2011,22 +2011,38 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // ✅ FIXED: POST /api/transactions/cashout
 // ══════════════════════════════════════════════════════════════
+// app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
+//   try {
+//     const {
+//       playerId,
+//       amount,
+//       walletId,
+//       walletMethod,      // ← NEW: from frontend
+//       walletName,        // ← NEW: from frontend
+//       notes,
+//     } = req.body;
 app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
   try {
     const {
       playerId,
       amount,
+      gameId,
       walletId,
-      walletMethod,      // ← NEW: from frontend
-      walletName,        // ← NEW: from frontend
+      walletMethod,
+      walletName,
       notes,
     } = req.body;
-
+    // // Validation
+    // if (!playerId || !amount || !walletId) {
+    //   return res.status(400).json({ error: 'playerId, amount and walletId are required' });
+    // }
     // Validation
     if (!playerId || !amount || !walletId) {
       return res.status(400).json({ error: 'playerId, amount and walletId are required' });
     }
-
+    if (!gameId) {
+      return res.status(400).json({ error: 'gameId is required for cashouts' });
+    }
     const cashoutAmt = parseFloat(amount);
     if (isNaN(cashoutAmt) || cashoutAmt <= 0) {
       return res.status(400).json({ error: 'amount must be a positive number' });
@@ -2061,6 +2077,19 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
 
+    // // Validate wallet balance
+    // if (cashoutAmt > wallet.balance) {
+    //   return res.status(400).json({
+    //     error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, requested $${cashoutAmt.toFixed(2)}.`,
+    //   });
+    // }
+
+    // // Calculate new balance AFTER cashout
+    // const balanceAfter = balanceBefore - cashoutAmt;
+
+    // // Execute atomically
+    // const [updatedPlayer, updatedWallet, tx] = await prisma.$transaction([
+
     // Validate wallet balance
     if (cashoutAmt > wallet.balance) {
       return res.status(400).json({
@@ -2068,10 +2097,75 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
       });
     }
 
+    // ── Daily cashout limit check ────────────────────────────────────────────
+    const cashoutLimit = parseFloat(player.cashoutLimit ?? 250);
+    const streakWaived = (player.currentStreak || 0) >= 30;
+
+    if (cashoutLimit > 0 && !streakWaived) {
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+
+      const todayTotal = await prisma.transaction.aggregate({
+        where: {
+          userId: parseInt(playerId),
+          type: 'WITHDRAWAL',
+          status: 'COMPLETED',
+          createdAt: { gte: todayStart, lte: todayEnd },
+        },
+        _sum: { amount: true },
+      });
+
+      const alreadyCashedOut = parseFloat(todayTotal._sum.amount || 0);
+      if (alreadyCashedOut + cashoutAmt > cashoutLimit) {
+        const remaining = cashoutLimit - alreadyCashedOut;
+        return res.status(400).json({
+          error: `Daily cashout limit reached. Limit: $${cashoutLimit.toFixed(2)}, already cashed out today: $${alreadyCashedOut.toFixed(2)}, remaining: $${remaining.toFixed(2)}.`,
+        });
+      }
+    }
+
+    // ── Fetch & validate game stock ──────────────────────────────────────────
+    const game = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true, name: true, pointStock: true },
+    });
+    if (!game) return res.status(404).json({ error: 'Game not found' });
+
+    if (cashoutAmt > game.pointStock) {
+      return res.status(400).json({
+        error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${cashoutAmt.toFixed(2)} pts.`,
+      });
+    }
+
     // Calculate new balance AFTER cashout
     const balanceAfter = balanceBefore - cashoutAmt;
 
-    // Execute atomically
+    // ── New game stock ────────────────────────────────────────────────────────
+    const newStock = game.pointStock - cashoutAmt;
+    const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+
+    // // Execute atomically
+    // const [updatedPlayer, updatedWallet, tx] = await prisma.$transaction([
+    //   prisma.user.update({
+    //     where: { id: parseInt(playerId) },
+    //     data: { balance: balanceAfter },
+    //   }),
+    //   prisma.wallet.update({
+    //     where: { id: parseInt(walletId) },
+    //     data: { balance: { decrement: cashoutAmt } },
+    //   }),
+    //   prisma.transaction.create({
+    //     data: {
+    //       userId: parseInt(playerId),
+    //       type: 'WITHDRAWAL',
+    //       amount: new Prisma.Decimal(cashoutAmt.toString()),
+    //       status: 'COMPLETED',
+    //       description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+    //       notes: notes || null,
+    //       paymentMethod: null,
+    //     },
+    //   }),
+    // ]);
     const [updatedPlayer, updatedWallet, tx] = await prisma.$transaction([
       prisma.user.update({
         where: { id: parseInt(playerId) },
@@ -2090,10 +2184,14 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
           description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
           notes: notes || null,
           paymentMethod: null,
+          gameId: game.id,
         },
       }),
+      prisma.game.update({
+        where: { id: game.id },
+        data: { pointStock: newStock, status: newGameStatus },
+      }),
     ]);
-
     res.status(201).json({
       success: true,
       message: `Cashout of $${cashoutAmt.toFixed(2)} recorded for ${player.name}.`,
