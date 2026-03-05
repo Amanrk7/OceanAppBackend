@@ -890,6 +890,11 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 // 3.  PATCH /api/players/:id   (partial update)
 // ══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// PATCH for server.js  — replace ONLY the app.patch('/api/players/:id', ...)
+// block.  Everything else in server.js stays exactly as it is.
+// ═══════════════════════════════════════════════════════════════════════════
+
 app.patch('/api/players/:id', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
@@ -900,13 +905,16 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       cashoutLimit,
       facebook, telegram, instagram, x, snapchat,
       source,
+      // ── FIX: these two were missing — streak edits in EditPlayer had no effect ──
+      currentStreak,
+      lastPlayedDate,
     } = req.body;
 
     const updateData = {};
-    if (name !== undefined) updateData.name = name.trim();
-    if (email !== undefined) updateData.email = email.trim();
-    if (phone !== undefined) updateData.phone = phone?.trim() || null;
-    if (tier !== undefined) {
+    if (name         !== undefined) updateData.name         = name.trim();
+    if (email        !== undefined) updateData.email        = email.trim();
+    if (phone        !== undefined) updateData.phone        = phone?.trim() || null;
+    if (tier         !== undefined) {
       updateData.tier = tier;
       // Auto-adjust cashoutLimit when tier changes (unless caller explicitly sets it)
       if (cashoutLimit === undefined) {
@@ -914,14 +922,18 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       }
     }
     if (cashoutLimit !== undefined) updateData.cashoutLimit = parseFloat(cashoutLimit);
-    if (status !== undefined) updateData.status = status;
-    if (balance !== undefined) updateData.balance = parseFloat(balance);
-    if (facebook !== undefined) updateData.facebook = facebook || null;
-    if (telegram !== undefined) updateData.telegram = telegram || null;
-    if (instagram !== undefined) updateData.instagram = instagram || null;
-    if (x !== undefined) updateData.twitterX = x || null;
-    if (snapchat !== undefined) updateData.snapchat = snapchat || null;
-    if (source !== undefined) updateData.source = source || null;
+    if (status       !== undefined) updateData.status       = status;
+    if (balance      !== undefined) updateData.balance      = parseFloat(balance);
+    if (facebook     !== undefined) updateData.facebook     = facebook    || null;
+    if (telegram     !== undefined) updateData.telegram     = telegram    || null;
+    if (instagram    !== undefined) updateData.instagram    = instagram   || null;
+    if (x            !== undefined) updateData.twitterX     = x           || null;
+    if (snapchat     !== undefined) updateData.snapchat     = snapchat    || null;
+    if (source       !== undefined) updateData.source       = source      || null;
+
+    // ── FIX: streak fields ────────────────────────────────────────────────
+    if (currentStreak  !== undefined) updateData.currentStreak  = parseInt(currentStreak, 10);
+    if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
 
     const updated = await prisma.user.update({
       where: { id },
