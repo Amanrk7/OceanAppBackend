@@ -905,7 +905,6 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       cashoutLimit,
       facebook, telegram, instagram, x, snapchat,
       source,
-      // ── FIX: these two were missing — streak edits in EditPlayer had no effect ──
       currentStreak,
       lastPlayedDate,
     } = req.body;
