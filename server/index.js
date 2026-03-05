@@ -2026,17 +2026,14 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     const {
       playerId,
       amount,
+      fee = 0,
       gameId,
       walletId,
       walletMethod,
       walletName,
       notes,
     } = req.body;
-    // // Validation
-    // if (!playerId || !amount || !walletId) {
-    //   return res.status(400).json({ error: 'playerId, amount and walletId are required' });
-    // }
-    // Validation
+
     if (!playerId || !amount || !walletId) {
       return res.status(400).json({ error: 'playerId, amount and walletId are required' });
     }
@@ -2044,8 +2041,12 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'gameId is required for cashouts' });
     }
     const cashoutAmt = parseFloat(amount);
+    const feeAmt = parseFloat(fee) || 0;
     if (isNaN(cashoutAmt) || cashoutAmt <= 0) {
       return res.status(400).json({ error: 'amount must be a positive number' });
+    }
+    if (feeAmt < 0 || feeAmt >= cashoutAmt) {
+      return res.status(400).json({ error: 'fee must be 0 or more and cannot equal or exceed the cashout amount' });
     }
 
     // Fetch player
@@ -2173,7 +2174,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
       }),
       prisma.wallet.update({
         where: { id: parseInt(walletId) },
-        data: { balance: { decrement: cashoutAmt } },
+        data: { balance: { decrement: cashoutAmt + feeAmt } },
       }),
       prisma.transaction.create({
         data: {
@@ -2182,7 +2183,9 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
           amount: new Prisma.Decimal(cashoutAmt.toString()),
           status: 'COMPLETED',
           description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
-          notes: notes || null,
+          // notes: notes || null,
+          // notes: `fee:${feeAmt.toFixed(2)}|playerPayout:${(cashoutAmt - feeAmt).toFixed(2)}|${notes || ''}`,
+          notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|${notes || ''}`,
           paymentMethod: null,
           gameId: game.id,
         },
