@@ -369,10 +369,10 @@ model Wallet {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// TASKS SYSTEM — Add these to your schema.prisma
+// S SYSTEM — Add these to your schema.prisma
 // ═══════════════════════════════════════════════════════════════
 
-enum TaskStatus {
+enum Status {
   PENDING
   IN_PROGRESS
   COMPLETED
@@ -383,8 +383,15 @@ enum TaskStatus {
 // If not, add:
 // enum Priority { LOW  MEDIUM  HIGH }
 
+enum TaskType {
+  STANDARD           // existing tasks
+  DAILY_CHECKLIST    // same checklist for all members daily
+  PLAYER_ADDITION    // "add 5 players" with per-member tracking
+  REVENUE_TARGET     // "$1000 profit" with sub-allocations
+}
+
 model Task {
-  id            Int        @id @default(autoincrement())
+   id            Int        @id @default(autoincrement())
   title         String
   description   String?
   priority      Priority   @default(MEDIUM)
@@ -404,8 +411,42 @@ model Task {
 
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
+  taskType        TaskType   @default(STANDARD)
+  targetValue     Float?     // e.g. 5 players, $1000 profit
+  currentValue    Float      @default(0)   // running total
+  assignToAll     Boolean    @default(false)
+  checklistItems  Json?      // [{id, label, required, completedBy, completedAt}]
+  subTasks        SubTask[]
+  progressLogs    TaskProgressLog[]
+  isDaily         Boolean    @default(false)  // for daily checklist reset
+  dailyResetAt    DateTime?
+ @@map("tasks")
+}
 
-  @@map("tasks")
+model SubTask {
+  id              Int        @id @default(autoincrement())
+  taskId          Int
+  task            Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  assignedToId    Int?
+  assignedTo      User?      @relation("SubTaskAssignee", fields: [assignedToId], references: [id])
+  label           String
+  targetValue     Float?     // member's share (e.g. $200 of the $1000)
+  currentValue    Float      @default(0)
+  status          TaskStatus @default(PENDING)
+  completedAt     DateTime?
+  createdAt       DateTime   @default(now())
+}
+
+model TaskProgressLog {
+  id           Int      @id @default(autoincrement())
+  taskId       Int
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId       Int
+  user         User     @relation(fields: [userId], references: [id])
+  action       String   // "PLAYER_ADDED", "REVENUE_LOGGED", "CHECKLIST_ITEM"
+  value        Float    @default(0)
+  metadata     Json?    // {playerId, playerName, checklistItemId, etc}
+  createdAt    DateTime @default(now())
 }
 
 // ═══════════════════════════════════════════════════════════════
