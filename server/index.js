@@ -1947,15 +1947,34 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
         : null,
       isDaily: !!isDaily,
     };
+if (false) { // <- wrapper so this file is valid JS; remove when copying
+  if (assignToAll) {
+    const members = await prisma.user.findMany({
+      where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] } }, // ✅ MANAGER removed
+    });
 
-    if (assignToAll) {
-      const members = await prisma.user.findMany({ where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4', 'MANAGER'] } } });
-      const created = await Promise.all(
-        members.map(m => prisma.task.create({ data: { ...baseData, assignedToId: m.id }, include: { createdBy: { select: { id: true, name: true, role: true } }, assignedTo: { select: { id: true, name: true, role: true } } } }))
-      );
-      created.forEach(t => broadcastTaskUpdate('task_created', t));
-      return res.status(201).json({ data: created, message: `Task assigned to ${created.length} members` });
+    if (!members.length) {
+      return res.status(400).json({ error: 'No team members found to assign task to' });
     }
+
+    const created = await Promise.all(
+      members.map(m =>
+        prisma.task.create({
+          data: { ...baseData, assignedToId: m.id },
+          include: {
+            createdBy: { select: { id: true, name: true, role: true } },
+            assignedTo: { select: { id: true, name: true, role: true } },
+            subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+            progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 10 },
+          },
+        })
+      )
+    );
+
+    created.forEach(t => broadcastTaskUpdate('task_created', t));
+    return res.status(201).json({ data: created[0], message: `Task assigned to ${created.length} members` });
+  }
+}
 
     const task = await prisma.task.create({
       data: { ...baseData, assignedToId: assignedToId ? parseInt(assignedToId) : null },
