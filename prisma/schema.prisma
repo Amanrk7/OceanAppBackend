@@ -7,8 +7,9 @@ datasource db {
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
+
 // ═══════════════════════════════════════════════════════════════
-// USER & TIER SYSTEM
+// ENUMS
 // ═══════════════════════════════════════════════════════════════
 
 enum UserRole {
@@ -33,102 +34,6 @@ enum TierLevel {
   SILVER
   GOLD
 }
-
-model User {
-  id              Int              @id @default(autoincrement())
-  username        String           @unique
-  password        String
-  name            String
-  email           String           @unique
-  phone           String?
-  role            UserRole         @default(PLAYER)
-  status          UserStatus       @default(ACTIVE)
-  balance         Decimal          @default(1000) @db.Decimal(10, 2)
-  
-  // Tier System
-  tier            TierLevel        @default(BRONZE)
-  tierPoints      Int              @default(0)
-  weeklyDeposit   Decimal          @default(0) @db.Decimal(10, 2)
-  
-  // Gamification
-  totalWagered    Decimal          @default(0) @db.Decimal(10, 2)
-  totalWon        Decimal          @default(0) @db.Decimal(10, 2)
-  gamesPlayed     Int              @default(0)
-  winStreak       Int              @default(0)
-  longestStreak   Int              @default(0)
-  
-  // Referral System
-  referralCode    String           @unique @default(cuid())
-  referredBy      Int?
-  referrer        User?            @relation("Referrals", fields: [referredBy], references: [id])
-  referrals       User[]           @relation("Referrals")
-  
-  // 2FA
-  twoFactorSecret String?
-  twoFactorEnabled Boolean         @default(false)
-  
-  // Timestamps
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  lastLoginAt     DateTime?
-  lastActivityAt  DateTime?
-  
-  // Relations
-  transactions    Transaction[]
-  bonuses         Bonus[]
-  activityLogs    ActivityLog[]
-  attendance      Attendance[]
-  notifications   Notification[]
-  sessions        Session[]
-
-    // Social Media (NEW)
-  facebook        String?
-  telegram        String?
-  instagram       String?
-  twitterX        String?
-  snapchat        String?
-
-  // Player Profile (NEW)
-  source          String?   // "Instagram Ad", "Friend Referral" etc.
-  cashoutLimit    Decimal   @default(250) @db.Decimal(10, 2)
-  currentStreak   Int       @default(0)
-  lastPlayedDate  DateTime?
-  playTimeMinutes Int       @default(0)
-
-  // Friends (self-relation, NEW)
-  friends         User[]    @relation("Friends")
-  friendOf        User[]    @relation("Friends")
-
- 
-  tasksCreated    Task[]     @relation("CreatedTasks")
-  tasksAssigned   Task[]     @relation("AssignedTasks")
-  subTasksAssigned   SubTask[]          @relation("SubTaskAssignee")
-  taskProgressLogs   TaskProgressLog[]  @relation("TaskProgressUser")
-  shiftCheckins      ShiftCheckin[]     @relation("ShiftCheckins")
-}
-
-// ═══════════════════════════════════════════════════════════════
-// TIER CONFIGURATION
-// ═══════════════════════════════════════════════════════════════
-
-model TierConfig {
-  id                  Int       @id @default(autoincrement())
-  tier                TierLevel @unique
-  minDeposit          Decimal   @db.Decimal(10, 2)
-  maxDeposit          Decimal   @db.Decimal(10, 2)
-  dailyCashoutLimit   Decimal   @db.Decimal(10, 2)
-  weeklyCashoutLimit  Decimal   @db.Decimal(10, 2)
-  bonusMultiplier     Decimal   @db.Decimal(3, 2)
-  freeplayDaily       Decimal   @db.Decimal(10, 2)
-  freeplayWeekly      Decimal   @db.Decimal(10, 2)
-  pointsRequired      Int
-  benefits            String[]
-  updatedAt           DateTime  @updatedAt
-}
-
-// ═══════════════════════════════════════════════════════════════
-// TRANSACTIONS
-// ═══════════════════════════════════════════════════════════════
 
 enum TransactionType {
   DEPOSIT
@@ -159,49 +64,6 @@ enum PaymentMethod {
   WALLET
 }
 
-model Transaction {
-  id              Int               @id @default(autoincrement())
-  userId          Int
-  type            TransactionType
-  amount          Decimal           @db.Decimal(10, 2)
-  bonus           Decimal           @default(0) @db.Decimal(10, 2)
-  paymentMethod   PaymentMethod?
-  status          TransactionStatus @default(PENDING)
-  gameId          String?
-  game            Game?             @relation(fields: [gameId], references: [id])
-
-  // Payment Details
-  paymentId       String?
-  paymentGateway  String?
-  
-  // Metadata
-  description     String?
-  notes           String?
-  ipAddress       String?
-  
-  // Admin Actions
-  approvedBy      Int?
-  approvedAt      DateTime?
-  rejectedReason  String?
-  
-  createdAt       DateTime          @default(now())
-  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  @@index([userId, createdAt])
-  @@index([status, createdAt])
-}
-
-model ProfitStat {
-  id        Int      @id @default(autoincrement())
-  date      DateTime @default(now())  // snapshot date
-  profit    Decimal  @db.Decimal(10, 2)
-  createdAt DateTime @default(now())
-}
-
-// ═══════════════════════════════════════════════════════════════
-// BONUS SYSTEM
-// ═══════════════════════════════════════════════════════════════
-
 enum BonusType {
   WELCOME
   DEPOSIT_MATCH
@@ -216,48 +78,6 @@ enum BonusType {
   CUSTOM
 }
 
-model Bonus {
-  id          Int        @id @default(autoincrement())
-  userId      Int
-  type        BonusType
-  amount      Decimal    @db.Decimal(10, 2)
-  description String
-  claimed     Boolean    @default(false)
-  claimedAt   DateTime?
-  expiresAt   DateTime?
-  
-  // Wagering Requirements
-  wagerRequired Decimal? @db.Decimal(10, 2)
-  wagerMet      Decimal  @default(0) @db.Decimal(10, 2)
-  
-  createdAt   DateTime   @default(now())
-  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  @@index([userId, claimed])
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ATTENDANCE SYSTEM
-// ═══════════════════════════════════════════════════════════════
-
-model Attendance {
-  id              Int      @id @default(autoincrement())
-  userId          Int
-  date            DateTime @default(now())
-  streak          Int      @default(1)
-  rewardClaimed   Boolean  @default(false)
-  rewardAmount    Decimal? @db.Decimal(10, 2)
-  
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  @@unique([userId, date])
-  @@index([userId, date])
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ISSUES SYSTEM
-// ═══════════════════════════════════════════════════════════════
-
 enum Status {
   UNRESOLVED
   RESOLVED
@@ -268,119 +88,6 @@ enum Priority {
   MEDIUM
   HIGH
 }
-
-model Issue {
-  id          Int       @id @default(autoincrement())
-  title       String
-  description String
-  playerName  String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  status      Status    @default(UNRESOLVED)
-  priority    Priority  @default(MEDIUM)
-  @@map("issue")
-}
-
-
-// ═══════════════════════════════════════════════════════════════
-// Teams SYSTEM
-// ═══════════════════════════════════════════════════════════════
-
-model Team {
-  id            Int      @id @default(autoincrement())
-  teamName      String
-  isShiftActive Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  shifts        Shift[]
-}
-
-model Shift {
-  id         Int       @id @default(autoincrement())
-  teamId     Int
-  teamRole   String
-  team       Team      @relation(fields: [teamId], references: [id])
-  startTime  DateTime
-  endTime    DateTime?
-  duration   Int?      // stored in minutes, computed when shift ends
-  isActive   Boolean   @default(true)
-  createdAt  DateTime  @default(now())
-  checkin   ShiftCheckin?
-}
-
-/// ═══════════════════════════════════════════════════════════════
-// EXPENSES SECTION
-// ═══════════════════════════════════════════════════════════════
-enum ExpenseCategory {
-  POINT_RELOAD
-  SERVICE_FEE
-  OTHER
-}
-
-model Expense {
-  id          String          @id @default(cuid())
-  gameId      String?
-  game        Game?           @relation(fields: [gameId], references: [id])
-  details     String
-  category    ExpenseCategory @default(POINT_RELOAD)
-  amount      Float           @default(0)
-  pointsAdded Int             @default(0)
-  notes       String?
-  paymentMade Float?          // filled when a bulk payment is recorded
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-
-  @@map("expenses")
-}
-
-// ═══════════════════════════════════════════════════════════════
-// GAMES
-// ═══════════════════════════════════════════════════════════════
-
-model Game {
-  id          String      @id @default(cuid())
-  name        String      @unique
-  slug        String      @unique
-  iconUrl     String?
-  pointStock  Float       @default(0)
-  status      GameStatus  @default(HEALTHY)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  expenses    Expense[]   
-  txns        Transaction[]   
-
-  @@map("games")
-}
-enum GameStatus {
-  HEALTHY
-  LOW_STOCK
-  DEFICIT
-}
-
-
-// ═══════════════════════════════════════════════════════════════
-// WALLETS SECTION
-// ═══════════════════════════════════════════════════════════════
-model Wallet {
-  id          Int      @id @default(autoincrement())
-  name        String
-  method      String   // 'Bitcoin', 'Chime', 'PayPal', etc.
-  identifier  String?
-  balance     Float    @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@map("wallets")
-}
-
-// ═══════════════════════════════════════════════════════════════
-// S SYSTEM — Add these to your schema.prisma
-// ═══════════════════════════════════════════════════════════════
-
-
-// Note: Priority enum already exists in your schema — reuse it.
-// If not, add:
-// enum Priority { LOW  MEDIUM  HIGH }
 
 enum TaskType {
   STANDARD
@@ -402,66 +109,17 @@ enum ShiftFormStatus {
   COMPLETED
 }
 
-
-model Task {
-  id            Int          @id @default(autoincrement())
-  title         String
-  description   String?
-  priority      Priority     @default(MEDIUM)
-  status        TaskStatus   @default(PENDING)
-  dueDate       DateTime?
-  notes         String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-  completedAt   DateTime?
-
-  // New fields
-  taskType      TaskType     @default(STANDARD)
-  targetValue   Float?
-  currentValue  Float        @default(0)
-  assignToAll   Boolean      @default(false)
-  checklistItems Json?
-  isDaily       Boolean      @default(false)
-  dailyResetAt  DateTime?
-
-  // Relations
-  createdById   Int
-  createdBy     User         @relation("CreatedTasks", fields: [createdById], references: [id])
-  assignedToId  Int?
-  assignedTo    User?        @relation("AssignedTasks", fields: [assignedToId], references: [id])
-  subTasks      SubTask[]
-  progressLogs  TaskProgressLog[]
+enum ExpenseCategory {
+  POINT_RELOAD
+  SERVICE_FEE
+  OTHER
 }
 
-model SubTask {
-  id            Int          @id @default(autoincrement())
-  taskId        Int
-  task          Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  assignedToId  Int?
-  assignedTo    User?        @relation("SubTaskAssignee", fields: [assignedToId], references: [id])
-  label         String
-  targetValue   Float?
-  currentValue  Float        @default(0)
-  status        TaskStatus   @default(PENDING)
-  completedAt   DateTime?
-  createdAt     DateTime     @default(now())
+enum GameStatus {
+  HEALTHY
+  LOW_STOCK
+  DEFICIT
 }
-
-model TaskProgressLog {
-  id        Int      @id @default(autoincrement())
-  taskId    Int
-  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  userId    Int
-  user      User     @relation("TaskProgressUser", fields: [userId], references: [id])
-  action    String
-  value     Float    @default(0)
-  metadata  Json?
-  createdAt DateTime @default(now())
-}
-
-// ═══════════════════════════════════════════════════════════════
-// NOTIFICATIONS
-// ═══════════════════════════════════════════════════════════════
 
 enum NotificationType {
   TRANSACTION
@@ -470,67 +128,6 @@ enum NotificationType {
   SYSTEM
   SECURITY
 }
-
-model Notification {
-  id        Int              @id @default(autoincrement())
-  userId    Int
-  type      NotificationType
-  title     String
-  message   String
-  read      Boolean          @default(false)
-  actionUrl String?
-  
-  createdAt DateTime         @default(now())
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  @@index([userId, read, createdAt])
-}
-model ShiftCheckin {
-  id                 Int              @id @default(autoincrement())
-  shiftId            Int              @unique
-  shift              Shift            @relation(fields: [shiftId], references: [id], onDelete: Cascade)
-  userId             Int
-  user               User             @relation("ShiftCheckins", fields: [userId], references: [id])
-
-  // Pre-shift balance confirmation
-  confirmedBalance   Float?
-  balanceConfirmedAt DateTime?
-  balanceNote        String?
-
-  // End-of-shift form
-  effortRating       Int?             // 1-5
-  workSummary        String?
-  issuesEncountered  String?
-  shoutouts          String?
-  additionalNotes    String?
-  endFormSubmittedAt DateTime?
-
-  status             ShiftFormStatus  @default(PENDING)
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
-}
-// ═══════════════════════════════════════════════════════════════
-// SESSIONS (for real-time tracking)
-// ═══════════════════════════════════════════════════════════════
-
-model Session {
-  id          String   @id @default(cuid())
-  userId      Int
-  token       String   @unique
-  ipAddress   String
-  userAgent   String?
-  lastActive  DateTime @default(now())
-  expiresAt   DateTime
-  
-  createdAt   DateTime @default(now())
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  @@index([userId, expiresAt])
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ACTIVITY LOGS
-// ═══════════════════════════════════════════════════════════════
 
 enum ActivityType {
   LOGIN
@@ -550,6 +147,409 @@ enum ActivityType {
   TWO_FA_DISABLED
 }
 
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// ═══════════════════════════════════════════════════════════════
+// USER
+// ═══════════════════════════════════════════════════════════════
+
+model User {
+  id              Int              @id @default(autoincrement())
+  username        String           @unique
+  password        String
+  name            String
+  email           String           @unique
+  phone           String?
+  role            UserRole         @default(PLAYER)
+  status          UserStatus       @default(ACTIVE)
+  balance         Decimal          @default(1000) @db.Decimal(10, 2)
+
+  // Tier System
+  tier            TierLevel        @default(BRONZE)
+  tierPoints      Int              @default(0)
+  weeklyDeposit   Decimal          @default(0) @db.Decimal(10, 2)
+
+  // Gamification
+  totalWagered    Decimal          @default(0) @db.Decimal(10, 2)
+  totalWon        Decimal          @default(0) @db.Decimal(10, 2)
+  gamesPlayed     Int              @default(0)
+  winStreak       Int              @default(0)
+  longestStreak   Int              @default(0)
+
+  // Referral System
+  referralCode    String           @unique @default(cuid())
+  referredBy      Int?
+  referrer        User?            @relation("Referrals", fields: [referredBy], references: [id])
+  referrals       User[]           @relation("Referrals")
+
+  // 2FA
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean         @default(false)
+
+  // Timestamps
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  lastLoginAt     DateTime?
+  lastActivityAt  DateTime?
+
+  // Social Media
+  facebook        String?
+  telegram        String?
+  instagram       String?
+  twitterX        String?
+  snapchat        String?
+
+  // Player Profile
+  source          String?
+  cashoutLimit    Decimal          @default(250) @db.Decimal(10, 2)
+  currentStreak   Int              @default(0)
+  lastPlayedDate  DateTime?
+  playTimeMinutes Int              @default(0)
+
+  // ✅ NEW: which team member is assigned to manage this player
+  // Used by /api/players/missing-info to show unassigned players
+  assignedToId    Int?
+  assignedTo      User?            @relation("PlayerAssignment", fields: [assignedToId], references: [id])
+  assignedPlayers User[]           @relation("PlayerAssignment")
+
+  // Friends (self many-to-many)
+  friends         User[]           @relation("Friends")
+  friendOf        User[]           @relation("Friends")
+
+  // Relations
+  transactions    Transaction[]
+  bonuses         Bonus[]
+  activityLogs    ActivityLog[]
+  attendance      Attendance[]
+  notifications   Notification[]
+  sessions        Session[]
+
+  // Task relations
+  tasksCreated       Task[]             @relation("CreatedTasks")
+  tasksAssigned      Task[]             @relation("AssignedTasks")
+  subTasksAssigned   SubTask[]          @relation("SubTaskAssignee")
+  taskProgressLogs   TaskProgressLog[]  @relation("TaskProgressUser")
+  shiftCheckins      ShiftCheckin[]     @relation("ShiftCheckins")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TIER CONFIG
+// ═══════════════════════════════════════════════════════════════
+
+model TierConfig {
+  id                  Int       @id @default(autoincrement())
+  tier                TierLevel @unique
+  minDeposit          Decimal   @db.Decimal(10, 2)
+  maxDeposit          Decimal   @db.Decimal(10, 2)
+  dailyCashoutLimit   Decimal   @db.Decimal(10, 2)
+  weeklyCashoutLimit  Decimal   @db.Decimal(10, 2)
+  bonusMultiplier     Decimal   @db.Decimal(3, 2)
+  freeplayDaily       Decimal   @db.Decimal(10, 2)
+  freeplayWeekly      Decimal   @db.Decimal(10, 2)
+  pointsRequired      Int
+  benefits            String[]
+  updatedAt           DateTime  @updatedAt
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRANSACTIONS
+// ═══════════════════════════════════════════════════════════════
+
+model Transaction {
+  id              Int               @id @default(autoincrement())
+  userId          Int
+  type            TransactionType
+  amount          Decimal           @db.Decimal(10, 2)
+  bonus           Decimal           @default(0) @db.Decimal(10, 2)
+  paymentMethod   PaymentMethod?
+  status          TransactionStatus @default(PENDING)
+  gameId          String?
+  game            Game?             @relation(fields: [gameId], references: [id])
+
+  paymentId       String?
+  paymentGateway  String?
+  description     String?
+  notes           String?
+  ipAddress       String?
+  approvedBy      Int?
+  approvedAt      DateTime?
+  rejectedReason  String?
+
+  createdAt       DateTime          @default(now())
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ProfitStat {
+  id        Int      @id @default(autoincrement())
+  date      DateTime @default(now())
+  profit    Decimal  @db.Decimal(10, 2)
+  createdAt DateTime @default(now())
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BONUS
+// ═══════════════════════════════════════════════════════════════
+
+model Bonus {
+  id            Int        @id @default(autoincrement())
+  userId        Int
+  type          BonusType
+  amount        Decimal    @db.Decimal(10, 2)
+  description   String
+  claimed       Boolean    @default(false)
+  claimedAt     DateTime?
+  expiresAt     DateTime?
+  wagerRequired Decimal?   @db.Decimal(10, 2)
+  wagerMet      Decimal    @default(0) @db.Decimal(10, 2)
+  createdAt     DateTime   @default(now())
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, claimed])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ATTENDANCE
+// ═══════════════════════════════════════════════════════════════
+
+model Attendance {
+  id            Int      @id @default(autoincrement())
+  userId        Int
+  date          DateTime @default(now())
+  streak        Int      @default(1)
+  rewardClaimed Boolean  @default(false)
+  rewardAmount  Decimal? @db.Decimal(10, 2)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ISSUES
+// ═══════════════════════════════════════════════════════════════
+
+model Issue {
+  id          Int       @id @default(autoincrement())
+  title       String
+  description String
+  playerName  String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  status      Status    @default(UNRESOLVED)
+  priority    Priority  @default(MEDIUM)
+
+  @@map("issue")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TEAMS & SHIFTS
+// ═══════════════════════════════════════════════════════════════
+
+model Team {
+  id            Int      @id @default(autoincrement())
+  teamName      String
+  isShiftActive Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  shifts        Shift[]
+}
+
+model Shift {
+  id         Int           @id @default(autoincrement())
+  teamId     Int
+  teamRole   String
+  team       Team          @relation(fields: [teamId], references: [id])
+  startTime  DateTime
+  endTime    DateTime?
+  duration   Int?
+  isActive   Boolean       @default(true)
+  createdAt  DateTime      @default(now())
+  checkin    ShiftCheckin?
+}
+
+model ShiftCheckin {
+  id                 Int             @id @default(autoincrement())
+  shiftId            Int             @unique
+  shift              Shift           @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  userId             Int
+  user               User            @relation("ShiftCheckins", fields: [userId], references: [id])
+
+  confirmedBalance   Float?
+  balanceConfirmedAt DateTime?
+  balanceNote        String?
+
+  effortRating       Int?
+  workSummary        String?
+  issuesEncountered  String?
+  shoutouts          String?
+  additionalNotes    String?
+  endFormSubmittedAt DateTime?
+
+  status             ShiftFormStatus @default(PENDING)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EXPENSES
+// ═══════════════════════════════════════════════════════════════
+
+model Expense {
+  id          String          @id @default(cuid())
+  gameId      String?
+  game        Game?           @relation(fields: [gameId], references: [id])
+  details     String
+  category    ExpenseCategory @default(POINT_RELOAD)
+  amount      Float           @default(0)
+  pointsAdded Int             @default(0)
+  notes       String?
+  paymentMade Float?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@map("expenses")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GAMES
+// ═══════════════════════════════════════════════════════════════
+
+model Game {
+  id         String      @id @default(cuid())
+  name       String      @unique
+  slug       String      @unique
+  iconUrl    String?
+  pointStock Float       @default(0)
+  status     GameStatus  @default(HEALTHY)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  expenses   Expense[]
+  txns       Transaction[]
+
+  @@map("games")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WALLETS
+// ═══════════════════════════════════════════════════════════════
+
+model Wallet {
+  id         Int      @id @default(autoincrement())
+  name       String
+  method     String
+  identifier String?
+  balance    Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("wallets")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TASKS
+// ═══════════════════════════════════════════════════════════════
+
+model Task {
+  id            Int          @id @default(autoincrement())
+  title         String
+  description   String?
+  priority      Priority     @default(MEDIUM)
+  status        TaskStatus   @default(PENDING)
+  dueDate       DateTime?
+  notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  completedAt   DateTime?
+
+  taskType      TaskType     @default(STANDARD)
+  targetValue   Float?
+  currentValue  Float        @default(0)
+  assignToAll   Boolean      @default(false)
+  checklistItems Json?
+  isDaily       Boolean      @default(false)
+  dailyResetAt  DateTime?
+
+  createdById   Int
+  createdBy     User         @relation("CreatedTasks", fields: [createdById], references: [id])
+  assignedToId  Int?
+  assignedTo    User?        @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  subTasks      SubTask[]
+  progressLogs  TaskProgressLog[]
+}
+
+model SubTask {
+  id            Int        @id @default(autoincrement())
+  taskId        Int
+  task          Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  assignedToId  Int?
+  assignedTo    User?      @relation("SubTaskAssignee", fields: [assignedToId], references: [id])
+  label         String
+  targetValue   Float?
+  currentValue  Float      @default(0)
+  status        TaskStatus @default(PENDING)
+  completedAt   DateTime?
+  createdAt     DateTime   @default(now())
+}
+
+model TaskProgressLog {
+  id        Int      @id @default(autoincrement())
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation("TaskProgressUser", fields: [userId], references: [id])
+  action    String
+  value     Float    @default(0)
+  metadata  Json?
+  createdAt DateTime @default(now())
+}
+
+// ═══════════════════════════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════
+
+model Notification {
+  id        Int              @id @default(autoincrement())
+  userId    Int
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean          @default(false)
+  actionUrl String?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SESSIONS
+// ═══════════════════════════════════════════════════════════════
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     Int
+  token      String   @unique
+  ipAddress  String
+  userAgent  String?
+  lastActive DateTime @default(now())
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ACTIVITY LOGS
+// ═══════════════════════════════════════════════════════════════
+
 model ActivityLog {
   id           Int          @id @default(autoincrement())
   userId       Int
@@ -558,10 +558,9 @@ model ActivityLog {
   ipAddress    String?
   userAgent    String?
   metadata     Json?
-  
   createdAt    DateTime     @default(now())
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   @@index([userId, createdAt])
   @@index([activityType, createdAt])
 }
@@ -582,12 +581,6 @@ model SystemSetting {
 // EMAIL QUEUE
 // ═══════════════════════════════════════════════════════════════
 
-enum EmailStatus {
-  PENDING
-  SENT
-  FAILED
-}
-
 model EmailQueue {
   id        Int         @id @default(autoincrement())
   to        String
@@ -597,9 +590,8 @@ model EmailQueue {
   attempts  Int         @default(0)
   error     String?
   sentAt    DateTime?
-  
   createdAt DateTime    @default(now())
-  
+
   @@index([status, createdAt])
 }
 
@@ -609,11 +601,11 @@ model EmailQueue {
 
 model RateLimit {
   id         Int      @id @default(autoincrement())
-  identifier String   // IP or user ID
+  identifier String
   endpoint   String
   count      Int      @default(1)
   resetAt    DateTime
-  
+
   @@unique([identifier, endpoint])
   @@index([resetAt])
 }
