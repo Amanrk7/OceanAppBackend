@@ -838,47 +838,27 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
       },
     });
 
-   // Auto-log progress on active PLAYER_ADDITION tasks
-const activePATask = await prisma.task.findFirst({
-  where: {
-    taskType: 'PLAYER_ADDITION',
-    status: { in: ['PENDING', 'IN_PROGRESS'] },
-    OR: [
-      { assignedToId: req.userId },
-      { assignToAll: true },
-    ]
-  },
-  include: { subTasks: true }
-});
-
-if (activePATask) {
-  const subTask = activePATask.subTasks.find(st => st.assignedToId === req.userId);
-  await fetch(`/api/tasks/${activePATask.id}/progress`, {
-    // internal call — better to extract to a helper function
-  });
-  // Or call the logic directly:
-  const newVal = activePATask.currentValue + 1;
-  await prisma.task.update({
-    where: { id: activePATask.id },
-    data: {
-      currentValue: newVal,
-      status: newVal >= activePATask.targetValue ? 'COMPLETED' : 'IN_PROGRESS',
-    }
-  });
-  await prisma.taskProgressLog.create({
-    data: {
-      taskId: activePATask.id, userId: req.userId,
-      action: 'PLAYER_ADDED', value: 1,
-      metadata: { playerId: newPlayer.id, playerName: newPlayer.name }
-    }
-  });
-  if (subTask) {
-    await prisma.subTask.update({
-      where: { id: subTask.id },
-      data: { currentValue: subTask.currentValue + 1 }
+    // Auto-log progress on active PLAYER_ADDITION tasks
+    // Auto-log progress on any active PLAYER_ADDITION task
+    const activeTask = await prisma.task.findFirst({
+      where: {
+        taskType: 'PLAYER_ADDITION',
+        status: { in: ['PENDING', 'IN_PROGRESS'] },
+        OR: [
+          { assignedToId: req.userId },
+          { assignToAll: true },
+        ]
+      },
+      include: { subTasks: true }
     });
-  }
-}
+    if (activeTask) {
+      await incrementTaskProgress(
+        activeTask.id, req.userId, 1, 'PLAYER_ADDED',
+        { playerId: newPlayer.id, playerName: newPlayer.name }
+      );
+    }
+
+
     res.status(201).json({
       data: { ...fullPlayer, password: undefined },
       message: 'Player created successfully',
@@ -1034,7 +1014,60 @@ app.delete('/api/players/:id', authMiddleware, adminMiddleware, async (req, res)
   }
 });
 
+// GET /api/players/missing-info — Players with missing fields
+// ============================================================
+app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
+  try {
+    const players = await prisma.user.findMany({
+      where: { role: 'PLAYER' },
+      select: {
+        id: true,
+        name: true,
+        username: true,
+        email: true,
+        phone: true,
+        tier: true,
+        createdAt: true,
+        snapchat: true,    // Add these fields to your User model if not present
+        instagram: true,
+        telegram: true,
+        assignedToId: true,
+        assignedTo: { select: { id: true, name: true, role: true } },
+      }
+    });
 
+    const withMissing = players.map(p => {
+      const missing = [];
+      if (!p.email) missing.push('email');
+      if (!p.phone) missing.push('phone');
+      if (!p.snapchat) missing.push('snapchat');
+      if (!p.instagram) missing.push('instagram');
+      if (!p.telegram) missing.push('telegram');
+      if (!p.assignedToId) missing.push('assigned_member');
+      return { ...p, missingFields: missing, isCritical: missing.length >= 2 };
+    });
+
+    // Sort: critical first, then by missing count desc
+    withMissing.sort((a, b) => {
+      if (b.isCritical !== a.isCritical) return b.isCritical ? 1 : -1;
+      return b.missingFields.length - a.missingFields.length;
+    });
+
+    res.json({
+      data: withMissing,
+      stats: {
+        total: withMissing.length,
+        critical: withMissing.filter(p => p.isCritical).length,
+        missingSnapchat: withMissing.filter(p => p.missingFields.includes('snapchat')).length,
+        missingPhone: withMissing.filter(p => p.missingFields.includes('phone')).length,
+        missingEmail: withMissing.filter(p => p.missingFields.includes('email')).length,
+        unassigned: withMissing.filter(p => p.missingFields.includes('assigned_member')).length,
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get('/api/transactions/add', authMiddleware, async (req, res) => {
 
@@ -3267,6 +3300,99 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
+  try {
+    const shiftId = parseInt(req.params.id);
+    const { confirmedBalance, balanceNote } = req.body;
+
+    const checkin = await prisma.shiftCheckin.upsert({
+      where: { shiftId },
+      create: {
+        shiftId,
+        userId: req.userId,
+        confirmedBalance: parseFloat(confirmedBalance),
+        balanceNote,
+        balanceConfirmedAt: new Date(),
+        status: 'BALANCE_CONFIRMED',
+      },
+      update: {
+        confirmedBalance: parseFloat(confirmedBalance),
+        balanceNote,
+        balanceConfirmedAt: new Date(),
+        status: 'BALANCE_CONFIRMED',
+      }
+    });
+
+    broadcastTaskUpdate('shift_checkin', { shiftId, checkin });
+    res.json({ data: checkin, message: 'Balance confirmed. Shift started!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// POST /api/shifts/:id/checkout — End-of-shift form
+// ============================================================
+app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
+  try {
+    const shiftId = parseInt(req.params.id);
+    const {
+      effortRating,
+      workSummary,
+      issuesEncountered,
+      shoutouts,
+      additionalNotes,
+    } = req.body;
+
+    if (!effortRating || effortRating < 1 || effortRating > 5) {
+      return res.status(400).json({ error: 'Effort rating must be 1-5' });
+    }
+
+    const checkin = await prisma.shiftCheckin.upsert({
+      where: { shiftId },
+      create: {
+        shiftId,
+        userId: req.userId,
+        effortRating: parseInt(effortRating),
+        workSummary,
+        issuesEncountered,
+        shoutouts,
+        additionalNotes,
+        endFormSubmittedAt: new Date(),
+        status: 'COMPLETED',
+      },
+      update: {
+        effortRating: parseInt(effortRating),
+        workSummary,
+        issuesEncountered,
+        shoutouts,
+        additionalNotes,
+        endFormSubmittedAt: new Date(),
+        status: 'COMPLETED',
+      }
+    });
+
+    broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
+    res.json({ data: checkin, message: 'Shift summary submitted!' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/shifts/:id/checkin — Get checkin data for a shift
+// ============================================================
+app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
+  try {
+    const shiftId = parseInt(req.params.id);
+    const checkin = await prisma.shiftCheckin.findUnique({
+      where: { shiftId },
+      include: { user: { select: { id: true, name: true, role: true } } }
+    });
+    res.json({ data: checkin });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // ═══════════════════════════════════════════════════════════════
 //  REPORT ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
@@ -3280,77 +3406,93 @@ const BONUS_TYPES = ['BONUS', 'MATCH_BONUS', 'SPECIAL'];
 async function enrichShift(shift) {
   const shiftEnd = shift.endTime || new Date();
 
-  const [transactions, tasks, playersAdded, bonusesGranted, issueActivity] = await Promise.all([
-    prisma.transaction.findMany({
-      where: { createdAt: { gte: shift.startTime, lte: shiftEnd }, status: 'COMPLETED' },
-      include: { user: { select: { id:true, name:true } }, game: { select: { id:true, name:true } } },
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.task.findMany({
-      where: {
-        status: 'COMPLETED',
-        completedAt: { gte: shift.startTime, lte: shiftEnd },
-        assignedTo: { role: shift.teamRole },
-      },
-      include: {
-        assignedTo: { select: { id:true, name:true } },
-        subTasks: true,
-        progressLogs: { include: { user: { select: {id:true,name:true} } } },
-      },
-    }).catch(() => []),
-    // Players CREATED during this shift by team members of this role
-    prisma.user.findMany({
-      where: {
-        role: 'PLAYER',
-        createdAt: { gte: shift.startTime, lte: shiftEnd },
-        // If you track createdById on User, add: createdBy: { role: shift.teamRole }
-      },
-      select: { id:true, name:true, username:true, tier:true, createdAt:true }
-    }).catch(() => []),
-    // Bonus transactions grouped by type
-    prisma.transaction.findMany({
-      where: {
-        type: 'BONUS', status: 'COMPLETED',
-        createdAt: { gte: shift.startTime, lte: shiftEnd },
-      },
-      include: { user: { select: {id:true, name:true} } },
-    }).catch(() => []),
-    // Issues created or resolved
-    prisma.issue.findMany({
-      where: {
-        OR: [
-          { createdAt: { gte: shift.startTime, lte: shiftEnd } },
-          { updatedAt: { gte: shift.startTime, lte: shiftEnd }, status: 'RESOLVED' },
-        ]
-      }
-    }).catch(() => []),
-  ]);
+  const timeWindow = {
+    gte: new Date(shift.startTime),
+    lte: new Date(shiftEnd)
+  };
+
+  const [transactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] =
+    await Promise.all([
+      prisma.transaction.findMany({
+        where: { createdAt: timeWindow, status: 'COMPLETED' },
+        include: {
+          user: { select: { id: true, name: true } },
+          game: { select: { id: true, name: true } }
+        },
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.task.findMany({
+        where: {
+          completedAt: timeWindow,
+          status: 'COMPLETED',
+        },
+        include: {
+          assignedTo: { select: { id: true, name: true, role: true } },
+          subTasks: true,
+          progressLogs: {
+            include: { user: { select: { id: true, name: true } } },
+            orderBy: { createdAt: 'asc' }
+          }
+        }
+      }).catch(() => []),
+      prisma.user.findMany({
+        where: { role: 'PLAYER', createdAt: timeWindow },
+        select: { id: true, name: true, username: true, tier: true, createdAt: true }
+      }).catch(() => []),
+      prisma.transaction.findMany({
+        where: {
+          type: { in: ['BONUS', 'MATCH_BONUS', 'SPECIAL'] },
+          status: 'COMPLETED',
+          createdAt: timeWindow
+        },
+        include: {
+          user: { select: { id: true, name: true } },
+          game: { select: { id: true, name: true } }
+        }
+      }).catch(() => []),
+      prisma.issue.findMany({
+        where: {
+          OR: [
+            { createdAt: timeWindow },
+            { updatedAt: timeWindow, status: 'RESOLVED' }
+          ]
+        }
+      }).catch(() => []),
+      prisma.shiftCheckin.findUnique({
+        where: { shiftId: shift.id },
+        include: { user: { select: { id: true, name: true } } }
+      }).catch(() => null),
+    ]);
 
   const deposits = transactions.filter(t => t.type === 'DEPOSIT');
   const cashouts = transactions.filter(t => t.type === 'WITHDRAWAL');
-  const bonusTxns = transactions.filter(t => ['BONUS','MATCH_BONUS','SPECIAL'].includes(t.type));
+  const bonusTxns = transactions.filter(t => ['BONUS', 'MATCH_BONUS', 'SPECIAL'].includes(t.type));
 
-  const totalDeposits = sumField(deposits, 'amount');
-  const totalCashouts = sumField(cashouts, 'amount');
-  const totalBonuses = sumField(bonusTxns, 'amount');
+  const sum = (arr, field) => arr.reduce((s, r) => s + parseFloat(r[field] || 0), 0);
+  const f2 = v => Math.round(v * 100) / 100;
 
-  // Per-player breakdown of deposits
-  const playerDepositMap = {};
+  const totalDeposits = sum(deposits, 'amount');
+  const totalCashouts = sum(cashouts, 'amount');
+  const totalBonuses = sum(bonusTxns, 'amount');
+
+  // Per-player deposit breakdown
+  const playerMap = {};
   deposits.forEach(t => {
-    if (!playerDepositMap[t.userId]) {
-      playerDepositMap[t.userId] = { name: t.user?.name, total: 0, count: 0 };
+    if (!playerMap[t.userId]) {
+      playerMap[t.userId] = { name: t.user?.name || `Player #${t.userId}`, total: 0, count: 0 };
     }
-    playerDepositMap[t.userId].total += parseFloat(t.amount);
-    playerDepositMap[t.userId].count += 1;
+    playerMap[t.userId].total += parseFloat(t.amount || 0);
+    playerMap[t.userId].count += 1;
   });
 
   return {
     ...shift,
+    checkin,
     stats: {
       tasksCompleted: tasks.length,
       playersAdded: playersAdded.length,
       bonusesGranted: bonusesGranted.length,
-      totalBonusAmount: f2(sumField(bonusesGranted, 'amount')),
+      totalBonusAmount: f2(sum(bonusesGranted, 'amount')),
       depositCount: deposits.length,
       cashoutCount: cashouts.length,
       totalDeposits: f2(totalDeposits),
@@ -3359,16 +3501,19 @@ async function enrichShift(shift) {
       netProfit: f2(totalDeposits - totalCashouts - totalBonuses),
       transactionCount: transactions.length,
       issuesCreated: issueActivity.filter(i =>
-        new Date(i.createdAt) >= shift.startTime).length,
+        new Date(i.createdAt) >= new Date(shift.startTime)).length,
       issuesResolved: issueActivity.filter(i =>
-        i.status === 'RESOLVED' && new Date(i.updatedAt) >= shift.startTime).length,
+        i.status === 'RESOLVED' &&
+        new Date(i.updatedAt) >= new Date(shift.startTime)).length,
+      effortRating: checkin?.effortRating || null,
+      confirmedBalance: checkin?.confirmedBalance || null,
     },
     tasks,
     transactions,
     playersAdded,
     bonusesGranted,
     issueActivity,
-    playerDepositBreakdown: Object.values(playerDepositMap),
+    playerDepositBreakdown: Object.values(playerMap).sort((a, b) => b.total - a.total),
   };
 }
 
@@ -3623,15 +3768,78 @@ app.get('/api/chart/player-deposit-withdrawal', authMiddleware, adminMiddleware,
 // Map<userId, Set<res>>  — one user can have multiple browser tabs
 const sseClients = new Map();
 
-function broadcastTaskEvent(event, data) {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const clients of sseClients.values()) {
-    for (const res of clients) {
-      try { res.write(payload); } catch (_) { /* skip dead connections */ }
-    }
+// function broadcastTaskEvent(event, data) {
+//   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+//   for (const clients of sseClients.values()) {
+//     for (const res of clients) {
+//       try { res.write(payload); } catch (_) { /* skip dead connections */ }
+//     }
+//   }
+// }
+// ── HELPER: broadcast task update via SSE ───────────────────
+// (You likely already have broadcastEvent — adapt to match yours)
+function broadcastTaskUpdate(eventType, data) {
+  const payload = `data: ${JSON.stringify({ type: eventType, data })}\n\n`;
+  // Replace `clients` with whatever your SSE client array is named
+  if (typeof clients !== 'undefined') {
+    clients.forEach(client => {
+      try { client.write(payload); } catch (_) { }
+    });
   }
 }
 
+// ── HELPER: progress task internally (reusable) ─────────────
+async function incrementTaskProgress(taskId, userId, value, action, metadata = {}) {
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: { subTasks: true }
+  });
+  if (!task) return null;
+
+  await prisma.taskProgressLog.create({
+    data: { taskId, userId, action, value, metadata }
+  });
+
+  const newVal = (task.currentValue || 0) + value;
+  const isDone = task.targetValue && newVal >= task.targetValue;
+
+  // Update matching sub-task if member has one
+  const sub = task.subTasks?.find(st => st.assignedToId === userId);
+  if (sub) {
+    const newSubVal = (sub.currentValue || 0) + value;
+    const subDone = sub.targetValue && newSubVal >= sub.targetValue;
+    await prisma.subTask.update({
+      where: { id: sub.id },
+      data: {
+        currentValue: newSubVal,
+        status: subDone ? 'COMPLETED' : 'IN_PROGRESS',
+        completedAt: subDone ? new Date() : undefined,
+      }
+    });
+  }
+
+  const updated = await prisma.task.update({
+    where: { id: taskId },
+    data: {
+      currentValue: newVal,
+      status: isDone ? 'COMPLETED' : 'IN_PROGRESS',
+      completedAt: isDone ? new Date() : undefined,
+    },
+    include: {
+      createdBy: { select: { id: true, name: true, role: true } },
+      assignedTo: { select: { id: true, name: true, role: true } },
+      subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+      progressLogs: {
+        include: { user: { select: { id: true, name: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 20
+      }
+    }
+  });
+
+  broadcastTaskUpdate('task_updated', updated);
+  return updated;
+}
 // ── SSE handshake ─────────────────────────────────────────────────
 // IMPORTANT: This route MUST be registered BEFORE any /api/tasks/:id route
 // in server.js, otherwise Express matches "events" as an :id param.
@@ -3711,238 +3919,280 @@ app.get('/api/tasks/online', authMiddleware, adminMiddleware, (req, res) => {
 // Returns all tasks. Optional ?assignedTo=<userId>  or ?unassigned=true
 app.get('/api/tasks', authMiddleware, async (req, res) => {
   try {
-    const { assignedTo, unassigned, status } = req.query;
+    const { assignedToId, taskType, status, myTasks } = req.query;
 
     const where = {};
-    if (unassigned === 'true') where.assignedToId = null;
-    else if (assignedTo) where.assignedToId = parseInt(assignedTo);
-    if (status) where.status = status.toUpperCase();
+    if (taskType) where.taskType = taskType;
+    if (status) where.status = status;
+
+    if (myTasks === 'true') {
+      where.OR = [
+        { assignedToId: req.userId },
+        { assignToAll: true },
+      ];
+    } else if (assignedToId) {
+      where.assignedToId = parseInt(assignedToId);
+    }
 
     const tasks = await prisma.task.findMany({
       where,
-      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
       include: {
         createdBy: { select: { id: true, name: true, role: true } },
         assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: {
+          include: { assignedTo: { select: { id: true, name: true, role: true } } },
+          orderBy: { id: 'asc' }
+        },
+        progressLogs: {
+          include: { user: { select: { id: true, name: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 50
+        }
       },
+      orderBy: [
+        { status: 'asc' },
+        { priority: 'desc' },
+        { createdAt: 'desc' }
+      ]
     });
 
     res.json({ data: tasks });
   } catch (err) {
-    console.error('Get tasks error:', err);
-    res.status(500).json({ error: 'Failed to fetch tasks' });
+    res.status(500).json({ error: err.message });
   }
 });
 
 // ── POST /api/tasks ───────────────────────────────────────────────
 // Admin creates a task, optionally assigns it immediately
 app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
-  const {
-    title, description, priority, dueDate, notes,
-    taskType = 'STANDARD',
-    assignToAll = false,
-    assignedToId,
-    targetValue,
-    checklistItems,   // [{label, required}]
-    subTasks,         // [{assignedToId, label, targetValue}]
-    isDaily,
-  } = req.body;
+  try {
+    const {
+      title, description, priority, dueDate, notes,
+      taskType = 'STANDARD',
+      assignToAll = false,
+      assignedToId,
+      targetValue,
+      checklistItems,
+      subTasks,
+      isDaily,
+    } = req.body;
 
-  // If assignToAll, create one task per team member
-  if (assignToAll && taskType === 'STANDARD') {
-    const members = await prisma.user.findMany({
-      where: { role: { in: ['TEAM1','TEAM2','TEAM3','TEAM4'] } }
-    });
-    const created = await Promise.all(members.map(m =>
-      prisma.task.create({
-        data: {
-          title, description, priority: priority?.toUpperCase() || 'MEDIUM',
-          dueDate: dueDate ? new Date(dueDate) : null,
-          assignedToId: m.id, notes, createdById: req.userId,
-          status: 'PENDING', taskType, assignToAll: true,
-          checklistItems: checklistItems || null,
-        },
-        include: { createdBy: {select:{id,name,role}}, assignedTo: {select:{id,name,role}} }
-      })
-    ));
-    created.forEach(t => broadcastTaskEvent('task_created', t));
-    return res.status(201).json({ data: created, message: 'Tasks assigned to all members' });
-  }
-
-  const task = await prisma.task.create({
-    data: {
-      title, description,
-      priority: priority?.toUpperCase() || 'MEDIUM',
+    const baseData = {
+      title,
+      description,
+      priority: (priority || 'MEDIUM').toUpperCase(),
       dueDate: dueDate ? new Date(dueDate) : null,
-      assignedToId: assignedToId ? parseInt(assignedToId) : null,
-      notes, createdById: req.userId,
-      status: 'PENDING', taskType,
+      notes,
+      createdById: req.userId,
+      status: 'PENDING',
+      taskType,
       targetValue: targetValue ? parseFloat(targetValue) : null,
       currentValue: 0,
-      assignToAll,
-      checklistItems: checklistItems || null,
+      assignToAll: !!assignToAll,
+      checklistItems: checklistItems?.length
+        ? checklistItems.map((item, i) => ({
+          id: `item_${Date.now()}_${i}`,
+          label: item.label,
+          required: !!item.required,
+          done: false,
+          completedBy: null,
+          completedAt: null,
+        }))
+        : null,
       isDaily: !!isDaily,
-    },
-    include: { createdBy:{select:{id,name,role}}, assignedTo:{select:{id,name,role}} }
-  });
+    };
 
-  // Create sub-tasks for PLAYER_ADDITION / REVENUE_TARGET
-  if (subTasks?.length && ['PLAYER_ADDITION','REVENUE_TARGET'].includes(taskType)) {
-    await prisma.subTask.createMany({
-      data: subTasks.map(st => ({
-        taskId: task.id,
-        assignedToId: st.assignedToId ? parseInt(st.assignedToId) : null,
-        label: st.label,
-        targetValue: st.targetValue ? parseFloat(st.targetValue) : null,
-        currentValue: 0,
-        status: 'PENDING',
-      }))
+    // ASSIGN TO ALL: create one task per team member
+    if (assignToAll) {
+      const members = await prisma.user.findMany({
+        where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4', 'MANAGER'] } }
+      });
+
+      const created = await Promise.all(
+        members.map(m =>
+          prisma.task.create({
+            data: { ...baseData, assignedToId: m.id },
+            include: {
+              createdBy: { select: { id: true, name: true, role: true } },
+              assignedTo: { select: { id: true, name: true, role: true } },
+            }
+          })
+        )
+      );
+
+      created.forEach(t => broadcastTaskUpdate('task_created', t));
+      return res.status(201).json({ data: created, message: `Task assigned to ${created.length} members` });
+    }
+
+    // SINGLE TASK
+    const task = await prisma.task.create({
+      data: {
+        ...baseData,
+        assignedToId: assignedToId ? parseInt(assignedToId) : null,
+      },
+      include: {
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+      }
     });
-  }
 
-  broadcastTaskEvent('task_created', task);
-  res.status(201).json({ data: task, message: 'Task created successfully' });
+    // Create sub-task allocations
+    if (subTasks?.length) {
+      await prisma.subTask.createMany({
+        data: subTasks.map(st => ({
+          taskId: task.id,
+          assignedToId: st.assignedToId ? parseInt(st.assignedToId) : null,
+          label: st.label || '',
+          targetValue: st.targetValue ? parseFloat(st.targetValue) : null,
+          currentValue: 0,
+          status: 'PENDING',
+        }))
+      });
+    }
+
+    broadcastTaskUpdate('task_created', task);
+    res.status(201).json({ data: task, message: 'Task created successfully' });
+  } catch (err) {
+    console.error('Create task error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/tasks/:id/progress', authMiddleware, async (req, res) => {
-  const id = parseInt(req.params.id);
-  const { value, action, metadata, subTaskId } = req.body;
+  try {
+    const taskId = parseInt(req.params.id);
+    const { value = 1, action = 'PROGRESS_LOGGED', metadata = {} } = req.body;
 
-  const task = await prisma.task.findUnique({
-    where: { id }, include: { subTasks: true }
-  });
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+    const updated = await incrementTaskProgress(taskId, req.userId, parseFloat(value), action, metadata);
+    if (!updated) return res.status(404).json({ error: 'Task not found' });
 
-  const increment = parseFloat(value) || 0;
-
-  // Log the progress
-  await prisma.taskProgressLog.create({
-    data: {
-      taskId: id, userId: req.userId,
-      action, value: increment, metadata: metadata || null
-    }
-  });
-
-  // Update sub-task if provided
-  if (subTaskId) {
-    const sub = await prisma.subTask.findUnique({ where: { id: parseInt(subTaskId) } });
-    const newSubVal = (sub?.currentValue || 0) + increment;
-    const subDone = task.targetValue && newSubVal >= (sub?.targetValue || task.targetValue);
-    await prisma.subTask.update({
-      where: { id: parseInt(subTaskId) },
-      data: {
-        currentValue: newSubVal,
-        status: subDone ? 'COMPLETED' : 'IN_PROGRESS',
-        completedAt: subDone ? new Date() : null,
-      }
-    });
+    res.json({ data: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-
-  // Update parent task total
-  const newTotal = task.currentValue + increment;
-  const isDone = task.targetValue && newTotal >= task.targetValue;
-
-  const updated = await prisma.task.update({
-    where: { id },
-    data: {
-      currentValue: newTotal,
-      status: isDone ? 'COMPLETED' : 'IN_PROGRESS',
-      completedAt: isDone ? new Date() : null,
-    },
-    include: { createdBy:{select:{id,name,role}}, assignedTo:{select:{id,name,role}}, subTasks: true }
-  });
-
-  broadcastTaskEvent('task_updated', updated);
-  res.json({ data: updated });
 });
 
 // ── PATCH /api/tasks/:id ──────────────────────────────────────────
 // Update status, assign/unassign, edit fields
-app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
+
+app.patch('/api/tasks/:id/checklist', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
+    const { itemId, done } = req.body;
 
-    const { title, description, priority, status, dueDate, assignedToId, notes } = req.body;
+    const task = await prisma.task.findUnique({ where: { id } });
+    if (!task) return res.status(404).json({ error: 'Task not found' });
 
-    const existing = await prisma.task.findUnique({ where: { id } });
-    if (!existing) return res.status(404).json({ error: 'Task not found' });
+    const items = (task.checklistItems || []).map(item =>
+      item.id === itemId
+        ? { ...item, done: !!done, completedBy: done ? req.userId : null, completedAt: done ? new Date().toISOString() : null }
+        : item
+    );
 
-    const data = {};
-    if (title !== undefined) data.title = title.trim();
-    if (description !== undefined) data.description = description?.trim() || null;
-    if (priority !== undefined) data.priority = priority.toUpperCase();
-    if (status !== undefined) {
-      data.status = status.toUpperCase();
-      if (status.toUpperCase() === 'COMPLETED') data.completedAt = new Date();
-      if (status.toUpperCase() !== 'COMPLETED') data.completedAt = null;
-    }
-    if (dueDate !== undefined) data.dueDate = dueDate ? new Date(dueDate) : null;
-    if (assignedToId !== undefined) data.assignedToId = assignedToId ? parseInt(assignedToId) : null;
-    if (notes !== undefined) data.notes = notes?.trim() || null;
+    const requiredAll = items.filter(i => i.required).every(i => i.done);
+    const anyDone = items.some(i => i.done);
 
     const updated = await prisma.task.update({
       where: { id },
-      data,
+      data: {
+        checklistItems: items,
+        status: requiredAll ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
+        completedAt: requiredAll ? new Date() : null,
+      },
       include: {
         createdBy: { select: { id: true, name: true, role: true } },
         assignedTo: { select: { id: true, name: true, role: true } },
-      },
+      }
     });
 
-    broadcastTaskEvent('task_updated', updated);
-    res.json({ data: updated, message: 'Task updated successfully' });
+    broadcastTaskUpdate('task_updated', updated);
+    res.json({ data: updated });
   } catch (err) {
-    console.error('Update task error:', err);
-    res.status(500).json({ error: 'Failed to update task' });
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.patch('/api/tasks/:id/checklist', authMiddleware, async (req, res) => {
-  const id = parseInt(req.params.id);
-  const { itemId, done } = req.body;
+app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { status, notes, priority, title, description, dueDate } = req.body;
 
-  const task = await prisma.task.findUnique({ where: { id } });
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+    const updateData = {};
+    if (status) {
+      updateData.status = status.toUpperCase();
+      if (status.toUpperCase() === 'COMPLETED') updateData.completedAt = new Date();
+      if (status.toUpperCase() === 'PENDING') updateData.completedAt = null;
+    }
+    if (notes !== undefined) updateData.notes = notes;
+    if (priority) updateData.priority = priority.toUpperCase();
+    if (title) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (dueDate) updateData.dueDate = new Date(dueDate);
 
-  const items = task.checklistItems || [];
-  const updated_items = items.map(item =>
-    item.id === itemId
-      ? { ...item, done, completedBy: req.userId, completedAt: new Date().toISOString() }
-      : item
-  );
+    const updated = await prisma.task.update({
+      where: { id },
+      data: updateData,
+      include: {
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+        progressLogs: {
+          include: { user: { select: { id: true, name: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 20
+        }
+      }
+    });
 
-  const allDone = updated_items.filter(i => i.required).every(i => i.done);
-
-  const updated = await prisma.task.update({
-    where: { id },
-    data: {
-      checklistItems: updated_items,
-      status: allDone ? 'COMPLETED' : 'IN_PROGRESS',
-      completedAt: allDone ? new Date() : null,
-    },
-    include: { createdBy:{select:{id,name,role}}, assignedTo:{select:{id,name,role}} }
-  });
-
-  broadcastTaskEvent('task_updated', updated);
-  res.json({ data: updated });
+    broadcastTaskUpdate('task_updated', updated);
+    res.json({ data: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// ── DELETE /api/tasks/:id ─────────────────────────────────────────
+// ============================================================
+// DELETE /api/tasks/:id — Delete task
+// ============================================================
 app.delete('/api/tasks/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
-
     await prisma.task.delete({ where: { id } });
-    broadcastTaskEvent('task_deleted', { id });
+    broadcastTaskUpdate('task_deleted', { id });
     res.json({ message: 'Task deleted' });
   } catch (err) {
-    console.error('Delete task error:', err);
-    res.status(500).json({ error: 'Failed to delete task' });
+    res.status(500).json({ error: err.message });
   }
 });
 
+
+app.post('/api/tasks/daily-reset', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const dailyTasks = await prisma.task.findMany({
+      where: { isDaily: true, taskType: 'DAILY_CHECKLIST' }
+    });
+
+    await Promise.all(dailyTasks.map(t => {
+      const resetItems = (t.checklistItems || []).map(item => ({
+        ...item, done: false, completedBy: null, completedAt: null
+      }));
+      return prisma.task.update({
+        where: { id: t.id },
+        data: {
+          checklistItems: resetItems,
+          status: 'PENDING',
+          completedAt: null,
+          currentValue: 0,
+          dailyResetAt: new Date(),
+        }
+      });
+    }));
+
+    res.json({ message: `Reset ${dailyTasks.length} daily tasks` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── GET /api/team-members ─────────────────────────────────────────
 // Returns all team members (TEAM1–TEAM4) for the assign dropdown
 app.get('/api/team-members', authMiddleware, adminMiddleware, async (req, res) => {
