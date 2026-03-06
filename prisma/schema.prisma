@@ -101,6 +101,9 @@ model User {
 
   tasksCreated    Task[]     @relation("TasksCreated")
   tasksAssigned   Task[]     @relation("TasksAssigned")
+  subTasksAssigned   SubTask[]          @relation("SubTaskAssignee")
+  taskProgressLogs   TaskProgressLog[]  @relation("TaskProgressUser")
+  shiftCheckins      ShiftCheckin[]     @relation("ShiftCheckins")
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -301,6 +304,7 @@ model Shift {
   duration   Int?      // stored in minutes, computed when shift ends
   isActive   Boolean   @default(true)
   createdAt  DateTime  @default(now())
+  checkin   ShiftCheckin?
 }
 
 /// ═══════════════════════════════════════════════════════════════
@@ -372,81 +376,86 @@ model Wallet {
 // S SYSTEM — Add these to your schema.prisma
 // ═══════════════════════════════════════════════════════════════
 
-enum Status {
-  PENDING
-  IN_PROGRESS
-  COMPLETED
-  CANCELLED
-}
 
 // Note: Priority enum already exists in your schema — reuse it.
 // If not, add:
 // enum Priority { LOW  MEDIUM  HIGH }
 
 enum TaskType {
-  STANDARD           // existing tasks
-  DAILY_CHECKLIST    // same checklist for all members daily
-  PLAYER_ADDITION    // "add 5 players" with per-member tracking
-  REVENUE_TARGET     // "$1000 profit" with sub-allocations
+  STANDARD
+  DAILY_CHECKLIST
+  PLAYER_ADDITION
+  REVENUE_TARGET
 }
 
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum ShiftFormStatus {
+  PENDING
+  BALANCE_CONFIRMED
+  COMPLETED
+}
+
+
 model Task {
-   id            Int        @id @default(autoincrement())
+  id            Int          @id @default(autoincrement())
   title         String
   description   String?
-  priority      Priority   @default(MEDIUM)
-  status        TaskStatus @default(PENDING)
-
-  // Who created it (admin/super-admin)
-  createdById   Int
-  createdBy     User       @relation("TasksCreated", fields: [createdById], references: [id])
-
-  // Who it is assigned to (team member) — null = unassigned
-  assignedToId  Int?
-  assignedTo    User?      @relation("TasksAssigned", fields: [assignedToId], references: [id])
-
+  priority      Priority     @default(MEDIUM)
+  status        TaskStatus   @default(PENDING)
   dueDate       DateTime?
-  completedAt   DateTime?
   notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  completedAt   DateTime?
 
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  taskType        TaskType   @default(STANDARD)
-  targetValue     Float?     // e.g. 5 players, $1000 profit
-  currentValue    Float      @default(0)   // running total
-  assignToAll     Boolean    @default(false)
-  checklistItems  Json?      // [{id, label, required, completedBy, completedAt}]
-  subTasks        SubTask[]
-  progressLogs    TaskProgressLog[]
-  isDaily         Boolean    @default(false)  // for daily checklist reset
-  dailyResetAt    DateTime?
- @@map("tasks")
+  // New fields
+  taskType      TaskType     @default(STANDARD)
+  targetValue   Float?
+  currentValue  Float        @default(0)
+  assignToAll   Boolean      @default(false)
+  checklistItems Json?
+  isDaily       Boolean      @default(false)
+  dailyResetAt  DateTime?
+
+  // Relations
+  createdById   Int
+  createdBy     User         @relation("CreatedTasks", fields: [createdById], references: [id])
+  assignedToId  Int?
+  assignedTo    User?        @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  subTasks      SubTask[]
+  progressLogs  TaskProgressLog[]
 }
 
 model SubTask {
-  id              Int        @id @default(autoincrement())
-  taskId          Int
-  task            Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  assignedToId    Int?
-  assignedTo      User?      @relation("SubTaskAssignee", fields: [assignedToId], references: [id])
-  label           String
-  targetValue     Float?     // member's share (e.g. $200 of the $1000)
-  currentValue    Float      @default(0)
-  status          TaskStatus @default(PENDING)
-  completedAt     DateTime?
-  createdAt       DateTime   @default(now())
+  id            Int          @id @default(autoincrement())
+  taskId        Int
+  task          Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  assignedToId  Int?
+  assignedTo    User?        @relation("SubTaskAssignee", fields: [assignedToId], references: [id])
+  label         String
+  targetValue   Float?
+  currentValue  Float        @default(0)
+  status        TaskStatus   @default(PENDING)
+  completedAt   DateTime?
+  createdAt     DateTime     @default(now())
 }
 
 model TaskProgressLog {
-  id           Int      @id @default(autoincrement())
-  taskId       Int
-  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  userId       Int
-  user         User     @relation(fields: [userId], references: [id])
-  action       String   // "PLAYER_ADDED", "REVENUE_LOGGED", "CHECKLIST_ITEM"
-  value        Float    @default(0)
-  metadata     Json?    // {playerId, playerName, checklistItemId, etc}
-  createdAt    DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation("TaskProgressUser", fields: [userId], references: [id])
+  action    String
+  value     Float    @default(0)
+  metadata  Json?
+  createdAt DateTime @default(now())
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -475,7 +484,30 @@ model Notification {
   
   @@index([userId, read, createdAt])
 }
+model ShiftCheckin {
+  id                 Int              @id @default(autoincrement())
+  shiftId            Int              @unique
+  shift              Shift            @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  userId             Int
+  user               User             @relation("ShiftCheckins", fields: [userId], references: [id])
 
+  // Pre-shift balance confirmation
+  confirmedBalance   Float?
+  balanceConfirmedAt DateTime?
+  balanceNote        String?
+
+  // End-of-shift form
+  effortRating       Int?             // 1-5
+  workSummary        String?
+  issuesEncountered  String?
+  shoutouts          String?
+  additionalNotes    String?
+  endFormSubmittedAt DateTime?
+
+  status             ShiftFormStatus  @default(PENDING)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+}
 // ═══════════════════════════════════════════════════════════════
 // SESSIONS (for real-time tracking)
 // ═══════════════════════════════════════════════════════════════
