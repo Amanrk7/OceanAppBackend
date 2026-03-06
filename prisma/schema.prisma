@@ -99,8 +99,9 @@ model User {
   friends         User[]    @relation("Friends")
   friendOf        User[]    @relation("Friends")
 
-  tasksCreated    Task[]     @relation("TasksCreated")
-  tasksAssigned   Task[]     @relation("TasksAssigned")
+ 
+  tasksCreated    Task[]     @relation("CreatedTasks")
+  tasksAssigned   Task[]     @relation("AssignedTasks")
   subTasksAssigned   SubTask[]          @relation("SubTaskAssignee")
   taskProgressLogs   TaskProgressLog[]  @relation("TaskProgressUser")
   shiftCheckins      ShiftCheckin[]     @relation("ShiftCheckins")
