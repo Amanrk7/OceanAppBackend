@@ -1843,7 +1843,9 @@ app.get('/api/tasks/events', (req, res) => {
     const token = req.cookies?.token || req.headers?.authorization?.replace('Bearer ', '');
     if (!token) throw new Error('No token');
     const decoded = jwt.verify(token, JWT_SECRET);
-    userId = decoded.id || decoded.userId;
+    // userId = decoded.id || decoded.userId;
+    userId = decoded.userId;
+
     if (!userId) throw new Error('No userId in token');
   } catch (err) {
     res.write('event: auth_error\ndata: {"error":"Unauthorized"}\n\n');
