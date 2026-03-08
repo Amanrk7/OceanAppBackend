@@ -406,7 +406,6 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/players/:id/assign-missing-info-task — admin creates a task to collect a player's missing info
 app.post('/api/players/:id/assign-missing-info-task', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const playerId = parseInt(req.params.id);
@@ -416,21 +415,16 @@ app.post('/api/players/:id/assign-missing-info-task', authMiddleware, adminMiddl
 
     const player = await prisma.user.findUnique({
       where: { id: playerId },
-      select: {
-        id: true, name: true, username: true,
-        email: true, phone: true, snapchat: true,
-        instagram: true, telegram: true, assignedToId: true
-      }
+      select: { id: true, name: true, username: true, email: true, phone: true, snapchat: true, instagram: true, telegram: true, assignedToId: true }
     });
     if (!player) return res.status(404).json({ error: 'Player not found' });
 
-    // Detect which fields are actually missing
     const missingFields = [];
-    if (!player.email)       missingFields.push('email');
-    if (!player.phone)       missingFields.push('phone');
-    if (!player.snapchat)    missingFields.push('snapchat');
-    if (!player.instagram)   missingFields.push('instagram');
-    if (!player.telegram)    missingFields.push('telegram');
+    if (!player.email)        missingFields.push('email');
+    if (!player.phone)        missingFields.push('phone');
+    if (!player.snapchat)     missingFields.push('snapchat');
+    if (!player.instagram)    missingFields.push('instagram');
+    if (!player.telegram)     missingFields.push('telegram');
     if (!player.assignedToId) missingFields.push('assigned_member');
 
     if (missingFields.length === 0) {
@@ -443,23 +437,13 @@ app.post('/api/players/:id/assign-missing-info-task', authMiddleware, adminMiddl
       select: { id: true, notes: true }
     });
     const existing = activeTasks.find(t => {
-      try { return JSON.parse(t.notes || '{}').playerId === playerId; }
-      catch { return false; }
+      try { return JSON.parse(t.notes || '{}').playerId === playerId; } catch { return false; }
     });
     if (existing) {
-      return res.status(409).json({
-        error: 'An active missing info task already exists for this player',
-        existingTaskId: existing.id
-      });
+      return res.status(409).json({ error: 'An active missing info task already exists for this player', existingTaskId: existing.id });
     }
 
-    const fieldLabel = (f) => {
-      const labels = {
-        email: 'Email', phone: 'Phone', snapchat: 'Snapchat',
-        instagram: 'Instagram', telegram: 'Telegram', assigned_member: 'Assigned Member'
-      };
-      return labels[f] || f;
-    };
+    const fieldLabel = f => ({ email: 'Email', phone: 'Phone', snapchat: 'Snapchat', instagram: 'Instagram', telegram: 'Telegram', assigned_member: 'Assigned Member' }[f] || f);
 
     const checklistItems = missingFields.map((field, i) => ({
       id:          `field_${field}_${Date.now()}_${i}`,
@@ -473,26 +457,21 @@ app.post('/api/players/:id/assign-missing-info-task', authMiddleware, adminMiddl
 
     const task = await prisma.task.create({
       data: {
-        title:       `Missing Info: ${player.name} (@${player.username})`,
-        description: `Collect contact info for @${player.username}. Missing: ${missingFields.map(fieldLabel).join(', ')}`,
-        taskType:    'MISSING_INFO',
-        priority:    priority.toUpperCase(),
-        status:      'PENDING',
-        createdById: req.userId,
-        notes:       JSON.stringify({
-          playerId,
-          playerName:    player.name,
-          username:      player.username,
-          missingFields,
-        }),
+        title:        `Missing Info: ${player.name} (@${player.username})`,
+        description:  `Collect contact info for @${player.username}. Missing: ${missingFields.map(fieldLabel).join(', ')}`,
+        taskType:     'MISSING_INFO',
+        priority:     priority.toUpperCase(),
+        status:       'PENDING',
+        createdById:  req.userId,
+        notes:        JSON.stringify({ playerId, playerName: player.name, username: player.username, missingFields }),
         checklistItems,
-        assignToAll:   !assignedToId,   // true = claimable by any team member
-        assignedToId:  assignedToId ? parseInt(assignedToId) : null,
-        currentValue:  0,
-        targetValue:   missingFields.length,
+        assignToAll:  !assignedToId,
+        assignedToId: assignedToId ? parseInt(assignedToId) : null,
+        currentValue: 0,
+        targetValue:  missingFields.length,
       },
       include: {
-        createdBy: { select: { id: true, name: true, role: true } },
+        createdBy:  { select: { id: true, name: true, role: true } },
         assignedTo: { select: { id: true, name: true, role: true } },
       }
     });
@@ -500,6 +479,7 @@ app.post('/api/players/:id/assign-missing-info-task', authMiddleware, adminMiddl
     broadcastTaskUpdate('task_created', task);
     res.status(201).json({ data: task, message: 'Missing info task assigned successfully' });
   } catch (err) {
+    console.error('Assign missing info task error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2150,6 +2130,7 @@ app.patch('/api/tasks/:id/checklist', authMiddleware, async (req, res) => {
   }
 });
 
+
 // POST /api/tasks/:id/claim — any team member can claim an unclaimed MISSING_INFO task
 app.post('/api/tasks/:id/claim', authMiddleware, async (req, res) => {
   try {
@@ -2174,26 +2155,19 @@ app.post('/api/tasks/:id/claim', authMiddleware, async (req, res) => {
 
     const updated = await prisma.task.update({
       where: { id },
-      data: {
-        assignedToId: req.userId,
-        assignToAll: false,   // Remove from all-members view; only claimer sees it now
-        status: 'IN_PROGRESS'
-      },
+      data: { assignedToId: req.userId, assignToAll: false, status: 'IN_PROGRESS' },
       include: {
-        createdBy: { select: { id: true, name: true, role: true } },
-        assignedTo: { select: { id: true, name: true, role: true } },
-        subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
-        progressLogs: {
-          include: { user: { select: { id: true, name: true } } },
-          orderBy: { createdAt: 'desc' },
-          take: 20
-        }
+        createdBy:    { select: { id: true, name: true, role: true } },
+        assignedTo:   { select: { id: true, name: true, role: true } },
+        subTasks:     { include: { assignedTo: { select: { id: true, name: true } } } },
+        progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 }
       }
     });
 
     broadcastTaskUpdate('task_updated', updated);
     res.json({ data: updated, message: 'Task claimed successfully' });
   } catch (err) {
+    console.error('Claim task error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2220,8 +2194,6 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
     if (!playerId) return res.status(400).json({ error: 'No player linked to this task' });
 
     const { email, phone, snapchat, instagram, telegram, assignedMemberId } = req.body;
-
-    // Build player update — only include fields that were actually provided
     const playerUpdate = {};
     if (email     !== undefined) playerUpdate.email     = email     ? email.trim()     : null;
     if (phone     !== undefined) playerUpdate.phone     = phone     ? phone.trim()     : null;
@@ -2236,31 +2208,26 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
       return res.status(400).json({ error: 'No fields provided to update' });
     }
 
-    const updatedPlayer = await prisma.user.update({
-      where: { id: playerId },
-      data: playerUpdate,
-    });
+    const updatedPlayer = await prisma.user.update({ where: { id: playerId }, data: playerUpdate });
 
-    // Mark checklist items done for each field that now has a value
     const checklistItems = (task.checklistItems || []).map(item => {
       const key = item.fieldKey || item.label?.toLowerCase().replace(/ /g, '_');
       const nowFilled =
-        (key === 'email'           && updatedPlayer.email)     ||
-        (key === 'phone'           && updatedPlayer.phone)     ||
-        (key === 'snapchat'        && updatedPlayer.snapchat)  ||
-        (key === 'instagram'       && updatedPlayer.instagram) ||
-        (key === 'telegram'        && updatedPlayer.telegram)  ||
+        (key === 'email'           && updatedPlayer.email)        ||
+        (key === 'phone'           && updatedPlayer.phone)        ||
+        (key === 'snapchat'        && updatedPlayer.snapchat)     ||
+        (key === 'instagram'       && updatedPlayer.instagram)    ||
+        (key === 'telegram'        && updatedPlayer.telegram)     ||
         (key === 'assigned_member' && updatedPlayer.assignedToId);
-
       if (nowFilled && !item.done) {
         return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
       }
       return item;
     });
 
-    const doneCount    = checklistItems.filter(i => i.done).length;
-    const allRequired  = checklistItems.filter(i => i.required).every(i => i.done);
-    const anyDone      = checklistItems.some(i => i.done);
+    const doneCount   = checklistItems.filter(i => i.done).length;
+    const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
+    const anyDone     = checklistItems.some(i => i.done);
 
     const updatedTask = await prisma.task.update({
       where: { id },
@@ -2276,11 +2243,7 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
         createdBy:    { select: { id: true, name: true, role: true } },
         assignedTo:   { select: { id: true, name: true, role: true } },
         subTasks:     { include: { assignedTo: { select: { id: true, name: true } } } },
-        progressLogs: {
-          include: { user: { select: { id: true, name: true } } },
-          orderBy: { createdAt: 'desc' },
-          take: 20
-        }
+        progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 }
       }
     });
 
@@ -2288,12 +2251,11 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
     res.json({
       data:    updatedTask,
       player:  { ...updatedPlayer, password: undefined },
-      message: allRequired
-        ? 'All fields filled — task completed!'
-        : `Updated ${doneCount} field(s) successfully.`,
+      message: allRequired ? 'All fields filled — task completed!' : `Updated ${doneCount} field(s) successfully.`,
       allDone: allRequired,
     });
   } catch (err) {
+    console.error('Submit missing info error:', err);
     res.status(500).json({ error: err.message });
   }
 });
