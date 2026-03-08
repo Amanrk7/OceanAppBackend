@@ -415,9 +415,11 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
       referrals, friends, sources, initialDeposit, gameId,
     } = req.body;
 
-    if (!username || !name) {
-      return res.status(400).json({ error: 'Name and username, are required' });
-    }
+    const hasSocial = facebook || telegram || instagram || x || snapchat;
+
+if (!username || !name || !hasSocial) {
+  return res.status(400).json({ error: 'Name, username, and at least one social handle are required' });
+}
 
     // const existing = await prisma.user.findFirst({ where: { OR: [{ username },  ...(email ? [{ email }] : []),] } });
     const existing = await prisma.user.findFirst({
@@ -430,7 +432,8 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
 });
     if (existing) return res.status(409).json({ error: 'Username or email already exists' });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
     const resolvedTier = tier || 'BRONZE';
 
     const toArray = (val) => {
