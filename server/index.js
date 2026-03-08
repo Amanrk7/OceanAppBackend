@@ -419,7 +419,15 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Name and username, are required' });
     }
 
-    const existing = await prisma.user.findFirst({ where: { OR: [{ username }, { email }] } });
+    // const existing = await prisma.user.findFirst({ where: { OR: [{ username },  ...(email ? [{ email }] : []),] } });
+    const existing = await prisma.user.findFirst({
+  where: {
+    OR: [
+      { username },
+      ...(email ? [{ email }] : []),
+    ],
+  },
+});
     if (existing) return res.status(409).json({ error: 'Username or email already exists' });
 
     const hashedPassword = await bcrypt.hash(password, 10);
