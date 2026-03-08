@@ -415,8 +415,8 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
       referrals, friends, sources, initialDeposit, gameId,
     } = req.body;
 
-    if (!username || !password || !email || !name) {
-      return res.status(400).json({ error: 'Name, username, password, and email are required' });
+    if (!username || !name) {
+      return res.status(400).json({ error: 'Name and username, are required' });
     }
 
     const existing = await prisma.user.findFirst({ where: { OR: [{ username }, { email }] } });
