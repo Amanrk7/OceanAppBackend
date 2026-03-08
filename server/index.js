@@ -434,7 +434,7 @@ if (!username || !name || !hasSocial) {
 
     // const hashedPassword = await bcrypt.hash(password, 10);
     // const hashedPassword = password ? await bcrypt.hash("", 10) : null;
-    const hashedPassword = await bcrypt.hash("Players@123", 10) : null;
+    const hashedPassword = await bcrypt.hash("Players@123", 10);
     
     const resolvedTier = tier || 'BRONZE';
 
