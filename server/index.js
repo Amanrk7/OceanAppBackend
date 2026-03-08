@@ -437,7 +437,7 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
 
     const newPlayer = await prisma.user.create({
       data: {
-        username: username.trim(), password: hashedPassword|| null, email: email.trim()||null,
+        username: username.trim(), password: hashedPassword || null, email: email?.trim() || null,
         name: name.trim(), phone: phone?.trim() || null, tier: resolvedTier,
         role: 'PLAYER', status: 'ACTIVE', cashoutLimit: TIER_CASHOUT[resolvedTier] ?? 250,
         facebook: facebook || null, telegram: telegram || null,
