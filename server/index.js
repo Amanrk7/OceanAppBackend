@@ -368,22 +368,18 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
       where: { role: 'PLAYER' },
       select: {
         id: true, name: true, username: true, email: true, phone: true,
-        tier: true, createdAt: true, snapchat: true, instagram: true,
-        telegram: true, assignedToId: true,
-        assignedTo: { select: { id: true, name: true, role: true } },
+        tier: true, createdAt: true, snapchat: true, instagram: true, telegram: true,
       }
     });
 
-    const withMissing = players.map(p => {
-      const missing = [];
-      if (!p.email) missing.push('email');
-      if (!p.phone) missing.push('phone');
-      if (!p.snapchat) missing.push('snapchat');
-      if (!p.instagram) missing.push('instagram');
-      if (!p.telegram) missing.push('telegram');
-      if (!p.assignedToId) missing.push('assigned_member');
-      return { ...p, missingFields: missing, isCritical: missing.length >= 2 };
-    });
+    const CONTACT_FIELDS = ['email', 'phone', 'snapchat', 'instagram', 'telegram'];
+
+    const withMissing = players
+      .map(p => {
+        const missing = CONTACT_FIELDS.filter(f => !p[f] || String(p[f]).trim() === '');
+        return { ...p, missingFields: missing, isCritical: missing.length >= 3 };
+      })
+      .filter(p => p.missingFields.length > 0); // ← only players with actual missing fields
 
     withMissing.sort((a, b) => {
       if (b.isCritical !== a.isCritical) return b.isCritical ? 1 : -1;
@@ -396,9 +392,8 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
         total: withMissing.length,
         critical: withMissing.filter(p => p.isCritical).length,
         missingSnapchat: withMissing.filter(p => p.missingFields.includes('snapchat')).length,
-        missingPhone: withMissing.filter(p => p.missingFields.includes('phone')).length,
-        missingEmail: withMissing.filter(p => p.missingFields.includes('email')).length,
-        unassigned: withMissing.filter(p => p.missingFields.includes('assigned_member')).length,
+        missingPhone:    withMissing.filter(p => p.missingFields.includes('phone')).length,
+        missingEmail:    withMissing.filter(p => p.missingFields.includes('email')).length,
       }
     });
   } catch (err) {
@@ -406,81 +401,98 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/players/:id/assign-missing-info-task', authMiddleware, adminMiddleware, async (req, res) => {
+app.patch('/api/players/:id', authMiddleware, async (req, res) => {
   try {
-    const playerId = parseInt(req.params.id);
-    if (isNaN(playerId)) return res.status(400).json({ error: 'Invalid player ID' });
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
 
-    const { assignedToId, priority = 'MEDIUM' } = req.body;
+    const {
+      name, email, phone, tier, status, balance, cashoutLimit,
+      facebook, telegram, instagram, x, snapchat, source,
+      currentStreak, lastPlayedDate,
+    } = req.body;
 
-    const player = await prisma.user.findUnique({
-      where: { id: playerId },
-      select: { id: true, name: true, username: true, email: true, phone: true, snapchat: true, instagram: true, telegram: true, assignedToId: true }
-    });
-    if (!player) return res.status(404).json({ error: 'Player not found' });
-
-    const missingFields = [];
-    if (!player.email)        missingFields.push('email');
-    if (!player.phone)        missingFields.push('phone');
-    if (!player.snapchat)     missingFields.push('snapchat');
-    if (!player.instagram)    missingFields.push('instagram');
-    if (!player.telegram)     missingFields.push('telegram');
-    if (!player.assignedToId) missingFields.push('assigned_member');
-
-    if (missingFields.length === 0) {
-      return res.status(400).json({ error: 'Player has no missing fields' });
+    const updateData = {};
+    if (name        !== undefined) updateData.name        = name.trim();
+    if (email       !== undefined) updateData.email       = email?.trim() || null;
+    if (phone       !== undefined) updateData.phone       = phone?.trim() || null;
+    if (tier        !== undefined) {
+      updateData.tier = tier;
+      if (cashoutLimit === undefined) updateData.cashoutLimit = TIER_CASHOUT[tier] ?? 250;
     }
+    if (cashoutLimit  !== undefined) updateData.cashoutLimit  = parseFloat(cashoutLimit);
+    if (status        !== undefined) updateData.status        = status;
+    if (balance       !== undefined) updateData.balance       = parseFloat(balance);
+    if (facebook      !== undefined) updateData.facebook      = facebook      || null;
+    if (telegram      !== undefined) updateData.telegram      = telegram      || null;
+    if (instagram     !== undefined) updateData.instagram     = instagram     || null;
+    if (x             !== undefined) updateData.twitterX      = x             || null;
+    if (snapchat      !== undefined) updateData.snapchat      = snapchat      || null;
+    if (source        !== undefined) updateData.source        = source        || null;
+    if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
+    if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
 
-    // Prevent duplicate active tasks for the same player
-    const activeTasks = await prisma.task.findMany({
-      where: { taskType: 'MISSING_INFO', status: { in: ['PENDING', 'IN_PROGRESS'] } },
-      select: { id: true, notes: true }
-    });
-    const existing = activeTasks.find(t => {
-      try { return JSON.parse(t.notes || '{}').playerId === playerId; } catch { return false; }
-    });
-    if (existing) {
-      return res.status(409).json({ error: 'An active missing info task already exists for this player', existingTaskId: existing.id });
-    }
+    const updated = await prisma.user.update({ where: { id }, data: updateData });
 
-    const fieldLabel = f => ({ email: 'Email', phone: 'Phone', snapchat: 'Snapchat', instagram: 'Instagram', telegram: 'Telegram', assigned_member: 'Assigned Member' }[f] || f);
+    // ── Auto-sync MISSING_INFO task ────────────────────────────────────────────
+    try {
+      const activeTasks = await prisma.task.findMany({
+        where: { taskType: 'MISSING_INFO', status: { in: ['PENDING', 'IN_PROGRESS'] } },
+        include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true, role: true } } }
+      });
 
-    const checklistItems = missingFields.map((field, i) => ({
-      id:          `field_${field}_${Date.now()}_${i}`,
-      label:       fieldLabel(field),
-      required:    true,
-      done:        false,
-      completedBy: null,
-      completedAt: null,
-      fieldKey:    field,
-    }));
+      const linkedTask = activeTasks.find(t => {
+        try { return JSON.parse(t.notes || '{}').playerId === id; } catch { return false; }
+      });
 
-    const task = await prisma.task.create({
-      data: {
-        title:        `Missing Info: ${player.name} (@${player.username})`,
-        description:  `Collect contact info for @${player.username}. Missing: ${missingFields.map(fieldLabel).join(', ')}`,
-        taskType:     'MISSING_INFO',
-        priority:     priority.toUpperCase(),
-        status:       'PENDING',
-        createdById:  req.userId,
-        notes:        JSON.stringify({ playerId, playerName: player.name, username: player.username, missingFields }),
-        checklistItems,
-        assignToAll:  !assignedToId,
-        assignedToId: assignedToId ? parseInt(assignedToId) : null,
-        currentValue: 0,
-        targetValue:  missingFields.length,
-      },
-      include: {
-        createdBy:  { select: { id: true, name: true, role: true } },
-        assignedTo: { select: { id: true, name: true, role: true } },
+      if (linkedTask) {
+        const checklistItems = (linkedTask.checklistItems || []).map(item => {
+          const key = item.fieldKey || item.label?.toLowerCase().replace(/ /g, '_');
+          const nowFilled =
+            (key === 'email'     && updated.email)     ||
+            (key === 'phone'     && updated.phone)     ||
+            (key === 'snapchat'  && updated.snapchat)  ||
+            (key === 'instagram' && updated.instagram) ||
+            (key === 'telegram'  && updated.telegram);
+          if (nowFilled && !item.done) {
+            return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
+          }
+          return item;
+        });
+
+        const doneCount   = checklistItems.filter(i => i.done).length;
+        const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
+        const anyDone     = checklistItems.some(i => i.done);
+
+        const syncedTask = await prisma.task.update({
+          where: { id: linkedTask.id },
+          data: {
+            checklistItems,
+            currentValue: doneCount,
+            status:      allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
+            completedAt: allRequired ? new Date() : null,
+          },
+          include: {
+            createdBy:  { select: { id: true, name: true, role: true } },
+            assignedTo: { select: { id: true, name: true, role: true } },
+            subTasks:   { include: { assignedTo: { select: { id: true, name: true } } } },
+            progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
+          }
+        });
+
+        broadcastTaskUpdate('task_updated', syncedTask);
+        // Also broadcast player update so MissingPlayersPage refreshes
+        broadcastTaskUpdate('player_updated', { playerId: id });
       }
-    });
+    } catch (syncErr) {
+      console.error('Task sync error (non-fatal):', syncErr);
+    }
+    // ── End sync ───────────────────────────────────────────────────────────────
 
-    broadcastTaskUpdate('task_created', task);
-    res.status(201).json({ data: task, message: 'Missing info task assigned successfully' });
+    res.json({ data: { ...updated, password: undefined }, message: 'Player updated successfully' });
   } catch (err) {
-    console.error('Assign missing info task error:', err);
-    res.status(500).json({ error: err.message });
+    if (err.code === 'P2002') return res.status(409).json({ error: 'Email already in use by another player' });
+    res.status(500).json({ error: 'Failed to update player' });
   }
 });
 
@@ -2287,6 +2299,45 @@ app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
     broadcastTaskUpdate('task_updated', updated);
     res.json({ data: updated });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/tasks/:id/undo-completion — reopen a completed task
+app.post('/api/tasks/:id/undo-completion', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
+
+    const task = await prisma.task.findUnique({ where: { id } });
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (task.status !== 'COMPLETED') return res.status(400).json({ error: 'Task is not completed' });
+
+    // Reset every checklist item that was auto-completed (keep manually-verified ones if any)
+    const resetItems = (task.checklistItems || []).map(item => ({
+      ...item, done: false, completedBy: null, completedAt: null,
+    }));
+
+    const updated = await prisma.task.update({
+      where: { id },
+      data: {
+        status:       'IN_PROGRESS',
+        completedAt:  null,
+        currentValue: 0,
+        checklistItems: resetItems,
+      },
+      include: {
+        createdBy:    { select: { id: true, name: true, role: true } },
+        assignedTo:   { select: { id: true, name: true, role: true } },
+        subTasks:     { include: { assignedTo: { select: { id: true, name: true } } } },
+        progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
+      }
+    });
+
+    broadcastTaskUpdate('task_updated', updated);
+    res.json({ data: updated, message: 'Task reopened successfully' });
+  } catch (err) {
+    console.error('Undo completion error:', err);
     res.status(500).json({ error: err.message });
   }
 });
