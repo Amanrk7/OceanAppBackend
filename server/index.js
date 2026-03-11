@@ -663,6 +663,91 @@ if (!username || !name || !hasSocial) {
   }
 });
 
+// POST /api/players/:id/assign-missing-info-task
+app.post('/api/players/:id/assign-missing-info-task', authMiddleware, async (req, res) => {
+  try {
+    const playerId = parseInt(req.params.id);
+    if (isNaN(playerId)) return res.status(400).json({ error: 'Invalid player ID' });
+
+    const { assignedToId, priority = 'HIGH' } = req.body;
+
+    const player = await prisma.user.findUnique({
+      where: { id: playerId },
+      select: { id: true, name: true, username: true, email: true, phone: true, snapchat: true, instagram: true, telegram: true }
+    });
+    if (!player) return res.status(404).json({ error: 'Player not found' });
+
+    // Check if an active MISSING_INFO task already exists for this player
+    const existing = await prisma.task.findFirst({
+      where: {
+        taskType: 'MISSING_INFO',
+        status: { in: ['PENDING', 'IN_PROGRESS'] },
+        notes: { contains: `"playerId":${playerId}` }
+      },
+      include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true, role: true } } }
+    });
+
+    if (existing) {
+      // Update assignee if provided
+      const updated = await prisma.task.update({
+        where: { id: existing.id },
+        data: {
+          assignedToId: assignedToId ? parseInt(assignedToId) : null,
+          assignToAll: !assignedToId,
+          status: 'IN_PROGRESS',
+        },
+        include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true, role: true } } }
+      });
+      broadcastTaskUpdate('task_updated', updated);
+      return res.status(409).json({ existingTaskId: existing.id, data: updated, message: 'Task already exists — assignee updated' });
+    }
+
+    const CONTACT_FIELDS = ['email', 'phone', 'snapchat', 'instagram', 'telegram'];
+    const missingFields = CONTACT_FIELDS.filter(f => !player[f] || !String(player[f]).trim());
+
+    if (missingFields.length === 0) {
+      return res.status(400).json({ error: 'Player has no missing contact fields' });
+    }
+
+    const checklistItems = missingFields.map((field, i) => ({
+      id: `item_${Date.now()}_${i}`,
+      label: field.charAt(0).toUpperCase() + field.slice(1),
+      fieldKey: field,
+      required: true,
+      done: false,
+      completedBy: null,
+      completedAt: null,
+    }));
+
+    const task = await prisma.task.create({
+      data: {
+        title: `Collect missing info for ${player.name || player.username}`,
+        description: `Player @${player.username} is missing: ${missingFields.join(', ')}`,
+        taskType: 'MISSING_INFO',
+        priority: priority.toUpperCase(),
+        status: 'IN_PROGRESS',
+        createdById: req.userId,
+        assignedToId: assignedToId ? parseInt(assignedToId) : null,
+        assignToAll: !assignedToId,
+        targetValue: missingFields.length,
+        currentValue: 0,
+        checklistItems,
+        notes: JSON.stringify({ playerId, playerName: player.name, missingFields }),
+      },
+      include: {
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+      }
+    });
+
+    broadcastTaskUpdate('task_created', task);
+    res.status(201).json({ data: task, message: 'Missing info task created successfully' });
+  } catch (err) {
+    console.error('assign-missing-info-task error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/players/:id — single player (MUST be after all /players/xxx static routes)
 app.get('/api/players/:id', authMiddleware, async (req, res) => {
   try {
