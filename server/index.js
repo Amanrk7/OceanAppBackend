@@ -1270,7 +1270,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
 
     const [updatedPlayer, updatedWallet, tx] = await prisma.$transaction([
       prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
-      prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { decrement: cashoutAmt + feeAmt } } }),
+      // prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { decrement: cashoutAmt + feeAmt } } }),
       prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'WITHDRAWAL', amount: new Prisma.Decimal(cashoutAmt.toString()), status: 'COMPLETED', description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`, notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|${notes || ''}`, paymentMethod: null, gameId: game.id } }),
       prisma.game.update({ where: { id: game.id }, data: { pointStock: newStock, status: newGameStatus } }),
     ]);
@@ -1283,7 +1283,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
         amount: cashoutAmt, walletId, walletMethod: walletMethod || wallet.method,
         walletName: walletName || wallet.name, gameName: null,
         balanceBefore, balanceAfter: parseFloat(updatedPlayer.balance),
-        status: 'COMPLETED', timestamp: tx.createdAt,
+        status: 'PENDING', timestamp: tx.createdAt,
       },
       data: { playerBalance: parseFloat(updatedPlayer.balance), walletBalance: parseFloat(updatedWallet.balance) },
     });
@@ -1334,7 +1334,9 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       return {
         id: `TXN${String(t.id).padStart(6, '0')}`,
         playerId: t.userId, playerName: t.user?.name || '—', email: t.user?.email || '—',
-        type, bonusType, amount: parseFloat(t.amount), fee,
+        type, bonusType, amount: parseFloat(t.amount), 
+        paidAmount: parseFloat(t.paidAmount ?? 0),
+        fee,
         walletMethod, walletName, gameName, balanceBefore, balanceAfter,
         status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt),
       };
@@ -1423,6 +1425,141 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
     res.status(500).json({ error: 'Failed to undo transaction: ' + err.message });
   }
 });
+
+// ── PATCH /api/transactions/:id/approve ─────────────────────────
+// Admin marks a pending cashout as fully paid → COMPLETED
+// Deducts from wallet at this point (not at cashout creation)
+app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const transactionId = parseInt(req.params.transactionId);
+    if (isNaN(transactionId)) return res.status(400).json({ error: 'Invalid transaction ID' });
+
+    const tx = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+      include: { user: { select: { id: true, name: true, balance: true } } }
+    });
+    if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+    if (tx.type !== 'WITHDRAWAL') return res.status(400).json({ error: 'Only cashout transactions can be approved' });
+    if (tx.status === 'COMPLETED') return res.status(400).json({ error: 'Transaction is already completed' });
+    if (tx.status === 'CANCELLED') return res.status(400).json({ error: 'Cannot approve a cancelled transaction' });
+
+    const cashoutAmt = parseFloat(tx.amount);
+    const feeMatch = tx.notes?.match(/fee:([\d.]+)/);
+    const feeAmt = feeMatch ? parseFloat(feeMatch[1]) : 0;
+
+    // Find wallet from description
+    const walletMatch = tx.description?.match(/via ([^ ]+) - (.+)$/);
+    let wallet = null;
+    if (walletMatch) {
+      wallet = await prisma.wallet.findFirst({
+        where: { method: walletMatch[1], name: walletMatch[2] }
+      });
+    }
+    if (!wallet) return res.status(400).json({ error: 'Could not identify wallet for this cashout. Check description format.' });
+    if (wallet.balance < cashoutAmt + feeAmt) {
+      return res.status(400).json({ error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(cashoutAmt + feeAmt).toFixed(2)}.` });
+    }
+
+    const [updatedTx, updatedWallet] = await prisma.$transaction([
+      prisma.transaction.update({
+        where: { id: transactionId },
+        data: { status: 'COMPLETED', paidAmount: cashoutAmt, approvedBy: req.userId, approvedAt: new Date() }
+      }),
+      prisma.wallet.update({
+        where: { id: wallet.id },
+        data: { balance: { decrement: cashoutAmt + feeAmt } }
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      message: `Cashout #${transactionId} approved and marked as completed. Wallet debited $${(cashoutAmt + feeAmt).toFixed(2)}.`,
+      data: { transactionId, status: 'COMPLETED', walletBalance: parseFloat(updatedWallet.balance) }
+    });
+  } catch (err) {
+    console.error('Approve cashout error:', err);
+    res.status(500).json({ error: 'Approval failed: ' + err.message });
+  }
+});
+
+// ── POST /api/transactions/:id/partial-payment ───────────────────
+// Record a partial payment toward a pending cashout.
+// Debits the wallet by the partial amount immediately.
+// Auto-approves (→ COMPLETED) if fully paid.
+app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const transactionId = parseInt(req.params.transactionId);
+    if (isNaN(transactionId)) return res.status(400).json({ error: 'Invalid transaction ID' });
+
+    const { amount } = req.body;
+    const partialAmt = parseFloat(amount);
+    if (!partialAmt || partialAmt <= 0) return res.status(400).json({ error: 'amount must be a positive number' });
+
+    const tx = await prisma.transaction.findUnique({ where: { id: transactionId } });
+    if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+    if (tx.type !== 'WITHDRAWAL') return res.status(400).json({ error: 'Only cashout transactions support partial payments' });
+    if (tx.status === 'COMPLETED') return res.status(400).json({ error: 'Transaction is already fully paid' });
+    if (tx.status === 'CANCELLED') return res.status(400).json({ error: 'Cannot pay a cancelled transaction' });
+
+    const totalAmt = parseFloat(tx.amount);
+    const alreadyPaid = parseFloat(tx.paidAmount ?? 0);
+    const remaining = parseFloat((totalAmt - alreadyPaid).toFixed(2));
+
+    if (partialAmt > remaining) {
+      return res.status(400).json({
+        error: `Payment of $${partialAmt.toFixed(2)} exceeds remaining balance of $${remaining.toFixed(2)}.`
+      });
+    }
+
+    // Find wallet
+    const walletMatch = tx.description?.match(/via ([^ ]+) - (.+)$/);
+    let wallet = null;
+    if (walletMatch) {
+      wallet = await prisma.wallet.findFirst({ where: { method: walletMatch[1], name: walletMatch[2] } });
+    }
+    if (!wallet) return res.status(400).json({ error: 'Could not identify wallet for this cashout.' });
+    if (wallet.balance < partialAmt) {
+      return res.status(400).json({ error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${partialAmt.toFixed(2)}.` });
+    }
+
+    const newPaidAmount = parseFloat((alreadyPaid + partialAmt).toFixed(2));
+    const isFullyPaid = newPaidAmount >= totalAmt;
+
+    const [updatedTx, updatedWallet] = await prisma.$transaction([
+      prisma.transaction.update({
+        where: { id: transactionId },
+        data: {
+          paidAmount: newPaidAmount,
+          status: isFullyPaid ? 'COMPLETED' : 'PENDING',
+          ...(isFullyPaid ? { approvedBy: req.userId, approvedAt: new Date() } : {}),
+          // Append partial payment log to notes
+          notes: `${tx.notes || ''}|partial:${partialAmt.toFixed(2)}@${new Date().toISOString()}`
+        }
+      }),
+      prisma.wallet.update({
+        where: { id: wallet.id },
+        data: { balance: { decrement: partialAmt } }
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      message: isFullyPaid
+        ? `Final payment of $${partialAmt.toFixed(2)} recorded. Cashout #${transactionId} is now fully completed.`
+        : `Partial payment of $${partialAmt.toFixed(2)} recorded. $${(totalAmt - newPaidAmount).toFixed(2)} still remaining.`,
+      data: {
+        transactionId, paidAmount: newPaidAmount, totalAmount: totalAmt,
+        remaining: parseFloat((totalAmt - newPaidAmount).toFixed(2)),
+        status: updatedTx.status, fullyPaid: isFullyPaid,
+        walletBalance: parseFloat(updatedWallet.balance)
+      }
+    });
+  } catch (err) {
+    console.error('Partial payment error:', err);
+    res.status(500).json({ error: 'Partial payment failed: ' + err.message });
+  }
+});
+
 
 // ═══════════════════════════════════════════════════════════════
 // GAMES ENDPOINTS
