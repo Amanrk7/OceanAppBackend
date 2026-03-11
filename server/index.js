@@ -1265,7 +1265,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     if (cashoutAmt > game.pointStock) return res.status(400).json({ error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts.` });
 
     const balanceAfter = balanceBefore - cashoutAmt;
-    const newStock = game.pointStock - cashoutAmt;
+    const newStock = game.pointStock + cashoutAmt;
     const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
 
     const [updatedPlayer, updatedWallet, tx] = await prisma.$transaction([
