@@ -1166,7 +1166,9 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
 
     ops.push(prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter, currentStreak: newStreak, lastPlayedDate: now } }));
     ops.push(prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { increment: walletCredit } } }));
-    ops.push(prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'DEPOSIT', amount: new Prisma.Decimal(depositAmt.toString()), status: 'COMPLETED', description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`, notes: `fee:${feeAmt.toFixed(2)}|walletCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|${notes || ''}`, gameId: game.id, paymentMethod: null } }));
+    ops.push(prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'DEPOSIT', amount: new Prisma.Decimal(depositAmt.toString()), status: 'COMPLETED', description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`, notes: `fee:${feeAmt.toFixed(2)}|walnotes: `fee:${feeAmt.toFixed(2)}|walletCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`
+
+letCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|${notes || ''}`, gameId: game.id, paymentMethod: null } }));
 
     const newStock = game.pointStock - totalGameDeduction;
     const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
@@ -1278,7 +1280,8 @@ const [updatedPlayer, tx] = await prisma.$transaction([
       amount: new Prisma.Decimal(cashoutAmt.toString()),
       status: 'PENDING',   // ← KEY FIX
       description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
-      notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|${notes || ''}`,
+notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`
+
       paymentMethod: null,
       gameId: game.id,
     }
@@ -1337,12 +1340,25 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       const walletMatch = t.description?.match(/via ([^ ]+) - (.*?)$/);
       if (walletMatch) { walletMethod = walletMatch[1]; walletName = walletMatch[2]; }
 
+      // const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
+      // const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
+      // const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
+      // const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
+      // const feeMatch = t.notes?.match(/^fee:([\d.]+)/);
+      // const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
+
       const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
-      const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
-      const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
-      const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
-      const feeMatch = t.notes?.match(/^fee:([\d.]+)/);
-      const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
+const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
+const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
+const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
+const feeMatch = t.notes?.match(/fee:([\d.]+)/);
+const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
+
+// NEW: parse game stock snapshots
+const stockBeforeMatch = t.notes?.match(/gameStockBefore:([\d.]+)/);
+const stockAfterMatch  = t.notes?.match(/gameStockAfter:([\d.]+)/);
+const gameStockBefore  = stockBeforeMatch ? parseFloat(stockBeforeMatch[1]) : null;
+const gameStockAfter   = stockAfterMatch  ? parseFloat(stockAfterMatch[1])  : null;
 
       return {
         id: `TXN${String(t.id).padStart(6, '0')}`,
@@ -1351,7 +1367,8 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         paidAmount: parseFloat(t.paidAmount ?? 0),
         fee,
         walletMethod, walletName, gameName, balanceBefore, balanceAfter,
-        status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt),
+        status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt),gameStockBefore,
+gameStockAfter,
       };
     });
 
