@@ -1462,19 +1462,7 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
     const feeMatch = tx.notes?.match(/fee:([\d.]+)/);
     const feeAmt = feeMatch ? parseFloat(feeMatch[1]) : 0;
 
-    // Guard: if already fully paid somehow, just mark complete
-    if (remaining <= 0) {
-      const updated = await prisma.transaction.update({
-        where: { id: transactionId },
-        data: { status: 'COMPLETED', approvedBy: req.userId, approvedAt: new Date() }
-      });
-    return res.json({ success: true, message: `Cashout already fully paid. Marked complete.`, data: { transactionId, status: 'COMPLETED' } });
-    }
-    if (wallet.balance < remaining + feeAmt) {
-  return res.status(400).json({
-    error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(remaining + feeAmt).toFixed(2)} (remaining after partial payments).`
-  });
-}
+    
     // Find wallet from description
     const walletMatch = tx.description?.match(/via ([^ ]+) - (.+)$/);
     let wallet = null;
@@ -1488,6 +1476,19 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
       return res.status(400).json({ error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(cashoutAmt + feeAmt).toFixed(2)}.` });
     }
 
+    // Guard: if already fully paid somehow, just mark complete
+    if (remaining <= 0) {
+      const updated = await prisma.transaction.update({
+        where: { id: transactionId },
+        data: { status: 'COMPLETED', approvedBy: req.userId, approvedAt: new Date() }
+      });
+    return res.json({ success: true, message: `Cashout already fully paid. Marked complete.`, data: { transactionId, status: 'COMPLETED' } });
+    }
+    if (wallet.balance < remaining + feeAmt) {
+  return res.status(400).json({
+    error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(remaining + feeAmt).toFixed(2)} (remaining after partial payments).`
+  });
+}
     const [updatedTx, updatedWallet] = await prisma.$transaction([
   prisma.transaction.update({
     where: { id: transactionId },
