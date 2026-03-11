@@ -1163,7 +1163,9 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     const totalPlayerCredit = depositAmt + matchAmt + specialAmt + referralAmt;
     const balanceAfter = balanceBefore + totalPlayerCredit;
     const walletCredit = depositAmt - feeAmt;
-
+    const newStock = game.pointStock - totalGameDeduction;
+    
+    const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
     ops.push(prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter, currentStreak: newStreak, lastPlayedDate: now } }));
     ops.push(prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { increment: walletCredit } } }));
     ops.push(prisma.transaction.create({
@@ -1174,8 +1176,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       }
     }));
 
-    const newStock = game.pointStock - totalGameDeduction;
-    const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+
     ops.push(prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newStatus } }));
 
     if (bonusMatch) {
