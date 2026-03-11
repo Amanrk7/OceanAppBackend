@@ -1457,9 +1457,24 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
     if (tx.status === 'CANCELLED') return res.status(400).json({ error: 'Cannot approve a cancelled transaction' });
 
     const cashoutAmt = parseFloat(tx.amount);
+    const alreadyPaid = parseFloat(tx.paidAmount ?? 0);
+    const remaining = parseFloat((cashoutAmt - alreadyPaid).toFixed(2));
     const feeMatch = tx.notes?.match(/fee:([\d.]+)/);
     const feeAmt = feeMatch ? parseFloat(feeMatch[1]) : 0;
 
+    // Guard: if already fully paid somehow, just mark complete
+    if (remaining <= 0) {
+      const updated = await prisma.transaction.update({
+        where: { id: transactionId },
+        data: { status: 'COMPLETED', approvedBy: req.userId, approvedAt: new Date() }
+      });
+    return res.json({ success: true, message: `Cashout already fully paid. Marked complete.`, data: { transactionId, status: 'COMPLETED' } });
+    }
+    if (wallet.balance < remaining + feeAmt) {
+  return res.status(400).json({
+    error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(remaining + feeAmt).toFixed(2)} (remaining after partial payments).`
+  });
+}
     // Find wallet from description
     const walletMatch = tx.description?.match(/via ([^ ]+) - (.+)$/);
     let wallet = null;
@@ -1474,15 +1489,20 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction([
-      prisma.transaction.update({
-        where: { id: transactionId },
-        data: { status: 'COMPLETED', paidAmount: cashoutAmt, approvedBy: req.userId, approvedAt: new Date() }
-      }),
-      prisma.wallet.update({
-        where: { id: wallet.id },
-        data: { balance: { decrement: cashoutAmt + feeAmt } }
-      }),
-    ]);
+  prisma.transaction.update({
+    where: { id: transactionId },
+    data: {
+      status: 'COMPLETED',
+      paidAmount: cashoutAmt,          // now fully paid = total
+      approvedBy: req.userId,
+      approvedAt: new Date(),
+    }
+  }),
+  prisma.wallet.update({
+    where: { id: wallet.id },
+    data: { balance: { decrement: remaining + feeAmt } }  // ← only deduct what's left
+  }),
+]);
 
     res.json({
       success: true,
