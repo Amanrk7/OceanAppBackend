@@ -1268,25 +1268,38 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     const newStock = game.pointStock + cashoutAmt;
     const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
 
-    const [updatedPlayer, updatedWallet, tx] = await prisma.$transaction([
-      prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
-      // prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { decrement: cashoutAmt + feeAmt } } }),
-      prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'WITHDRAWAL', amount: new Prisma.Decimal(cashoutAmt.toString()), status: 'COMPLETED', description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`, notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|${notes || ''}`, paymentMethod: null, gameId: game.id } }),
-      prisma.game.update({ where: { id: game.id }, data: { pointStock: newStock, status: newGameStatus } }),
-    ]);
+    // ✅ FIXED:
+const [updatedPlayer, tx] = await prisma.$transaction([
+  prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
+  prisma.transaction.create({
+    data: {
+      userId: parseInt(playerId),
+      type: 'WITHDRAWAL',
+      amount: new Prisma.Decimal(cashoutAmt.toString()),
+      status: 'PENDING',   // ← KEY FIX
+      description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+      notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|${notes || ''}`,
+      paymentMethod: null,
+      gameId: game.id,
+    }
+  }),
+  prisma.game.update({ where: { id: game.id }, data: { pointStock: newStock, status: newGameStatus } }),
+]);
 
-    res.status(201).json({
-      success: true,
-      message: `Cashout of $${cashoutAmt.toFixed(2)} recorded for ${player.name}.`,
-      transaction: {
-        id: tx.id, playerId: player.id, playerName: player.name, type: 'Cashout',
-        amount: cashoutAmt, walletId, walletMethod: walletMethod || wallet.method,
-        walletName: walletName || wallet.name, gameName: null,
-        balanceBefore, balanceAfter: parseFloat(updatedPlayer.balance),
-        status: 'PENDING', timestamp: tx.createdAt,
-      },
-      data: { playerBalance: parseFloat(updatedPlayer.balance), walletBalance: parseFloat(updatedWallet.balance) },
-    });
+res.status(201).json({
+  success: true,
+  message: `Cashout of $${cashoutAmt.toFixed(2)} recorded for ${player.name}. Status: Pending — approve from Transactions page.`,
+  transaction: {
+    id: tx.id, playerId: player.id, playerName: player.name, type: 'Cashout',
+    amount: cashoutAmt, walletId,
+    walletMethod: walletMethod || wallet.method,
+    walletName: walletName || wallet.name,
+    balanceBefore, balanceAfter: parseFloat(updatedPlayer.balance),
+    status: 'PENDING',
+    timestamp: tx.createdAt,
+  },
+  data: { playerBalance: parseFloat(updatedPlayer.balance) },  // ← walletBalance removed (wallet not touched yet)
+});
   } catch (err) {
     console.error('Cashout error:', err);
     res.status(500).json({ error: 'Cashout failed: ' + err.message });
