@@ -392,8 +392,8 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
         total: withMissing.length,
         critical: withMissing.filter(p => p.isCritical).length,
         missingSnapchat: withMissing.filter(p => p.missingFields.includes('snapchat')).length,
-        missingPhone:    withMissing.filter(p => p.missingFields.includes('phone')).length,
-        missingEmail:    withMissing.filter(p => p.missingFields.includes('email')).length,
+        missingPhone: withMissing.filter(p => p.missingFields.includes('phone')).length,
+        missingEmail: withMissing.filter(p => p.missingFields.includes('email')).length,
       }
     });
   } catch (err) {
@@ -413,22 +413,22 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     } = req.body;
 
     const updateData = {};
-    if (name        !== undefined) updateData.name        = name.trim();
-    if (email       !== undefined) updateData.email       = email?.trim() || null;
-    if (phone       !== undefined) updateData.phone       = phone?.trim() || null;
-    if (tier        !== undefined) {
+    if (name !== undefined) updateData.name = name.trim();
+    if (email !== undefined) updateData.email = email?.trim() || null;
+    if (phone !== undefined) updateData.phone = phone?.trim() || null;
+    if (tier !== undefined) {
       updateData.tier = tier;
       if (cashoutLimit === undefined) updateData.cashoutLimit = TIER_CASHOUT[tier] ?? 250;
     }
-    if (cashoutLimit  !== undefined) updateData.cashoutLimit  = parseFloat(cashoutLimit);
-    if (status        !== undefined) updateData.status        = status;
-    if (balance       !== undefined) updateData.balance       = parseFloat(balance);
-    if (facebook      !== undefined) updateData.facebook      = facebook      || null;
-    if (telegram      !== undefined) updateData.telegram      = telegram      || null;
-    if (instagram     !== undefined) updateData.instagram     = instagram     || null;
-    if (x             !== undefined) updateData.twitterX      = x             || null;
-    if (snapchat      !== undefined) updateData.snapchat      = snapchat      || null;
-    if (source        !== undefined) updateData.source        = source        || null;
+    if (cashoutLimit !== undefined) updateData.cashoutLimit = parseFloat(cashoutLimit);
+    if (status !== undefined) updateData.status = status;
+    if (balance !== undefined) updateData.balance = parseFloat(balance);
+    if (facebook !== undefined) updateData.facebook = facebook || null;
+    if (telegram !== undefined) updateData.telegram = telegram || null;
+    if (instagram !== undefined) updateData.instagram = instagram || null;
+    if (x !== undefined) updateData.twitterX = x || null;
+    if (snapchat !== undefined) updateData.snapchat = snapchat || null;
+    if (source !== undefined) updateData.source = source || null;
     if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
     if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
 
@@ -449,33 +449,33 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
         const checklistItems = (linkedTask.checklistItems || []).map(item => {
           const key = item.fieldKey || item.label?.toLowerCase().replace(/ /g, '_');
           const nowFilled =
-            (key === 'email'     && updated.email)     ||
-            (key === 'phone'     && updated.phone)     ||
-            (key === 'snapchat'  && updated.snapchat)  ||
+            (key === 'email' && updated.email) ||
+            (key === 'phone' && updated.phone) ||
+            (key === 'snapchat' && updated.snapchat) ||
             (key === 'instagram' && updated.instagram) ||
-            (key === 'telegram'  && updated.telegram);
+            (key === 'telegram' && updated.telegram);
           if (nowFilled && !item.done) {
             return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
           }
           return item;
         });
 
-        const doneCount   = checklistItems.filter(i => i.done).length;
+        const doneCount = checklistItems.filter(i => i.done).length;
         const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
-        const anyDone     = checklistItems.some(i => i.done);
+        const anyDone = checklistItems.some(i => i.done);
 
         const syncedTask = await prisma.task.update({
           where: { id: linkedTask.id },
           data: {
             checklistItems,
             currentValue: doneCount,
-            status:      allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
+            status: allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
             completedAt: allRequired ? new Date() : null,
           },
           include: {
-            createdBy:  { select: { id: true, name: true, role: true } },
+            createdBy: { select: { id: true, name: true, role: true } },
             assignedTo: { select: { id: true, name: true, role: true } },
-            subTasks:   { include: { assignedTo: { select: { id: true, name: true } } } },
+            subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
             progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
           }
         });
@@ -509,25 +509,25 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
 
     const hasSocial = facebook || telegram || instagram || x || snapchat;
 
-if (!username || !name || !hasSocial) {
-  return res.status(400).json({ error: 'Name, username, and at least one social handle are required' });
-}
+    if (!username || !name || !hasSocial) {
+      return res.status(400).json({ error: 'Name, username, and at least one social handle are required' });
+    }
 
     // const existing = await prisma.user.findFirst({ where: { OR: [{ username },  ...(email ? [{ email }] : []),] } });
     const existing = await prisma.user.findFirst({
-  where: {
-    OR: [
-      { username },
-      ...(email ? [{ email }] : []),
-    ],
-  },
-});
+      where: {
+        OR: [
+          { username },
+          ...(email ? [{ email }] : []),
+        ],
+      },
+    });
     if (existing) return res.status(409).json({ error: 'Username or email already exists' });
 
     // const hashedPassword = await bcrypt.hash(password, 10);
     // const hashedPassword = password ? await bcrypt.hash("", 10) : null;
     const hashedPassword = await bcrypt.hash("Players@123", 10);
-    
+
     const resolvedTier = tier || 'BRONZE';
 
     const toArray = (val) => {
@@ -1166,9 +1166,13 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
 
     ops.push(prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter, currentStreak: newStreak, lastPlayedDate: now } }));
     ops.push(prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { increment: walletCredit } } }));
-    ops.push(prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'DEPOSIT', amount: new Prisma.Decimal(depositAmt.toString()), status: 'COMPLETED', description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`, notes: `fee:${feeAmt.toFixed(2)}|walnotes: `fee:${feeAmt.toFixed(2)}|walletCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`
-
-letCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|${notes || ''}`, gameId: game.id, paymentMethod: null } }));
+    ops.push(prisma.transaction.create({
+      data: {
+        userId: parseInt(playerId), type: 'DEPOSIT', amount: new Prisma.Decimal(depositAmt.toString()), status: 'COMPLETED', description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+        notes: `fee:${feeAmt.toFixed(2)}|walletCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
+        gameId: game.id, paymentMethod: null
+      }
+    }));
 
     const newStock = game.pointStock - totalGameDeduction;
     const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
@@ -1271,38 +1275,37 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
 
     // ✅ FIXED:
-const [updatedPlayer, tx] = await prisma.$transaction([
-  prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
-  prisma.transaction.create({
-    data: {
-      userId: parseInt(playerId),
-      type: 'WITHDRAWAL',
-      amount: new Prisma.Decimal(cashoutAmt.toString()),
-      status: 'PENDING',   // ← KEY FIX
-      description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
-notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`
+    const [updatedPlayer, tx] = await prisma.$transaction([
+      prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
+      prisma.transaction.create({
+        data: {
+          userId: parseInt(playerId),
+          type: 'WITHDRAWAL',
+          amount: new Prisma.Decimal(cashoutAmt.toString()),
+          status: 'PENDING',   // ← KEY FIX
+          description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+          notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
+          paymentMethod: null,
+          gameId: game.id,
+        }
+      }),
+      prisma.game.update({ where: { id: game.id }, data: { pointStock: newStock, status: newGameStatus } }),
+    ]);
 
-      paymentMethod: null,
-      gameId: game.id,
-    }
-  }),
-  prisma.game.update({ where: { id: game.id }, data: { pointStock: newStock, status: newGameStatus } }),
-]);
-
-res.status(201).json({
-  success: true,
-  message: `Cashout of $${cashoutAmt.toFixed(2)} recorded for ${player.name}. Status: Pending — approve from Transactions page.`,
-  transaction: {
-    id: tx.id, playerId: player.id, playerName: player.name, type: 'Cashout',
-    amount: cashoutAmt, walletId,
-    walletMethod: walletMethod || wallet.method,
-    walletName: walletName || wallet.name,
-    balanceBefore, balanceAfter: parseFloat(updatedPlayer.balance),
-    status: 'PENDING',
-    timestamp: tx.createdAt,
-  },
-  data: { playerBalance: parseFloat(updatedPlayer.balance) },  // ← walletBalance removed (wallet not touched yet)
-});
+    res.status(201).json({
+      success: true,
+      message: `Cashout of $${cashoutAmt.toFixed(2)} recorded for ${player.name}. Status: Pending — approve from Transactions page.`,
+      transaction: {
+        id: tx.id, playerId: player.id, playerName: player.name, type: 'Cashout',
+        amount: cashoutAmt, walletId,
+        walletMethod: walletMethod || wallet.method,
+        walletName: walletName || wallet.name,
+        balanceBefore, balanceAfter: parseFloat(updatedPlayer.balance),
+        status: 'PENDING',
+        timestamp: tx.createdAt,
+      },
+      data: { playerBalance: parseFloat(updatedPlayer.balance) },  // ← walletBalance removed (wallet not touched yet)
+    });
   } catch (err) {
     console.error('Cashout error:', err);
     res.status(500).json({ error: 'Cashout failed: ' + err.message });
@@ -1348,27 +1351,27 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       // const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
 
       const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
-const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
-const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
-const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
-const feeMatch = t.notes?.match(/fee:([\d.]+)/);
-const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
+      const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
+      const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
+      const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
+      const feeMatch = t.notes?.match(/fee:([\d.]+)/);
+      const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
 
-// NEW: parse game stock snapshots
-const stockBeforeMatch = t.notes?.match(/gameStockBefore:([\d.]+)/);
-const stockAfterMatch  = t.notes?.match(/gameStockAfter:([\d.]+)/);
-const gameStockBefore  = stockBeforeMatch ? parseFloat(stockBeforeMatch[1]) : null;
-const gameStockAfter   = stockAfterMatch  ? parseFloat(stockAfterMatch[1])  : null;
+      // NEW: parse game stock snapshots
+      const stockBeforeMatch = t.notes?.match(/gameStockBefore:([\d.]+)/);
+      const stockAfterMatch = t.notes?.match(/gameStockAfter:([\d.]+)/);
+      const gameStockBefore = stockBeforeMatch ? parseFloat(stockBeforeMatch[1]) : null;
+      const gameStockAfter = stockAfterMatch ? parseFloat(stockAfterMatch[1]) : null;
 
       return {
         id: `TXN${String(t.id).padStart(6, '0')}`,
         playerId: t.userId, playerName: t.user?.name || '—', email: t.user?.email || '—',
-        type, bonusType, amount: parseFloat(t.amount), 
+        type, bonusType, amount: parseFloat(t.amount),
         paidAmount: parseFloat(t.paidAmount ?? 0),
         fee,
         walletMethod, walletName, gameName, balanceBefore, balanceAfter,
-        status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt),gameStockBefore,
-gameStockAfter,
+        status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt), gameStockBefore,
+        gameStockAfter,
       };
     });
 
@@ -1479,7 +1482,7 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
     const feeMatch = tx.notes?.match(/fee:([\d.]+)/);
     const feeAmt = feeMatch ? parseFloat(feeMatch[1]) : 0;
 
-    
+
     // Find wallet from description
     const walletMatch = tx.description?.match(/via ([^ ]+) - (.+)$/);
     let wallet = null;
@@ -1499,28 +1502,28 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
         where: { id: transactionId },
         data: { status: 'COMPLETED', approvedBy: req.userId, approvedAt: new Date() }
       });
-    return res.json({ success: true, message: `Cashout already fully paid. Marked complete.`, data: { transactionId, status: 'COMPLETED' } });
+      return res.json({ success: true, message: `Cashout already fully paid. Marked complete.`, data: { transactionId, status: 'COMPLETED' } });
     }
     if (wallet.balance < remaining + feeAmt) {
-  return res.status(400).json({
-    error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(remaining + feeAmt).toFixed(2)} (remaining after partial payments).`
-  });
-}
-    const [updatedTx, updatedWallet] = await prisma.$transaction([
-  prisma.transaction.update({
-    where: { id: transactionId },
-    data: {
-      status: 'COMPLETED',
-      paidAmount: cashoutAmt,          // now fully paid = total
-      approvedBy: req.userId,
-      approvedAt: new Date(),
+      return res.status(400).json({
+        error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(remaining + feeAmt).toFixed(2)} (remaining after partial payments).`
+      });
     }
-  }),
-  prisma.wallet.update({
-    where: { id: wallet.id },
-    data: { balance: { decrement: remaining + feeAmt } }  // ← only deduct what's left
-  }),
-]);
+    const [updatedTx, updatedWallet] = await prisma.$transaction([
+      prisma.transaction.update({
+        where: { id: transactionId },
+        data: {
+          status: 'COMPLETED',
+          paidAmount: cashoutAmt,          // now fully paid = total
+          approvedBy: req.userId,
+          approvedAt: new Date(),
+        }
+      }),
+      prisma.wallet.update({
+        where: { id: wallet.id },
+        data: { balance: { decrement: remaining + feeAmt } }  // ← only deduct what's left
+      }),
+    ]);
 
     res.json({
       success: true,
@@ -2327,21 +2330,21 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
         : null,
       isDaily: !!isDaily,
     };
-if (true) { // <- wrapper so this file is valid JS; remove when copying
- if (assignToAll) {
-  const task = await prisma.task.create({
-    data: { ...baseData, assignedToId: null, assignToAll: true },
-    include: {
-      createdBy:  { select: { id: true, name: true, role: true } },
-      assignedTo: { select: { id: true, name: true, role: true } },
-      subTasks:   { include: { assignedTo: { select: { id: true, name: true } } } },
-      progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 10 },
-    },
-  });
-  broadcastTaskUpdate('task_created', task);
-  return res.status(201).json({ data: task, message: 'Task open to all members' });
-}
-}
+    if (true) { // <- wrapper so this file is valid JS; remove when copying
+      if (assignToAll) {
+        const task = await prisma.task.create({
+          data: { ...baseData, assignedToId: null, assignToAll: true },
+          include: {
+            createdBy: { select: { id: true, name: true, role: true } },
+            assignedTo: { select: { id: true, name: true, role: true } },
+            subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+            progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 10 },
+          },
+        });
+        broadcastTaskUpdate('task_created', task);
+        return res.status(201).json({ data: task, message: 'Task open to all members' });
+      }
+    }
 
     const task = await prisma.task.create({
       data: { ...baseData, assignedToId: assignedToId ? parseInt(assignedToId) : null },
@@ -2429,9 +2432,9 @@ app.post('/api/tasks/:id/claim', authMiddleware, async (req, res) => {
       where: { id },
       data: { assignedToId: req.userId, assignToAll: false, status: 'IN_PROGRESS' },
       include: {
-        createdBy:    { select: { id: true, name: true, role: true } },
-        assignedTo:   { select: { id: true, name: true, role: true } },
-        subTasks:     { include: { assignedTo: { select: { id: true, name: true } } } },
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
         progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 }
       }
     });
@@ -2467,11 +2470,11 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
 
     const { email, phone, snapchat, instagram, telegram, assignedMemberId } = req.body;
     const playerUpdate = {};
-    if (email     !== undefined) playerUpdate.email     = email     ? email.trim()     : null;
-    if (phone     !== undefined) playerUpdate.phone     = phone     ? phone.trim()     : null;
-    if (snapchat  !== undefined) playerUpdate.snapchat  = snapchat  ? snapchat.trim()  : null;
+    if (email !== undefined) playerUpdate.email = email ? email.trim() : null;
+    if (phone !== undefined) playerUpdate.phone = phone ? phone.trim() : null;
+    if (snapchat !== undefined) playerUpdate.snapchat = snapchat ? snapchat.trim() : null;
     if (instagram !== undefined) playerUpdate.instagram = instagram ? instagram.trim() : null;
-    if (telegram  !== undefined) playerUpdate.telegram  = telegram  ? telegram.trim()  : null;
+    if (telegram !== undefined) playerUpdate.telegram = telegram ? telegram.trim() : null;
     if (assignedMemberId !== undefined) {
       playerUpdate.assignedToId = assignedMemberId ? parseInt(assignedMemberId) : null;
     }
@@ -2485,11 +2488,11 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
     const checklistItems = (task.checklistItems || []).map(item => {
       const key = item.fieldKey || item.label?.toLowerCase().replace(/ /g, '_');
       const nowFilled =
-        (key === 'email'           && updatedPlayer.email)        ||
-        (key === 'phone'           && updatedPlayer.phone)        ||
-        (key === 'snapchat'        && updatedPlayer.snapchat)     ||
-        (key === 'instagram'       && updatedPlayer.instagram)    ||
-        (key === 'telegram'        && updatedPlayer.telegram)     ||
+        (key === 'email' && updatedPlayer.email) ||
+        (key === 'phone' && updatedPlayer.phone) ||
+        (key === 'snapchat' && updatedPlayer.snapchat) ||
+        (key === 'instagram' && updatedPlayer.instagram) ||
+        (key === 'telegram' && updatedPlayer.telegram) ||
         (key === 'assigned_member' && updatedPlayer.assignedToId);
       if (nowFilled && !item.done) {
         return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
@@ -2497,32 +2500,32 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
       return item;
     });
 
-    const doneCount   = checklistItems.filter(i => i.done).length;
+    const doneCount = checklistItems.filter(i => i.done).length;
     const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
-    const anyDone     = checklistItems.some(i => i.done);
+    const anyDone = checklistItems.some(i => i.done);
 
     const updatedTask = await prisma.task.update({
       where: { id },
       data: {
         checklistItems,
         currentValue: doneCount,
-        status:       allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
-        completedAt:  allRequired ? new Date() : null,
+        status: allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
+        completedAt: allRequired ? new Date() : null,
         assignedToId: task.assignedToId || req.userId,
-        assignToAll:  false,
+        assignToAll: false,
       },
       include: {
-        createdBy:    { select: { id: true, name: true, role: true } },
-        assignedTo:   { select: { id: true, name: true, role: true } },
-        subTasks:     { include: { assignedTo: { select: { id: true, name: true } } } },
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
         progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 }
       }
     });
 
     broadcastTaskUpdate('task_updated', updatedTask);
     res.json({
-      data:    updatedTask,
-      player:  { ...updatedPlayer, password: undefined },
+      data: updatedTask,
+      player: { ...updatedPlayer, password: undefined },
       message: allRequired ? 'All fields filled — task completed!' : `Updated ${doneCount} field(s) successfully.`,
       allDone: allRequired,
     });
@@ -2581,15 +2584,15 @@ app.post('/api/tasks/:id/undo-completion', authMiddleware, async (req, res) => {
     const updated = await prisma.task.update({
       where: { id },
       data: {
-        status:       'IN_PROGRESS',
-        completedAt:  null,
+        status: 'IN_PROGRESS',
+        completedAt: null,
         currentValue: 0,
         checklistItems: resetItems,
       },
       include: {
-        createdBy:    { select: { id: true, name: true, role: true } },
-        assignedTo:   { select: { id: true, name: true, role: true } },
-        subTasks:     { include: { assignedTo: { select: { id: true, name: true } } } },
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
         progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
       }
     });
