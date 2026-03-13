@@ -156,6 +156,37 @@ app.get('/api/user', authMiddleware, async (req, res) => {
 
 const TIER_CASHOUT = { BRONZE: 250, SILVER: 500, GOLD: 750 };
 
+function computeFreezeStatus(player, freezeRecord) {
+  const now = new Date();
+  const streak = player.currentStreak || 0;
+
+  if (!streak || !player.lastPlayedDate) {
+    return { isFrozen: false, freezeUntil: null, frozenAt: null, isAutoFreeze: false, streakBroken: streak === 0 };
+  }
+
+  const lastPlayed = new Date(player.lastPlayedDate);
+  const streakBreaksAt = new Date(lastPlayed.getTime() + 24 * 3_600_000);
+  const autoFreezeUntil = new Date(lastPlayed.getTime() + 48 * 3_600_000);
+
+  if (now < streakBreaksAt) {
+    return { isFrozen: false, freezeUntil: null, frozenAt: null, isAutoFreeze: false, streakBroken: false };
+  }
+
+  if (freezeRecord) {
+    const until = new Date(freezeRecord.freezeUntil);
+    if (until > now) {
+      return { isFrozen: true, freezeUntil: until, frozenAt: freezeRecord.frozenAt, isAutoFreeze: !freezeRecord.frozenById, note: freezeRecord.note, streakBroken: false };
+    }
+    return { isFrozen: false, freezeUntil: null, frozenAt: null, isAutoFreeze: false, streakBroken: true };
+  }
+
+  if (now < autoFreezeUntil) {
+    return { isFrozen: true, freezeUntil: autoFreezeUntil, frozenAt: streakBreaksAt, isAutoFreeze: true, note: 'Auto-frozen: 24h grace period', streakBroken: false };
+  }
+
+  return { isFrozen: false, freezeUntil: null, frozenAt: null, isAutoFreeze: false, streakBroken: true };
+}
+
 const statusToAttendance = (status) => {
   const map = { ACTIVE: 'active', CRITICAL: 'critical', HIGHLY_CRITICAL: 'highly-critical', INACTIVE: 'inactive' };
   return map[status] || 'active';
@@ -217,6 +248,8 @@ function shapePlayer(user) {
         walletMethod, walletName, gameName,
         weeklyDepositTotal: parseFloat(weeklyDepositTotal.toFixed(2)),
         date: fmtTXDate(t.createdAt),
+        gameStockBefore: (() => { const m = (t.notes || '').match(/gameStockBefore:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
+        gameStockAfter: (() => { const m = (t.notes || '').match(/gameStockAfter:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
       };
     });
 
@@ -308,6 +341,13 @@ app.get('/api/players', authMiddleware, async (req, res) => {
     const total = statusFiltered.length;
     const paginated = statusFiltered.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
+    const freezeRecords = await prisma.streakFreeze.findMany({
+      where: { userId: { in: paginated.map(p => p.id) } },
+    }).catch(() => []);
+    const freezeMap = {};
+    freezeRecords.forEach(f => { freezeMap[f.userId] = f; });
+
+
     const formatted = paginated.map(p => {
       const dynamicStatus = computeStatus(p.id);
       return {
@@ -325,6 +365,10 @@ app.get('/api/players', authMiddleware, async (req, res) => {
         bonusTracker: { availableBonus: p.bonuses.reduce((sum, b) => sum + parseFloat(b.amount), 0) },
         referralsList: p.referrals.map(r => r.id),
         lastLoginAt: fmtTX(p.lastLoginAt), createdAt: fmtTXDate(p.createdAt),
+        streakFreeze: computeFreezeStatus(
+          { currentStreak: p.currentStreak || 0, lastPlayedDate: p.lastPlayedDate },
+          freezeMap[p.id] || null
+        ),
       };
     });
 
@@ -766,8 +810,18 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
       },
     });
 
+    // if (!user) return res.status(404).json({ error: 'Player not found' });
+    // res.json({ data: shapePlayer(user) });
+
+
     if (!user) return res.status(404).json({ error: 'Player not found' });
-    res.json({ data: shapePlayer(user) });
+    const freezeRecord = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
+    const shaped = shapePlayer(user);
+    shaped.streakFreeze = computeFreezeStatus(
+      { currentStreak: user.currentStreak || 0, lastPlayedDate: user.lastPlayedDate },
+      freezeRecord
+    );
+    res.json({ data: shaped });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch player' });
   }
@@ -835,6 +889,97 @@ app.delete('/api/players/:id', authMiddleware, adminMiddleware, async (req, res)
     res.status(500).json({ error: 'Failed to delete player' });
   }
 });
+
+// ═══════════════════════════════════════════════════════════════
+// STREAK FREEZE ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/players/:id/streak/freeze-status', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+    const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true, lastPlayedDate: true } });
+    if (!player) return res.status(404).json({ error: 'Player not found' });
+    const freezeRecord = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
+    res.json({ data: { ...computeFreezeStatus(player, freezeRecord), existingFreeze: freezeRecord } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/players/:id/streak/freeze', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+
+    const { hours = 24, note = '' } = req.body;
+    const hoursNum = parseFloat(hours);
+    if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
+      return res.status(400).json({ error: 'hours must be between 1 and 720' });
+
+    const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true, lastPlayedDate: true } });
+    if (!player) return res.status(404).json({ error: 'Player not found' });
+    if (!player.currentStreak) return res.status(400).json({ error: 'Player has no active streak to freeze' });
+
+    const freezeUntil = new Date(Date.now() + hoursNum * 3_600_000);
+    const freeze = await prisma.streakFreeze.upsert({
+      where: { userId: id },
+      create: { userId: id, freezeUntil, frozenById: req.userId, note: note || `Frozen ${hoursNum}h by staff` },
+      update: { freezeUntil, frozenById: req.userId, frozenAt: new Date(), note: note || `Frozen ${hoursNum}h by staff` },
+    });
+
+    broadcastTaskUpdate('player_updated', { playerId: id });
+    res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak frozen until ${fmtTX(freeze.freezeUntil)}` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/players/:id/streak/extend-freeze', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+
+    const { hours = 24, note = '' } = req.body;
+    const hoursNum = parseFloat(hours);
+    if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
+      return res.status(400).json({ error: 'hours must be between 1 and 720' });
+
+    const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
+    if (!player) return res.status(404).json({ error: 'Player not found' });
+
+    const existing = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
+    const base = existing && new Date(existing.freezeUntil) > new Date() ? new Date(existing.freezeUntil) : new Date();
+    const newUntil = new Date(base.getTime() + hoursNum * 3_600_000);
+
+    const freeze = await prisma.streakFreeze.upsert({
+      where: { userId: id },
+      create: { userId: id, freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
+      update: { freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
+    });
+
+    broadcastTaskUpdate('player_updated', { playerId: id });
+    res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak freeze extended until ${fmtTX(freeze.freezeUntil)}` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+
+    const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
+    if (!player) return res.status(404).json({ error: 'Player not found' });
+
+    await prisma.$transaction([
+      prisma.streakFreeze.deleteMany({ where: { userId: id } }),
+      prisma.user.update({ where: { id }, data: { currentStreak: 0, lastPlayedDate: null } }),
+    ]);
+
+    broadcastTaskUpdate('player_updated', { playerId: id });
+    res.json({
+      data: { playerId: id, playerName: player.name, streakReset: true, previousStreak: player.currentStreak },
+      message: `${player.name}'s streak manually unfrozen and reset to 0`,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 
 // ═══════════════════════════════════════════════════════════════
 // DASHBOARD ENDPOINTS
@@ -1203,6 +1348,8 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     }
 
     const results = await prisma.$transaction(ops);
+    // Lift any active streak freeze — player deposited so streak is safe again
+    await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
     const updatedPlayer = results[0];
     const updatedWallet = results[1];
     const depositTx = results[2];
@@ -2724,7 +2871,7 @@ app.get('/api/tasks', authMiddleware, async (req, res) => {
     if (taskType) where.taskType = taskType;
     if (status) where.status = status;
     if (myTasks === 'true') {
-      where.OR = [{ assignedToId: req.userId }, { assignToAll: true }, { subTasks: { some: { assignedToId: req.userId } } }, ];
+      where.OR = [{ assignedToId: req.userId }, { assignToAll: true }, { subTasks: { some: { assignedToId: req.userId } } },];
     } else if (assignedToId) {
       where.assignedToId = parseInt(assignedToId);
     }
