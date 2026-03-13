@@ -1164,7 +1164,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     const balanceAfter = balanceBefore + totalPlayerCredit;
     const walletCredit = depositAmt - feeAmt;
     const newStock = game.pointStock - totalGameDeduction;
-    
+
     const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
     ops.push(prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter, currentStreak: newStreak, lastPlayedDate: now } }));
     ops.push(prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { increment: walletCredit } } }));
@@ -1313,16 +1313,118 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
   }
 });
 
+// app.get('/api/transactions', authMiddleware, async (req, res) => {
+//   try {
+//     // const { page = 1, limit = 10, type = '', status = '' } = req.query;
+//     const { page = 1, limit = 10, type = '', status = '', fromDate = '', toDate = '' } = req.query;
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+//     // const where = {};
+//     // if (type) where.type = type;
+//     // if (status) where.status = status;
+//     const where = {};
+//     if (type) where.type = type;
+//     if (status) where.status = status;
+//     if (fromDate || toDate) {
+//       where.createdAt = {};
+//       if (fromDate) where.createdAt.gte = new Date(fromDate);
+//       if (toDate) where.createdAt.lte = new Date(toDate);
+//     }
+
+
+//     const [transactions, total] = await Promise.all([
+//       prisma.transaction.findMany({ where, include: { user: { select: { id: true, name: true, email: true } }, game: { select: { id: true, name: true } } }, skip, take: parseInt(limit), orderBy: { createdAt: 'desc' } }),
+//       prisma.transaction.count({ where }),
+//     ]);
+
+//     const formatted = transactions.map(t => {
+//       let type = t.type;
+//       let bonusType = null;
+//       if (t.type === 'DEPOSIT') type = 'Deposit';
+//       else if (t.type === 'WITHDRAWAL') type = 'Cashout';
+//       else if (t.type === 'BONUS') {
+//         if (t.description?.includes('Match')) { type = 'Match Bonus'; bonusType = 'match'; }
+//         else if (t.description?.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
+//         else if (t.description?.includes('Streak')) { type = 'Streak Bonus'; bonusType = 'streak'; }
+//         else if (t.description?.includes('Referral')) { type = 'Referral Bonus'; bonusType = 'referral'; }
+//         else { type = 'Bonus'; }
+//       }
+
+//       let walletMethod = t.paymentMethod || 'Unknown';
+//       let walletName = 'Account';
+//       const walletMatch = t.description?.match(/via ([^ ]+) - (.*?)$/);
+//       if (walletMatch) { walletMethod = walletMatch[1]; walletName = walletMatch[2]; }
+
+//       // const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
+//       // const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
+//       // const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
+//       // const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
+//       // const feeMatch = t.notes?.match(/^fee:([\d.]+)/);
+//       // const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
+
+//       const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
+//       const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
+//       const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
+//       const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
+//       const feeMatch = t.notes?.match(/fee:([\d.]+)/);
+//       const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
+
+//       // NEW: parse game stock snapshots
+//       const stockBeforeMatch = t.notes?.match(/gameStockBefore:([\d.]+)/);
+//       const stockAfterMatch = t.notes?.match(/gameStockAfter:([\d.]+)/);
+//       const gameStockBefore = stockBeforeMatch ? parseFloat(stockBeforeMatch[1]) : null;
+//       const gameStockAfter = stockAfterMatch ? parseFloat(stockAfterMatch[1]) : null;
+
+//       return {
+//         id: `TXN${String(t.id).padStart(6, '0')}`,
+//         playerId: t.userId, playerName: t.user?.name || '—', email: t.user?.email || '—',
+//         type, bonusType, amount: parseFloat(t.amount),
+//         paidAmount: parseFloat(t.paidAmount ?? 0),
+//         fee,
+//         walletMethod, walletName, gameName, balanceBefore, balanceAfter,
+//         status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt), gameStockBefore,
+//         gameStockAfter,
+//       };
+//     });
+
+//     res.json({ data: formatted, pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / parseInt(limit)) } });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to fetch transactions' });
+//   }
+// });
+
 app.get('/api/transactions', authMiddleware, async (req, res) => {
   try {
-    const { page = 1, limit = 10, type = '', status = '' } = req.query;
+    const {
+      page = 1, limit = 10,
+      type = '', status = '',
+      fromDate = '', toDate = '',           // ← NEW
+    } = req.query;
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
+
     const where = {};
     if (type) where.type = type;
     if (status) where.status = status;
 
+    // ── NEW: date range filter ──────────────────────────────────
+    if (fromDate || toDate) {
+      where.createdAt = {};
+      if (fromDate) where.createdAt.gte = new Date(fromDate);
+      if (toDate) where.createdAt.lte = new Date(toDate);
+    }
+    // ───────────────────────────────────────────────────────────
+
     const [transactions, total] = await Promise.all([
-      prisma.transaction.findMany({ where, include: { user: { select: { id: true, name: true, email: true } }, game: { select: { id: true, name: true } } }, skip, take: parseInt(limit), orderBy: { createdAt: 'desc' } }),
+      prisma.transaction.findMany({
+        where,
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          game: { select: { id: true, name: true } },
+        },
+        skip,
+        take: parseInt(limit),
+        orderBy: { createdAt: 'desc' },
+      }),
       prisma.transaction.count({ where }),
     ]);
 
@@ -1344,21 +1446,12 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       const walletMatch = t.description?.match(/via ([^ ]+) - (.*?)$/);
       if (walletMatch) { walletMethod = walletMatch[1]; walletName = walletMatch[2]; }
 
-      // const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
-      // const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
-      // const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
-      // const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
-      // const feeMatch = t.notes?.match(/^fee:([\d.]+)/);
-      // const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
-
       const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
       const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
       const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
       const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
       const feeMatch = t.notes?.match(/fee:([\d.]+)/);
       const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
-
-      // NEW: parse game stock snapshots
       const stockBeforeMatch = t.notes?.match(/gameStockBefore:([\d.]+)/);
       const stockAfterMatch = t.notes?.match(/gameStockAfter:([\d.]+)/);
       const gameStockBefore = stockBeforeMatch ? parseFloat(stockBeforeMatch[1]) : null;
@@ -1366,17 +1459,31 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
 
       return {
         id: `TXN${String(t.id).padStart(6, '0')}`,
-        playerId: t.userId, playerName: t.user?.name || '—', email: t.user?.email || '—',
-        type, bonusType, amount: parseFloat(t.amount),
+        playerId: t.userId,
+        playerName: t.user?.name || '—',
+        email: t.user?.email || '—',
+        type, bonusType,
+        amount: parseFloat(t.amount),
         paidAmount: parseFloat(t.paidAmount ?? 0),
         fee,
         walletMethod, walletName, gameName, balanceBefore, balanceAfter,
-        status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt), gameStockBefore,
-        gameStockAfter,
+        status: t.status,
+        timestamp: fmtTX(t.createdAt),
+        date: fmtTXDate(t.createdAt),
+        gameStockBefore, gameStockAfter,
+        createdAtISO: t.createdAt.toISOString(),   // ← NEW — used by CheckoutModal date filter
       };
     });
 
-    res.json({ data: formatted, pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / parseInt(limit)) } });
+    res.json({
+      data: formatted,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit)),
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch transactions' });
   }
@@ -1949,15 +2056,52 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
   }
 });
 
+// app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
+//   try {
+//     const shiftId = parseInt(req.params.id);
+//     const { confirmedBalance, balanceNote } = req.body;
+//     const checkin = await prisma.shiftCheckin.upsert({
+//       where: { shiftId },
+//       create: { shiftId, userId: req.userId, confirmedBalance: parseFloat(confirmedBalance), balanceNote, balanceConfirmedAt: new Date(), status: 'BALANCE_CONFIRMED' },
+//       update: { confirmedBalance: parseFloat(confirmedBalance), balanceNote, balanceConfirmedAt: new Date(), status: 'BALANCE_CONFIRMED' }
+//     });
+//     broadcastTaskUpdate('shift_checkin', { shiftId, checkin });
+//     res.json({ data: checkin, message: 'Balance confirmed. Shift started!' });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   try {
     const shiftId = parseInt(req.params.id);
+
+    // The frontend sends:
+    //   confirmedBalance  — numeric total wallet balance
+    //   balanceNote       — JSON string: full snapshot object
     const { confirmedBalance, balanceNote } = req.body;
+
     const checkin = await prisma.shiftCheckin.upsert({
       where: { shiftId },
-      create: { shiftId, userId: req.userId, confirmedBalance: parseFloat(confirmedBalance), balanceNote, balanceConfirmedAt: new Date(), status: 'BALANCE_CONFIRMED' },
-      update: { confirmedBalance: parseFloat(confirmedBalance), balanceNote, balanceConfirmedAt: new Date(), status: 'BALANCE_CONFIRMED' }
+      create: {
+        shiftId,
+        userId: req.userId,
+        confirmedBalance: parseFloat(confirmedBalance),
+        balanceNote: typeof balanceNote === 'string'
+          ? balanceNote
+          : JSON.stringify(balanceNote),   // ← store full snapshot
+        balanceConfirmedAt: new Date(),
+        status: 'BALANCE_CONFIRMED',
+      },
+      update: {
+        confirmedBalance: parseFloat(confirmedBalance),
+        balanceNote: typeof balanceNote === 'string'
+          ? balanceNote
+          : JSON.stringify(balanceNote),
+        balanceConfirmedAt: new Date(),
+        status: 'BALANCE_CONFIRMED',
+      },
     });
+
     broadcastTaskUpdate('shift_checkin', { shiftId, checkin });
     res.json({ data: checkin, message: 'Balance confirmed. Shift started!' });
   } catch (err) {
@@ -1965,16 +2109,73 @@ app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   }
 });
 
+// app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
+//   try {
+//     const shiftId = parseInt(req.params.id);
+//     const { effortRating, workSummary, issuesEncountered, shoutouts, additionalNotes } = req.body;
+//     if (!effortRating || effortRating < 1 || effortRating > 5) return res.status(400).json({ error: 'Effort rating must be 1-5' });
+//     const checkin = await prisma.shiftCheckin.upsert({
+//       where: { shiftId },
+//       create: { shiftId, userId: req.userId, effortRating: parseInt(effortRating), workSummary, issuesEncountered, shoutouts, additionalNotes, endFormSubmittedAt: new Date(), status: 'COMPLETED' },
+//       update: { effortRating: parseInt(effortRating), workSummary, issuesEncountered, shoutouts, additionalNotes, endFormSubmittedAt: new Date(), status: 'COMPLETED' }
+//     });
+//     broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
+//     res.json({ data: checkin, message: 'Shift summary submitted!' });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
 app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
   try {
     const shiftId = parseInt(req.params.id);
-    const { effortRating, workSummary, issuesEncountered, shoutouts, additionalNotes } = req.body;
-    if (!effortRating || effortRating < 1 || effortRating > 5) return res.status(400).json({ error: 'Effort rating must be 1-5' });
+
+    // The frontend sends:
+    //   effortRating       — 1–10 integer
+    //   workSummary        — text
+    //   issuesEncountered  — text
+    //   shoutouts          — text (optional)
+    //   additionalNotes    — JSON string: { effortReason, improvements, endSnapshot }
+    const {
+      effortRating,
+      workSummary,
+      issuesEncountered,
+      shoutouts,
+      additionalNotes,
+    } = req.body;
+
+    if (!effortRating || effortRating < 1 || effortRating > 10) {
+      return res.status(400).json({ error: 'Effort rating must be 1–10' });
+    }
+
     const checkin = await prisma.shiftCheckin.upsert({
       where: { shiftId },
-      create: { shiftId, userId: req.userId, effortRating: parseInt(effortRating), workSummary, issuesEncountered, shoutouts, additionalNotes, endFormSubmittedAt: new Date(), status: 'COMPLETED' },
-      update: { effortRating: parseInt(effortRating), workSummary, issuesEncountered, shoutouts, additionalNotes, endFormSubmittedAt: new Date(), status: 'COMPLETED' }
+      create: {
+        shiftId,
+        userId: req.userId,
+        effortRating: parseInt(effortRating),
+        workSummary: workSummary || null,
+        issuesEncountered: issuesEncountered || null,
+        shoutouts: shoutouts || null,
+        additionalNotes: typeof additionalNotes === 'string'
+          ? additionalNotes
+          : JSON.stringify(additionalNotes),   // ← stores endSnapshot + feedback
+        endFormSubmittedAt: new Date(),
+        status: 'COMPLETED',
+      },
+      update: {
+        effortRating: parseInt(effortRating),
+        workSummary: workSummary || null,
+        issuesEncountered: issuesEncountered || null,
+        shoutouts: shoutouts || null,
+        additionalNotes: typeof additionalNotes === 'string'
+          ? additionalNotes
+          : JSON.stringify(additionalNotes),
+        endFormSubmittedAt: new Date(),
+        status: 'COMPLETED',
+      },
     });
+
     broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
     res.json({ data: checkin, message: 'Shift summary submitted!' });
   } catch (err) {
@@ -1982,16 +2183,27 @@ app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
   }
 });
 
+// app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
+//   try {
+//     const shiftId = parseInt(req.params.id);
+//     const checkin = await prisma.shiftCheckin.findUnique({ where: { shiftId }, include: { user: { select: { id: true, name: true, role: true } } } });
+//     res.json({ data: checkin });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   try {
     const shiftId = parseInt(req.params.id);
-    const checkin = await prisma.shiftCheckin.findUnique({ where: { shiftId }, include: { user: { select: { id: true, name: true, role: true } } } });
+    const checkin = await prisma.shiftCheckin.findUnique({
+      where: { shiftId },
+      include: { user: { select: { id: true, name: true, role: true } } },
+    });
     res.json({ data: checkin });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 // ═══════════════════════════════════════════════════════════════
 // REPORTS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
@@ -2000,17 +2212,94 @@ function sumField(arr, field) { return arr.reduce((s, r) => s + parseFloat(r[fie
 function f2(n) { return parseFloat(n.toFixed(2)); }
 const BONUS_TYPES = ['BONUS', 'MATCH_BONUS', 'SPECIAL'];
 
+// async function enrichShift(shift) {
+//   const shiftEnd = shift.endTime || new Date();
+//   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
+
+//   const [transactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
+//     prisma.transaction.findMany({ where: { createdAt: timeWindow, status: 'COMPLETED' }, include: { user: { select: { id: true, name: true } }, game: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } }),
+//     prisma.task.findMany({ where: { completedAt: timeWindow, status: 'COMPLETED' }, include: { assignedTo: { select: { id: true, name: true, role: true } }, subTasks: true, progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' } } } }).catch(() => []),
+//     prisma.user.findMany({ where: { role: 'PLAYER', createdAt: timeWindow }, select: { id: true, name: true, username: true, tier: true, createdAt: true } }).catch(() => []),
+//     prisma.transaction.findMany({ where: { type: { in: ['BONUS', 'MATCH_BONUS', 'SPECIAL'] }, status: 'COMPLETED', createdAt: timeWindow }, include: { user: { select: { id: true, name: true } }, game: { select: { id: true, name: true } } } }).catch(() => []),
+//     prisma.issue.findMany({ where: { OR: [{ createdAt: timeWindow }, { updatedAt: timeWindow, status: 'RESOLVED' }] } }).catch(() => []),
+//     prisma.shiftCheckin.findUnique({ where: { shiftId: shift.id }, include: { user: { select: { id: true, name: true } } } }).catch(() => null),
+//   ]);
+
+//   const deposits = transactions.filter(t => t.type === 'DEPOSIT');
+//   const cashouts = transactions.filter(t => t.type === 'WITHDRAWAL');
+//   const bonusTxns = transactions.filter(t => ['BONUS', 'MATCH_BONUS', 'SPECIAL'].includes(t.type));
+//   const sum = (arr, field) => arr.reduce((s, r) => s + parseFloat(r[field] || 0), 0);
+
+//   const totalDeposits = sum(deposits, 'amount');
+//   const totalCashouts = sum(cashouts, 'amount');
+//   const totalBonuses = sum(bonusTxns, 'amount');
+
+//   const playerMap = {};
+//   deposits.forEach(t => {
+//     if (!playerMap[t.userId]) playerMap[t.userId] = { name: t.user?.name || `Player #${t.userId}`, total: 0, count: 0 };
+//     playerMap[t.userId].total += parseFloat(t.amount || 0);
+//     playerMap[t.userId].count += 1;
+//   });
+
+//   return {
+//     ...shift, checkin,
+//     stats: {
+//       tasksCompleted: tasks.length, playersAdded: playersAdded.length,
+//       bonusesGranted: bonusesGranted.length, totalBonusAmount: f2(sum(bonusesGranted, 'amount')),
+//       depositCount: deposits.length, cashoutCount: cashouts.length,
+//       totalDeposits: f2(totalDeposits), totalCashouts: f2(totalCashouts), totalBonuses: f2(totalBonuses),
+//       netProfit: f2(totalDeposits - totalCashouts - totalBonuses),
+//       transactionCount: transactions.length,
+//       issuesCreated: issueActivity.filter(i => new Date(i.createdAt) >= new Date(shift.startTime)).length,
+//       issuesResolved: issueActivity.filter(i => i.status === 'RESOLVED' && new Date(i.updatedAt) >= new Date(shift.startTime)).length,
+//       effortRating: checkin?.effortRating || null, confirmedBalance: checkin?.confirmedBalance || null,
+//     },
+//     tasks, transactions, playersAdded, bonusesGranted, issueActivity,
+//     playerDepositBreakdown: Object.values(playerMap).sort((a, b) => b.total - a.total),
+//   };
+// }
 async function enrichShift(shift) {
   const shiftEnd = shift.endTime || new Date();
   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
 
   const [transactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
-    prisma.transaction.findMany({ where: { createdAt: timeWindow, status: 'COMPLETED' }, include: { user: { select: { id: true, name: true } }, game: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } }),
-    prisma.task.findMany({ where: { completedAt: timeWindow, status: 'COMPLETED' }, include: { assignedTo: { select: { id: true, name: true, role: true } }, subTasks: true, progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' } } } }).catch(() => []),
-    prisma.user.findMany({ where: { role: 'PLAYER', createdAt: timeWindow }, select: { id: true, name: true, username: true, tier: true, createdAt: true } }).catch(() => []),
-    prisma.transaction.findMany({ where: { type: { in: ['BONUS', 'MATCH_BONUS', 'SPECIAL'] }, status: 'COMPLETED', createdAt: timeWindow }, include: { user: { select: { id: true, name: true } }, game: { select: { id: true, name: true } } } }).catch(() => []),
-    prisma.issue.findMany({ where: { OR: [{ createdAt: timeWindow }, { updatedAt: timeWindow, status: 'RESOLVED' }] } }).catch(() => []),
-    prisma.shiftCheckin.findUnique({ where: { shiftId: shift.id }, include: { user: { select: { id: true, name: true } } } }).catch(() => null),
+    prisma.transaction.findMany({
+      where: { createdAt: timeWindow, status: 'COMPLETED' },
+      include: {
+        user: { select: { id: true, name: true } },
+        game: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.task.findMany({
+      where: { completedAt: timeWindow, status: 'COMPLETED' },
+      include: {
+        assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: true,
+        progressLogs: {
+          include: { user: { select: { id: true, name: true } } },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    }).catch(() => []),
+    prisma.user.findMany({
+      where: { role: 'PLAYER', createdAt: timeWindow },
+      select: { id: true, name: true, username: true, tier: true, createdAt: true },
+    }).catch(() => []),
+    prisma.transaction.findMany({
+      where: { type: { in: ['BONUS', 'MATCH_BONUS', 'SPECIAL'] }, status: 'COMPLETED', createdAt: timeWindow },
+      include: {
+        user: { select: { id: true, name: true } },
+        game: { select: { id: true, name: true } },
+      },
+    }).catch(() => []),
+    prisma.issue.findMany({
+      where: { OR: [{ createdAt: timeWindow }, { updatedAt: timeWindow, status: 'RESOLVED' }] },
+    }).catch(() => []),
+    prisma.shiftCheckin.findUnique({
+      where: { shiftId: shift.id },
+      include: { user: { select: { id: true, name: true } } },
+    }).catch(() => null),
   ]);
 
   const deposits = transactions.filter(t => t.type === 'DEPOSIT');
@@ -2029,24 +2318,106 @@ async function enrichShift(shift) {
     playerMap[t.userId].count += 1;
   });
 
+  // ── NEW: Parse JSON snapshots stored in ShiftCheckin ─────────
+  let startSnapshot = null;  // wallet + game state at shift start
+  let endSnapshot = null;  // wallet + game state at shift end + reconciliation
+  let effortReason = null;  // member's written explanation
+  let improvements = null;  // what they could do better
+
+  if (checkin?.balanceNote) {
+    try { startSnapshot = JSON.parse(checkin.balanceNote); } catch (_) { }
+  }
+
+  if (checkin?.additionalNotes) {
+    try {
+      const parsed = JSON.parse(checkin.additionalNotes);
+      endSnapshot = parsed.endSnapshot ?? null;
+      effortReason = parsed.effortReason ?? null;
+      improvements = parsed.improvements ?? null;
+    } catch (_) { }
+  }
+  // ─────────────────────────────────────────────────────────────
+
   return {
-    ...shift, checkin,
+    ...shift,
+    checkin,
+    startSnapshot,   // ← NEW
+    endSnapshot,     // ← NEW
+    effortReason,    // ← NEW
+    improvements,    // ← NEW
     stats: {
-      tasksCompleted: tasks.length, playersAdded: playersAdded.length,
-      bonusesGranted: bonusesGranted.length, totalBonusAmount: f2(sum(bonusesGranted, 'amount')),
-      depositCount: deposits.length, cashoutCount: cashouts.length,
-      totalDeposits: f2(totalDeposits), totalCashouts: f2(totalCashouts), totalBonuses: f2(totalBonuses),
+      tasksCompleted: tasks.length,
+      playersAdded: playersAdded.length,
+      bonusesGranted: bonusesGranted.length,
+      totalBonusAmount: f2(sum(bonusesGranted, 'amount')),
+      depositCount: deposits.length,
+      cashoutCount: cashouts.length,
+      totalDeposits: f2(totalDeposits),
+      totalCashouts: f2(totalCashouts),
+      totalBonuses: f2(totalBonuses),
       netProfit: f2(totalDeposits - totalCashouts - totalBonuses),
       transactionCount: transactions.length,
       issuesCreated: issueActivity.filter(i => new Date(i.createdAt) >= new Date(shift.startTime)).length,
       issuesResolved: issueActivity.filter(i => i.status === 'RESOLVED' && new Date(i.updatedAt) >= new Date(shift.startTime)).length,
-      effortRating: checkin?.effortRating || null, confirmedBalance: checkin?.confirmedBalance || null,
+      effortRating: checkin?.effortRating ?? null,
+      confirmedBalance: checkin?.confirmedBalance ?? null,
+      // ── NEW: reconciliation from endSnapshot ─────────────────
+      walletStartTotal: startSnapshot?.totalWallet ?? null,
+      gameStartTotal: startSnapshot?.totalGames ?? null,
+      walletEndTotal: endSnapshot?.totalWallet ?? null,
+      gameEndTotal: endSnapshot?.totalGames ?? null,
+      walletChange: endSnapshot?.walletChange ?? null,
+      gameChange: endSnapshot?.gameChange ?? null,
+      walletDiscrepancy: endSnapshot?.walletDiscrepancy ?? null,
+      gameDiscrepancy: endSnapshot?.gameDiscrepancy ?? null,
+      totalDiscrepancy: endSnapshot?.totalDiscrepancy ?? null,
+      isBalanced: endSnapshot?.isBalanced ?? null,
+      // ─────────────────────────────────────────────────────────
     },
-    tasks, transactions, playersAdded, bonusesGranted, issueActivity,
+    tasks,
+    transactions,
+    playersAdded,
+    bonusesGranted,
+    issueActivity,
     playerDepositBreakdown: Object.values(playerMap).sort((a, b) => b.total - a.total),
   };
 }
+// app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) => {
+//   try {
+//     const { date, teamRole } = req.query;
+//     const target = date ? new Date(date) : new Date();
+//     const dayStart = new Date(target); dayStart.setUTCHours(0, 0, 0, 0);
+//     const dayEnd = new Date(target); dayEnd.setUTCHours(23, 59, 59, 999);
 
+//     const shiftWhere = { startTime: { gte: dayStart, lte: dayEnd } };
+//     if (teamRole) shiftWhere.teamRole = teamRole;
+
+//     const shifts = await prisma.shift.findMany({ where: shiftWhere, orderBy: { startTime: 'asc' } });
+//     const enrichedShifts = await Promise.all(shifts.map(enrichShift));
+
+//     const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+//     const teamUsers = await prisma.user.findMany({ where: { role: { in: roles } }, select: { id: true, name: true, username: true, role: true } });
+
+//     const teams = roles.map(role => ({ role, member: teamUsers.find(u => u.role === role) || null, shifts: enrichedShifts.filter(s => s.teamRole === role) }));
+
+//     const allDayTxns = await prisma.transaction.findMany({ where: { createdAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' } });
+//     const dayDeposits = sumField(allDayTxns.filter(t => t.type === 'DEPOSIT'), 'amount');
+//     const dayCashouts = sumField(allDayTxns.filter(t => t.type === 'WITHDRAWAL'), 'amount');
+//     const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES.includes(t.type)), 'amount');
+
+//     const dayTasks = await prisma.task.findMany({ where: { completedAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' }, include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true } } } }).catch(() => []);
+//     const wallets = await prisma.wallet.findMany({ orderBy: [{ method: 'asc' }, { name: 'asc' }] });
+
+//     res.json({
+//       date: dayStart.toISOString().split('T')[0], teams,
+//       wallets: wallets.map(w => ({ id: w.id, name: w.name, method: w.method, balance: parseFloat(w.balance) })),
+//       dayTasks,
+//       summary: { totalDeposits: f2(dayDeposits), totalCashouts: f2(dayCashouts), totalBonuses: f2(dayBonuses), netProfit: f2(dayDeposits - dayCashouts - dayBonuses), totalShifts: enrichedShifts.length, activeShifts: enrichedShifts.filter(s => s.isActive).length, tasksCompleted: dayTasks.length, transactionCount: allDayTxns.length },
+//     });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to generate report: ' + err.message });
+//   }
+// });
 app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { date, teamRole } = req.query;
@@ -2061,41 +2432,104 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     const enrichedShifts = await Promise.all(shifts.map(enrichShift));
 
     const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
-    const teamUsers = await prisma.user.findMany({ where: { role: { in: roles } }, select: { id: true, name: true, username: true, role: true } });
+    const teamUsers = await prisma.user.findMany({
+      where: { role: { in: roles } },
+      select: { id: true, name: true, username: true, role: true },
+    });
 
-    const teams = roles.map(role => ({ role, member: teamUsers.find(u => u.role === role) || null, shifts: enrichedShifts.filter(s => s.teamRole === role) }));
+    const teams = roles.map(role => ({
+      role,
+      member: teamUsers.find(u => u.role === role) || null,
+      shifts: enrichedShifts.filter(s => s.teamRole === role),
+    }));
 
-    const allDayTxns = await prisma.transaction.findMany({ where: { createdAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' } });
+    const allDayTxns = await prisma.transaction.findMany({
+      where: { createdAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' },
+    });
+
     const dayDeposits = sumField(allDayTxns.filter(t => t.type === 'DEPOSIT'), 'amount');
     const dayCashouts = sumField(allDayTxns.filter(t => t.type === 'WITHDRAWAL'), 'amount');
-    const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES.includes(t.type)), 'amount');
+    const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES_DB.includes(t.type)), 'amount');
 
-    const dayTasks = await prisma.task.findMany({ where: { completedAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' }, include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true } } } }).catch(() => []);
-    const wallets = await prisma.wallet.findMany({ orderBy: [{ method: 'asc' }, { name: 'asc' }] });
+    const dayTasks = await prisma.task.findMany({
+      where: { completedAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' },
+      include: {
+        assignedTo: { select: { id: true, name: true, role: true } },
+        createdBy: { select: { id: true, name: true } },
+      },
+    }).catch(() => []);
+
+    const wallets = await prisma.wallet.findMany({
+      orderBy: [{ method: 'asc' }, { name: 'asc' }],
+    });
 
     res.json({
-      date: dayStart.toISOString().split('T')[0], teams,
-      wallets: wallets.map(w => ({ id: w.id, name: w.name, method: w.method, balance: parseFloat(w.balance) })),
+      date: dayStart.toISOString().split('T')[0],
+      teams,
+      wallets: wallets.map(w => ({
+        id: w.id,
+        name: w.name,
+        method: w.method,
+        balance: parseFloat(w.balance),
+      })),
       dayTasks,
-      summary: { totalDeposits: f2(dayDeposits), totalCashouts: f2(dayCashouts), totalBonuses: f2(dayBonuses), netProfit: f2(dayDeposits - dayCashouts - dayBonuses), totalShifts: enrichedShifts.length, activeShifts: enrichedShifts.filter(s => s.isActive).length, tasksCompleted: dayTasks.length, transactionCount: allDayTxns.length },
+      summary: {
+        totalDeposits: f2(dayDeposits),
+        totalCashouts: f2(dayCashouts),
+        totalBonuses: f2(dayBonuses),
+        netProfit: f2(dayDeposits - dayCashouts - dayBonuses),
+        totalShifts: enrichedShifts.length,
+        activeShifts: enrichedShifts.filter(s => s.isActive).length,
+        tasksCompleted: dayTasks.length,
+        transactionCount: allDayTxns.length,
+      },
+      // ── NEW: each shift in `teams[].shifts[]` now also carries:
+      //   .startSnapshot  { walletSnapshot[], gameSnapshot[], totalWallet, totalGames, notes, capturedAt }
+      //   .endSnapshot    { walletSnapshot[], gameSnapshot[], totalWallet, totalGames,
+      //                     deposits, cashouts, bonuses, netProfit,
+      //                     walletChange, gameChange, walletDiscrepancy, gameDiscrepancy,
+      //                     totalDiscrepancy, isBalanced, capturedAt }
+      //   .effortReason   string
+      //   .improvements   string
+      //   .stats.effortRating     1–10
+      //   .stats.isBalanced       boolean
+      //   .stats.walletStartTotal / .walletEndTotal / .walletChange
+      //   .stats.gameStartTotal   / .gameEndTotal   / .gameChange
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to generate report: ' + err.message });
   }
 });
+// app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
+//   try {
+//     const role = req.query.role || req.userRole;
+//     const limit = parseInt(req.query.limit) || 30;
+//     const shifts = await prisma.shift.findMany({ where: { teamRole: role }, orderBy: { startTime: 'desc' }, take: limit });
+//     const enriched = await Promise.all(shifts.map(enrichShift));
+//     res.json({ data: enriched });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to fetch shift reports' });
+//   }
+// });
+
 
 app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
   try {
     const role = req.query.role || req.userRole;
     const limit = parseInt(req.query.limit) || 30;
-    const shifts = await prisma.shift.findMany({ where: { teamRole: role }, orderBy: { startTime: 'desc' }, take: limit });
+
+    const shifts = await prisma.shift.findMany({
+      where: { teamRole: role },
+      orderBy: { startTime: 'desc' },
+      take: limit,
+    });
+
     const enriched = await Promise.all(shifts.map(enrichShift));
     res.json({ data: enriched });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch shift reports' });
   }
 });
-
 // ═══════════════════════════════════════════════════════════════
 // CHARTS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
