@@ -31,6 +31,13 @@ function fmtTX(date) {
 
 const prisma = new PrismaClient();
 
+// Safe accessor — works before AND after Prisma migration runs
+const safeFreeze = {
+  findMany:  (args) => prisma.streakFreeze ? prisma.streakFreeze.findMany(args).catch(() => [])   : Promise.resolve([]),
+  findUnique:(args) => prisma.streakFreeze ? prisma.streakFreeze.findUnique(args).catch(() => null): Promise.resolve(null),
+  deleteMany:(args) => prisma.streakFreeze ? prisma.streakFreeze.deleteMany(args).catch(() => ({})) : Promise.resolve({}),
+};
+
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-production';
 const PORT = process.env.PORT || 3001;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
