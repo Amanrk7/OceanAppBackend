@@ -2268,12 +2268,22 @@ async function getOrCreateTeam(teamRole) {
   return team;
 }
 
+// app.get('/api/shifts/:role', authMiddleware, async (req, res) => {
+//   try {
+//     const { role } = req.params;
+//     const teamShifts = await prisma.shift.findMany({ where: { teamRole: role }, orderBy: { createdAt: 'desc' } });
+//     if (!teamShifts.length) return res.status(404).json({ error: 'No shifts found for this team' });
+//     res.json({ data: teamShifts, message: 'Successfully retrieved shift records' });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to show shift record' });
+//   }
+// });
+
 app.get('/api/shifts/:role', authMiddleware, async (req, res) => {
   try {
     const { role } = req.params;
     const teamShifts = await prisma.shift.findMany({ where: { teamRole: role }, orderBy: { createdAt: 'desc' } });
-    if (!teamShifts.length) return res.status(404).json({ error: 'No shifts found for this team' });
-    res.json({ data: teamShifts, message: 'Successfully retrieved shift records' });
+    res.json({ data: teamShifts });  // ← just return empty array, no 404
   } catch (err) {
     res.status(500).json({ error: 'Failed to show shift record' });
   }
