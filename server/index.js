@@ -12,6 +12,9 @@ import { PrismaClient, Prisma } from '@prisma/client';
 
 dotenv.config();
 
+
+DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/https://discord.com/api/webhooks/1482125214283202612/cn2P4sgNCHx5r28UYa-TXOcjN7BhFM872suIJOAO5seIma6t9wV945kU-mCXbsefgn3P';
+
 const TX_TZ = 'America/Chicago';
 
 function fmtTXDate(date) {
@@ -37,6 +40,106 @@ const safeFreeze = {
   findUnique:(args) => prisma.streakFreeze ? prisma.streakFreeze.findUnique(args).catch(() => null): Promise.resolve(null),
   deleteMany:(args) => prisma.streakFreeze ? prisma.streakFreeze.deleteMany(args).catch(() => ({})) : Promise.resolve({}),
 };
+
+// ─── Unified notification helper ──────────────────────────────────────────────
+async function notify(type, data) {
+  const time = new Date().toLocaleString('en-US', {
+    timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit',
+    hour12: true, month: 'short', day: 'numeric',
+  });
+
+  let discordPayload = null;
+  let whatsappText  = null;
+
+  if (type === 'SHIFT_START') {
+    const { memberName, teamRole, shiftId } = data;
+    discordPayload = {
+      embeds: [{
+        title: '🌅 Shift started',
+        color: 0x16a34a,
+        fields: [
+          { name: 'Member', value: memberName || teamRole, inline: true },
+          { name: 'Team',   value: teamRole,               inline: true },
+          { name: 'Time',   value: time,                   inline: true },
+        ],
+        footer: { text: `Shift #${shiftId}` },
+      }],
+    };
+    whatsappText = `🌅 *Shift started*\nMember: ${memberName || teamRole}\nTeam: ${teamRole}\nTime: ${time}`;
+  }
+
+  else if (type === 'SHIFT_END') {
+    const { memberName, teamRole, shiftId, duration, netProfit, isBalanced } = data;
+    const balLabel = isBalanced === true ? '✓ Balanced' : isBalanced === false ? '⚠️ Discrepancy' : '—';
+    const profitStr = netProfit != null ? `$${netProfit.toFixed(2)}` : '—';
+    discordPayload = {
+      embeds: [{
+        title: '🌙 Shift ended',
+        color: 0xdc2626,
+        fields: [
+          { name: 'Member',     value: memberName || teamRole, inline: true },
+          { name: 'Team',       value: teamRole,               inline: true },
+          { name: 'Duration',   value: duration != null ? `${duration} min` : '—', inline: true },
+          { name: 'Net profit', value: profitStr,              inline: true },
+          { name: 'Balanced',   value: balLabel,               inline: true },
+          { name: 'Time',       value: time,                   inline: true },
+        ],
+        footer: { text: `Shift #${shiftId}` },
+      }],
+    };
+    whatsappText = `🌙 *Shift ended*\nMember: ${memberName || teamRole}\nTeam: ${teamRole}\nDuration: ${duration ?? '—'} min\nNet profit: ${profitStr}\nBalanced: ${balLabel}\nTime: ${time}`;
+  }
+
+  else if (type === 'TASK_ASSIGNED') {
+    const { taskTitle, assigneeName, priority, taskType, dueDate, createdByName } = data;
+    const due = dueDate ? new Date(dueDate).toLocaleDateString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric' }) : 'No due date';
+    const priorityColor = priority === 'HIGH' ? 0xdc2626 : priority === 'MEDIUM' ? 0xd97706 : 0x64748b;
+    discordPayload = {
+      embeds: [{
+        title: '📋 New task assigned',
+        color: priorityColor,
+        fields: [
+          { name: 'Task',      value: taskTitle,                           inline: false },
+          { name: 'Assigned to', value: assigneeName || 'All members',    inline: true },
+          { name: 'Priority',  value: priority,                            inline: true },
+          { name: 'Type',      value: taskType?.replace(/_/g, ' ') || '—', inline: true },
+          { name: 'Due',       value: due,                                 inline: true },
+          { name: 'Created by',value: createdByName || '—',               inline: true },
+        ],
+      }],
+    };
+    whatsappText = `📋 *New task assigned*\nTask: ${taskTitle}\nAssigned to: ${assigneeName || 'All members'}\nPriority: ${priority}\nDue: ${due}\nCreated by: ${createdByName || '—'}`;
+  }
+
+  if (!discordPayload) return;
+
+  // ── Discord ──
+  if (DISCORD_WEBHOOK_URL) {
+    fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(discordPayload),
+    }).catch(err => console.error('Discord notify failed:', err));
+  }
+
+  // ── WhatsApp via Twilio ──
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.NOTIFY_WHATSAPP_TO && whatsappText) {
+    const sid  = process.env.TWILIO_ACCOUNT_SID;
+    const auth = process.env.TWILIO_AUTH_TOKEN;
+    fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(`${sid}:${auth}`).toString('base64'),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        From: process.env.TWILIO_WHATSAPP_FROM,
+        To:   process.env.NOTIFY_WHATSAPP_TO,
+        Body: whatsappText,
+      }),
+    }).catch(err => console.error('WhatsApp notify failed:', err));
+  }
+}
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-production';
 const PORT = process.env.PORT || 3001;
@@ -2194,6 +2297,8 @@ app.post('/api/shifts/start', authMiddleware, async (req, res) => {
     const team = await getOrCreateTeam(teamRole);
     await prisma.team.update({ where: { id: team.id }, data: { isShiftActive: true } });
     const shift = await prisma.shift.create({ data: { teamId: team.id, teamRole, startTime: new Date(), isActive: true } });
+    const member = await prisma.user.findFirst({ where: { role: teamRole }, select: { name: true } });
+    notify('SHIFT_START', { memberName: member?.name, teamRole, shiftId: shift.id });
     res.status(201).json({ data: shift, message: 'Shift started' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to start shift: ' + err.message });
@@ -2211,6 +2316,17 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
       prisma.shift.update({ where: { id: shiftId }, data: { endTime: now, duration, isActive: false } }),
       prisma.team.updateMany({ where: { teamName: existing.teamRole }, data: { isShiftActive: false } }),
     ]);
+    const checkin = await prisma.shiftCheckin.findUnique({ where: { shiftId } }).catch(() => null);
+    let netProfit = null, isBalanced = null;
+    if (checkin?.additionalNotes) {
+      try {
+    const parsed = JSON.parse(checkin.additionalNotes);
+    netProfit  = parsed.endSnapshot?.netProfit  ?? null;
+    isBalanced = parsed.endSnapshot?.isBalanced ?? null;
+  } catch (_) {}
+}
+const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
+notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced });
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
@@ -2953,6 +3069,11 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
     }
 
     broadcastTaskUpdate('task_created', task);
+    if (task.taskType !== 'MISSING_INFO') {
+  const assigneeName = task.assignedTo?.name ?? (assignToAll ? 'All members' : null);
+  const creator = await prisma.user.findUnique({ where: { id: req.userId }, select: { name: true } });
+  notify('TASK_ASSIGNED', { taskTitle: task.title, assigneeName, priority: task.priority, taskType: task.taskType, dueDate: task.dueDate, createdByName: creator?.name });
+}
     res.status(201).json({ data: task, message: 'Task created successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
