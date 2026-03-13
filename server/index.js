@@ -2449,7 +2449,8 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
 
     const dayDeposits = sumField(allDayTxns.filter(t => t.type === 'DEPOSIT'), 'amount');
     const dayCashouts = sumField(allDayTxns.filter(t => t.type === 'WITHDRAWAL'), 'amount');
-    const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES_DB.includes(t.type)), 'amount');
+    // const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES_DB.includes(t.type)), 'amount');
+    const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES.includes(t.type)), 'amount');
 
     const dayTasks = await prisma.task.findMany({
       where: { completedAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' },
