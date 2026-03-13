@@ -9,16 +9,12 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
 import { PrismaClient, Prisma } from '@prisma/client';
-import cron from 'node-cron';
-import PDFDocument from 'pdfkit';
 
 dotenv.config();
 
-const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN';
-const TWILIO_ACCOUNT_SID = 'AC1768d79bec254453e566802a6cbafe73';
-const TWILIO_AUTH_TOKEN = '040113f98213bb776ffcb78d9a6f3c8a';
-const TWILIO_WHATSAPP_FROM = 'whatsapp:+14155238886';
-const NOTIFY_WHATSAPP_TO = 'whatsapp:+919990253738';
+
+const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1482125214283202612/cn2P4sgNCHx5r28UYa-TXOcjN7BhFM872suIJOAO5seIma6t9wV945kU-mCXbsefgn3P';
+
 const TX_TZ = 'America/Chicago';
 
 function fmtTXDate(date) {
@@ -40,9 +36,9 @@ const prisma = new PrismaClient();
 
 // Safe accessor — works before AND after Prisma migration runs
 const safeFreeze = {
-  findMany: (args) => prisma.streakFreeze ? prisma.streakFreeze.findMany(args).catch(() => []) : Promise.resolve([]),
-  findUnique: (args) => prisma.streakFreeze ? prisma.streakFreeze.findUnique(args).catch(() => null) : Promise.resolve(null),
-  deleteMany: (args) => prisma.streakFreeze ? prisma.streakFreeze.deleteMany(args).catch(() => ({})) : Promise.resolve({}),
+  findMany:  (args) => prisma.streakFreeze ? prisma.streakFreeze.findMany(args).catch(() => [])   : Promise.resolve([]),
+  findUnique:(args) => prisma.streakFreeze ? prisma.streakFreeze.findUnique(args).catch(() => null): Promise.resolve(null),
+  deleteMany:(args) => prisma.streakFreeze ? prisma.streakFreeze.deleteMany(args).catch(() => ({})) : Promise.resolve({}),
 };
 
 // ─── Unified notification helper ──────────────────────────────────────────────
@@ -53,7 +49,7 @@ async function notify(type, data) {
   });
 
   let discordPayload = null;
-  let whatsappText = null;
+  let whatsappText  = null;
 
   if (type === 'SHIFT_START') {
     const { memberName, teamRole, shiftId } = data;
@@ -63,8 +59,8 @@ async function notify(type, data) {
         color: 0x16a34a,
         fields: [
           { name: 'Member', value: memberName || teamRole, inline: true },
-          { name: 'Team', value: teamRole, inline: true },
-          { name: 'Time', value: time, inline: true },
+          { name: 'Team',   value: teamRole,               inline: true },
+          { name: 'Time',   value: time,                   inline: true },
         ],
         footer: { text: `Shift #${shiftId}` },
       }],
@@ -81,12 +77,12 @@ async function notify(type, data) {
         title: '🌙 Shift ended',
         color: 0xdc2626,
         fields: [
-          { name: 'Member', value: memberName || teamRole, inline: true },
-          { name: 'Team', value: teamRole, inline: true },
-          { name: 'Duration', value: duration != null ? `${duration} min` : '—', inline: true },
-          { name: 'Net profit', value: profitStr, inline: true },
-          { name: 'Balanced', value: balLabel, inline: true },
-          { name: 'Time', value: time, inline: true },
+          { name: 'Member',     value: memberName || teamRole, inline: true },
+          { name: 'Team',       value: teamRole,               inline: true },
+          { name: 'Duration',   value: duration != null ? `${duration} min` : '—', inline: true },
+          { name: 'Net profit', value: profitStr,              inline: true },
+          { name: 'Balanced',   value: balLabel,               inline: true },
+          { name: 'Time',       value: time,                   inline: true },
         ],
         footer: { text: `Shift #${shiftId}` },
       }],
@@ -103,89 +99,16 @@ async function notify(type, data) {
         title: '📋 New task assigned',
         color: priorityColor,
         fields: [
-          { name: 'Task', value: taskTitle, inline: false },
-          { name: 'Assigned to', value: assigneeName || 'All members', inline: true },
-          { name: 'Priority', value: priority, inline: true },
-          { name: 'Type', value: taskType?.replace(/_/g, ' ') || '—', inline: true },
-          { name: 'Due', value: due, inline: true },
-          { name: 'Created by', value: createdByName || '—', inline: true },
+          { name: 'Task',      value: taskTitle,                           inline: false },
+          { name: 'Assigned to', value: assigneeName || 'All members',    inline: true },
+          { name: 'Priority',  value: priority,                            inline: true },
+          { name: 'Type',      value: taskType?.replace(/_/g, ' ') || '—', inline: true },
+          { name: 'Due',       value: due,                                 inline: true },
+          { name: 'Created by',value: createdByName || '—',               inline: true },
         ],
       }],
     };
     whatsappText = `📋 *New task assigned*\nTask: ${taskTitle}\nAssigned to: ${assigneeName || 'All members'}\nPriority: ${priority}\nDue: ${due}\nCreated by: ${createdByName || '—'}`;
-  }
-
-  else if (type === 'DAILY_REPORT') {
-    const { date, deposits, cashouts, bonuses, netProfit, shiftsWorked, playersAdded, pendingCashouts } = data;
-    const profitColor = netProfit >= 0 ? 0x16a34a : 0xdc2626;
-    discordPayload = {
-      embeds: [{
-        title: `📊 Daily Report — ${date}`,
-        color: profitColor,
-        fields: [
-          { name: 'Deposits', value: `$${deposits.toFixed(2)}`, inline: true },
-          { name: 'Cashouts', value: `$${cashouts.toFixed(2)}`, inline: true },
-          { name: 'Bonuses', value: `$${bonuses.toFixed(2)}`, inline: true },
-          { name: 'Net Profit', value: `$${netProfit.toFixed(2)}`, inline: true },
-          { name: 'Shifts Worked', value: `${shiftsWorked}`, inline: true },
-          { name: 'Players Added', value: `${playersAdded}`, inline: true },
-          { name: 'Pending Cashouts', value: `${pendingCashouts}`, inline: true },
-        ],
-        footer: { text: 'Auto-generated daily summary' },
-        timestamp: new Date().toISOString(),
-      }],
-    };
-    whatsappText = `📊 *Daily Report — ${date}*\nDeposits: $${deposits.toFixed(2)}\nCashouts: $${cashouts.toFixed(2)}\nBonuses: $${bonuses.toFixed(2)}\nNet Profit: $${netProfit.toFixed(2)}\nShifts Worked: ${shiftsWorked}\nPlayers Added: ${playersAdded}\nPending Cashouts: ${pendingCashouts}`;
-  }
-
-  else if (type === 'PLAYER_CRITICAL') {
-    const { players, level } = data;
-    const color = level === 'HIGHLY_CRITICAL' ? 0xdc2626 : 0xd97706;
-    const emoji = level === 'HIGHLY_CRITICAL' ? '🔴' : '🟡';
-    const label = level === 'HIGHLY_CRITICAL' ? 'Highly Critical' : 'Critical';
-    discordPayload = {
-      embeds: [{
-        title: `${emoji} ${players.length} Player(s) went ${label}`,
-        color,
-        description: players.map(p => `• **${p.name}** — last deposit: ${p.lastDeposit}`).join('\n'),
-        footer: { text: 'Follow up ASAP to bring them back' },
-      }],
-    };
-    whatsappText = `${emoji} *${players.length} player(s) went ${label}*\n` + players.map(p => `• ${p.name} — last deposit: ${p.lastDeposit}`).join('\n');
-  }
-
-  else if (type === 'LOW_GAME_STOCK') {
-    const { gameName, currentStock, threshold } = data;
-    discordPayload = {
-      embeds: [{
-        title: '⚠️ Low game stock',
-        color: 0xd97706,
-        fields: [
-          { name: 'Game', value: gameName, inline: true },
-          { name: 'Current Stock', value: `${currentStock.toFixed(0)} pts`, inline: true },
-          { name: 'Threshold', value: `${threshold} pts`, inline: true },
-        ],
-        footer: { text: 'Reload game points before it hits zero' },
-      }],
-    };
-    whatsappText = `⚠️ *Low game stock alert*\nGame: ${gameName}\nCurrent: ${currentStock.toFixed(0)} pts\nThreshold: ${threshold} pts\nPlease reload soon!`;
-  }
-
-  else if (type === 'PENDING_CASHOUT') {
-    const { count, totalAmount, oldest } = data;
-    discordPayload = {
-      embeds: [{
-        title: '💸 Pending cashouts need approval',
-        color: 0x7c3aed,
-        fields: [
-          { name: 'Count', value: `${count} cashouts`, inline: true },
-          { name: 'Total Amount', value: `$${totalAmount.toFixed(2)}`, inline: true },
-          { name: 'Oldest Waiting', value: oldest, inline: true },
-        ],
-        footer: { text: 'Approve from the Transactions page' },
-      }],
-    };
-    whatsappText = `💸 *${count} cashout(s) pending approval*\nTotal: $${totalAmount.toFixed(2)}\nOldest waiting: ${oldest}\nPlease approve from the dashboard.`;
   }
 
   if (!discordPayload) return;
@@ -200,9 +123,9 @@ async function notify(type, data) {
   }
 
   // ── WhatsApp via Twilio ──
-  if (TWILIO_ACCOUNT_SID && NOTIFY_WHATSAPP_TO && whatsappText) {
-    const sid = TWILIO_ACCOUNT_SID;
-    const auth = TWILIO_AUTH_TOKEN;
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.NOTIFY_WHATSAPP_TO && whatsappText) {
+    const sid  = process.env.TWILIO_ACCOUNT_SID;
+    const auth = process.env.TWILIO_AUTH_TOKEN;
     fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
       method: 'POST',
       headers: {
@@ -210,8 +133,8 @@ async function notify(type, data) {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: new URLSearchParams({
-        From: TWILIO_WHATSAPP_FROM,
-        To: NOTIFY_WHATSAPP_TO,
+        From: process.env.TWILIO_WHATSAPP_FROM,
+        To:   process.env.NOTIFY_WHATSAPP_TO,
         Body: whatsappText,
       }),
     }).catch(err => console.error('WhatsApp notify failed:', err));
@@ -531,7 +454,7 @@ app.get('/api/players', authMiddleware, async (req, res) => {
     // const freezeRecords = await prisma.streakFreeze.findMany({
     //   where: { userId: { in: paginated.map(p => p.id) } },
     // }).catch(() => []);
-    const freezeRecords = prisma.streakFreeze ? await prisma.streakFreeze.findMany({ where: { userId: { in: paginated.map(p => p.id) } } }).catch(() => []) : [];
+    const freezeRecords = prisma.streakFreeze ? await prisma.streakFreeze.findMany({ where: { userId: { in: paginated.map(p => p.id) } } }).catch(() => []): [];
     const freezeMap = {};
     freezeRecords.forEach(f => { freezeMap[f.userId] = f; });
 
@@ -1092,77 +1015,77 @@ app.get('/api/players/:id/streak/freeze-status', authMiddleware, async (req, res
     res.json({ data: { ...computeFreezeStatus(player, freezeRecord), existingFreeze: freezeRecord } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
+ 
 app.post('/api/players/:id/streak/freeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
     if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
-
+ 
     const { hours = 24, note = '' } = req.body;
     const hoursNum = parseFloat(hours);
     if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
       return res.status(400).json({ error: 'hours must be between 1 and 720' });
-
+ 
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true, lastPlayedDate: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
     if (!player.currentStreak) return res.status(400).json({ error: 'Player has no active streak to freeze' });
-
+ 
     const freezeUntil = new Date(Date.now() + hoursNum * 3_600_000);
     const freeze = await prisma.streakFreeze.upsert({
       where: { userId: id },
       create: { userId: id, freezeUntil, frozenById: req.userId, note: note || `Frozen ${hoursNum}h by staff` },
       update: { freezeUntil, frozenById: req.userId, frozenAt: new Date(), note: note || `Frozen ${hoursNum}h by staff` },
     });
-
+ 
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak frozen until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
+ 
 app.post('/api/players/:id/streak/extend-freeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
     if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
-
+ 
     const { hours = 24, note = '' } = req.body;
     const hoursNum = parseFloat(hours);
     if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
       return res.status(400).json({ error: 'hours must be between 1 and 720' });
-
+ 
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
-
+ 
     const existing = await safeFreeze.findUnique({ where: { userId: id } });
-    const base = existing && new Date(existing.freezeUntil) > new Date() ? new Date(existing.freezeUntil) : new Date();
+    const base     = existing && new Date(existing.freezeUntil) > new Date() ? new Date(existing.freezeUntil) : new Date();
     const newUntil = new Date(base.getTime() + hoursNum * 3_600_000);
-
+ 
     const freeze = await prisma.streakFreeze.upsert({
       where: { userId: id },
       create: { userId: id, freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
       update: { freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
     });
-
+ 
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s freeze extended until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
+ 
 app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
     if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
-
+ 
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
-
+ 
     await prisma.$transaction([
       prisma.streakFreeze.deleteMany({ where: { userId: id } }),
       prisma.user.update({ where: { id }, data: { currentStreak: 0, lastPlayedDate: null } }),
     ]);
-
+ 
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({
       data: { playerId: id, playerName: player.name, streakReset: true, previousStreak: player.currentStreak },
@@ -1539,16 +1462,11 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     }
 
     const results = await prisma.$transaction(ops);
-    // ── Low stock alert ──────────────────────────────────────────
-    const LOW_STOCK_THRESHOLD = 500;
-    if (newStock <= LOW_STOCK_THRESHOLD) {
-      notify('LOW_GAME_STOCK', { gameName: game.name, currentStock: newStock, threshold: LOW_STOCK_THRESHOLD });
-    }
     // Lift any active streak freeze — player deposited so streak is safe again
     // await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
     if (prisma.streakFreeze) {
-      await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
-    }
+    await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => {});
+  }
     const updatedPlayer = results[0];
     const updatedWallet = results[1];
     const depositTx = results[2];
@@ -2412,13 +2330,13 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
     let netProfit = null, isBalanced = null;
     if (checkin?.additionalNotes) {
       try {
-        const parsed = JSON.parse(checkin.additionalNotes);
-        netProfit = parsed.endSnapshot?.netProfit ?? null;
-        isBalanced = parsed.endSnapshot?.isBalanced ?? null;
-      } catch (_) { }
-    }
-    const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
-    notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced });
+    const parsed = JSON.parse(checkin.additionalNotes);
+    netProfit  = parsed.endSnapshot?.netProfit  ?? null;
+    isBalanced = parsed.endSnapshot?.isBalanced ?? null;
+  } catch (_) {}
+}
+const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
+notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced });
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
@@ -3162,10 +3080,10 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
 
     broadcastTaskUpdate('task_created', task);
     if (task.taskType !== 'MISSING_INFO') {
-      const assigneeName = task.assignedTo?.name ?? (assignToAll ? 'All members' : null);
-      const creator = await prisma.user.findUnique({ where: { id: req.userId }, select: { name: true } });
-      notify('TASK_ASSIGNED', { taskTitle: task.title, assigneeName, priority: task.priority, taskType: task.taskType, dueDate: task.dueDate, createdByName: creator?.name });
-    }
+  const assigneeName = task.assignedTo?.name ?? (assignToAll ? 'All members' : null);
+  const creator = await prisma.user.findUnique({ where: { id: req.userId }, select: { name: true } });
+  notify('TASK_ASSIGNED', { taskTitle: task.title, assigneeName, priority: task.priority, taskType: task.taskType, dueDate: task.dueDate, createdByName: creator?.name });
+}
     res.status(201).json({ data: task, message: 'Task created successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3456,221 +3374,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ── 1. Daily report — every night at 11:59 PM Chicago time ──────
-cron.schedule('59 23 * * *', async () => {
-  console.log('📊 Running daily report...');
-  try {
-    const now = new Date();
-    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date(now); todayEnd.setHours(23, 59, 59, 999);
-
-    const [txns, shifts, newPlayers, pendingCOs] = await Promise.all([
-      prisma.transaction.findMany({ where: { createdAt: { gte: todayStart, lte: todayEnd }, status: 'COMPLETED' } }),
-      prisma.shift.findMany({ where: { startTime: { gte: todayStart, lte: todayEnd }, isActive: false } }),
-      prisma.user.count({ where: { role: 'PLAYER', createdAt: { gte: todayStart, lte: todayEnd } } }),
-      prisma.transaction.count({ where: { type: 'WITHDRAWAL', status: 'PENDING' } }),
-    ]);
-
-    const deposits = txns.filter(t => t.type === 'DEPOSIT').reduce((s, t) => s + parseFloat(t.amount), 0);
-    const cashouts = txns.filter(t => t.type === 'WITHDRAWAL').reduce((s, t) => s + parseFloat(t.amount), 0);
-    const bonuses = txns.filter(t => t.type === 'BONUS').reduce((s, t) => s + parseFloat(t.amount), 0);
-    const netProfit = deposits - cashouts - bonuses;
-    const dateLabel = now.toLocaleDateString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', year: 'numeric' });
-
-    notify('DAILY_REPORT', {
-      date: dateLabel,
-      deposits, cashouts, bonuses, netProfit,
-      shiftsWorked: shifts.length,
-      playersAdded: newPlayers,
-      pendingCashouts: pendingCOs,
-    });
-  } catch (err) {
-    console.error('Daily report job failed:', err);
-  }
-}, { timezone: 'America/Chicago' });
-
-// ── 2. Player status check — every hour ─────────────────────────
-cron.schedule('0 * * * *', async () => {
-  console.log('👥 Checking player statuses...');
-  try {
-    const now = new Date();
-    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-    const twoDaysAgo = new Date(todayStart); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-    const sevenDaysAgo = new Date(todayStart); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    const eightDaysAgo = new Date(todayStart); eightDaysAgo.setDate(eightDaysAgo.getDate() - 8);
-
-    const lastDeposits = await prisma.transaction.groupBy({
-      by: ['userId'],
-      where: { type: 'DEPOSIT', status: 'COMPLETED' },
-      _max: { createdAt: true },
-    });
-
-    const criticalIds = [];
-    const highlyCriticalIds = [];
-
-    for (const r of lastDeposits) {
-      const last = r._max.createdAt;
-      // Just crossed into CRITICAL (between 1–2 days ago, check at the hourly boundary)
-      if (last >= twoDaysAgo && last < todayStart) {
-        // Only alert once — when they crossed in the last hour
-        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-        if (last >= oneHourAgo && last < now) criticalIds.push(r.userId);
-      }
-      // Just crossed into HIGHLY_CRITICAL (between 2–7 days ago)
-      if (last >= sevenDaysAgo && last < twoDaysAgo) {
-        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-        if (last >= oneHourAgo && last < now) highlyCriticalIds.push(r.userId);
-      }
-    }
-
-    const fetchPlayers = async (ids) => {
-      if (!ids.length) return [];
-      const users = await prisma.user.findMany({ where: { id: { in: ids }, role: 'PLAYER' }, select: { id: true, name: true } });
-      return users.map(u => {
-        const dep = lastDeposits.find(r => r.userId === u.id);
-        return {
-          name: u.name,
-          lastDeposit: dep?._max.createdAt
-            ? new Date(dep._max.createdAt).toLocaleDateString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric' })
-            : 'Never',
-        };
-      });
-    };
-
-    const criticalPlayers = await fetchPlayers(criticalIds);
-    const highlyCriticalPlayers = await fetchPlayers(highlyCriticalIds);
-
-    if (criticalPlayers.length) notify('PLAYER_CRITICAL', { players: criticalPlayers, level: 'CRITICAL' });
-    if (highlyCriticalPlayers.length) notify('PLAYER_CRITICAL', { players: highlyCriticalPlayers, level: 'HIGHLY_CRITICAL' });
-
-  } catch (err) {
-    console.error('Player status job failed:', err);
-  }
-}, { timezone: 'America/Chicago' });
-
-// ── 3. Pending cashout alert — every 30 minutes ─────────────────
-cron.schedule('*/30 * * * *', async () => {
-  try {
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-    const pending = await prisma.transaction.findMany({
-      where: { type: 'WITHDRAWAL', status: 'PENDING', createdAt: { lte: thirtyMinutesAgo } },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    if (!pending.length) return;
-
-    const totalAmount = pending.reduce((s, t) => s + parseFloat(t.amount), 0);
-    const oldest = new Date(pending[0].createdAt).toLocaleString('en-US', {
-      timeZone: 'America/Chicago', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: true,
-    });
-
-    notify('PENDING_CASHOUT', { count: pending.length, totalAmount, oldest });
-  } catch (err) {
-    console.error('Pending cashout job failed:', err);
-  }
-});
-
-
-app.get('/api/shifts/:id/pdf', authMiddleware, async (req, res) => {
-  try {
-    const shiftId = parseInt(req.params.id);
-    const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
-    if (!shift) return res.status(404).json({ error: 'Shift not found' });
-
-    const enriched = await enrichShift(shift);
-    const c = enriched.checkin;
-    const s = enriched.stats;
-
-    const doc = new PDFDocument({ margin: 50, size: 'A4' });
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="shift-${shiftId}-report.pdf"`);
-    doc.pipe(res);
-
-    // ── Header ──
-    doc.fontSize(22).font('Helvetica-Bold').text('Shift Report', { align: 'center' });
-    doc.fontSize(11).font('Helvetica').text(`Shift #${shiftId} · ${shift.teamRole}`, { align: 'center' });
-    doc.moveDown(0.5);
-    doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
-    doc.moveDown();
-
-    // ── Shift info ──
-    const fmt = iso => iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '—';
-    const row = (label, value) => {
-      doc.font('Helvetica-Bold').text(label + ': ', { continued: true }).font('Helvetica').text(value);
-    };
-
-    doc.fontSize(14).font('Helvetica-Bold').text('Shift Info');
-    doc.moveDown(0.3);
-    doc.fontSize(11);
-    row('Started', fmt(shift.startTime));
-    row('Ended', fmt(shift.endTime));
-    row('Duration', s.effortRating != null ? `${shift.duration} min` : '—');
-    row('Team', shift.teamRole);
-    doc.moveDown();
-
-    // ── Financial summary ──
-    doc.fontSize(14).font('Helvetica-Bold').text('Financial Summary');
-    doc.moveDown(0.3);
-    doc.fontSize(11);
-    row('Total Deposits', `$${(s.totalDeposits ?? 0).toFixed(2)}`);
-    row('Total Cashouts', `$${(s.totalCashouts ?? 0).toFixed(2)}`);
-    row('Total Bonuses', `$${(s.totalBonuses ?? 0).toFixed(2)}`);
-    row('Net Profit', `$${(s.netProfit ?? 0).toFixed(2)}`);
-    row('Transactions', `${s.transactionCount ?? 0}`);
-    doc.moveDown();
-
-    // ── Reconciliation ──
-    if (enriched.endSnapshot) {
-      doc.fontSize(14).font('Helvetica-Bold').text('Reconciliation');
-      doc.moveDown(0.3);
-      doc.fontSize(11);
-      row('Wallet Start', `$${(s.walletStartTotal ?? 0).toFixed(2)}`);
-      row('Wallet End', `$${(s.walletEndTotal ?? 0).toFixed(2)}`);
-      row('Wallet Change', `$${(s.walletChange ?? 0).toFixed(2)}`);
-      row('Game Stock Start', `${(s.gameStartTotal ?? 0).toFixed(0)} pts`);
-      row('Game Stock End', `${(s.gameEndTotal ?? 0).toFixed(0)} pts`);
-      row('Balanced', s.isBalanced ? '✓ Yes' : '⚠ Discrepancy');
-      if (!s.isBalanced && s.totalDiscrepancy != null) {
-        row('Discrepancy', `$${Math.abs(s.totalDiscrepancy).toFixed(2)}`);
-      }
-      doc.moveDown();
-    }
-
-    // ── Feedback ──
-    if (c) {
-      doc.fontSize(14).font('Helvetica-Bold').text('Member Feedback');
-      doc.moveDown(0.3);
-      doc.fontSize(11);
-      if (c.effortRating) row('Effort Rating', `${c.effortRating}/10`);
-      if (enriched.effortReason) row('Effort Reason', enriched.effortReason);
-      if (enriched.improvements) row('Improvements', enriched.improvements);
-      if (c.workSummary) row('Work Summary', c.workSummary);
-      if (c.issuesEncountered) row('Issues', c.issuesEncountered);
-      doc.moveDown();
-    }
-
-    // ── Top depositing players ──
-    if (enriched.playerDepositBreakdown?.length) {
-      doc.fontSize(14).font('Helvetica-Bold').text('Top Players This Shift');
-      doc.moveDown(0.3);
-      doc.fontSize(11);
-      enriched.playerDepositBreakdown.slice(0, 10).forEach((p, i) => {
-        doc.font('Helvetica').text(`${i + 1}. ${p.name} — $${p.total.toFixed(2)} (${p.count} deposit${p.count > 1 ? 's' : ''})`);
-      });
-      doc.moveDown();
-    }
-
-    doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
-    doc.moveDown(0.5);
-    doc.fontSize(9).fillColor('grey').text(`Generated ${new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })}`, { align: 'center' });
-
-    doc.end();
-  } catch (err) {
-    console.error('PDF generation error:', err);
-    res.status(500).json({ error: 'Failed to generate PDF: ' + err.message });
-  }
-});
 // ═══════════════════════════════════════════════════════════════
 // START SERVER
 // ═══════════════════════════════════════════════════════════════
