@@ -2724,7 +2724,7 @@ app.get('/api/tasks', authMiddleware, async (req, res) => {
     if (taskType) where.taskType = taskType;
     if (status) where.status = status;
     if (myTasks === 'true') {
-      where.OR = [{ assignedToId: req.userId }, { assignToAll: true }];
+      where.OR = [{ assignedToId: req.userId }, { assignToAll: true }, { subTasks: { some: { assignedToId: req.userId } } }, ];
     } else if (assignedToId) {
       where.assignedToId = parseInt(assignedToId);
     }
