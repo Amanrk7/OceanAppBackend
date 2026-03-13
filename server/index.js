@@ -341,12 +341,12 @@ app.get('/api/players', authMiddleware, async (req, res) => {
     const total = statusFiltered.length;
     const paginated = statusFiltered.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
-    const freezeRecords = await prisma.streakFreeze.findMany({
-      where: { userId: { in: paginated.map(p => p.id) } },
-    }).catch(() => []);
+    // const freezeRecords = await prisma.streakFreeze.findMany({
+    //   where: { userId: { in: paginated.map(p => p.id) } },
+    // }).catch(() => []);
+    const freezeRecords = prisma.streakFreeze ? await prisma.streakFreeze.findMany({ where: { userId: { in: paginated.map(p => p.id) } } }).catch(() => []): [];
     const freezeMap = {};
     freezeRecords.forEach(f => { freezeMap[f.userId] = f; });
-
 
     const formatted = paginated.map(p => {
       const dynamicStatus = computeStatus(p.id);
@@ -815,7 +815,8 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
 
 
     if (!user) return res.status(404).json({ error: 'Player not found' });
-    const freezeRecord = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
+    // const freezeRecord = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
+    const freezeRecord = prisma.streakFreeze ? await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null) : null;
     const shaped = shapePlayer(user);
     shaped.streakFreeze = computeFreezeStatus(
       { currentStreak: user.currentStreak || 0, lastPlayedDate: user.lastPlayedDate },
@@ -900,82 +901,85 @@ app.get('/api/players/:id/streak/freeze-status', authMiddleware, async (req, res
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true, lastPlayedDate: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
-    const freezeRecord = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
+    const freezeRecord = await safeFreeze.findUnique({ where: { userId: id } });
     res.json({ data: { ...computeFreezeStatus(player, freezeRecord), existingFreeze: freezeRecord } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
+ 
 app.post('/api/players/:id/streak/freeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
-
+    if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
+ 
     const { hours = 24, note = '' } = req.body;
     const hoursNum = parseFloat(hours);
     if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
       return res.status(400).json({ error: 'hours must be between 1 and 720' });
-
+ 
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true, lastPlayedDate: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
     if (!player.currentStreak) return res.status(400).json({ error: 'Player has no active streak to freeze' });
-
+ 
     const freezeUntil = new Date(Date.now() + hoursNum * 3_600_000);
     const freeze = await prisma.streakFreeze.upsert({
       where: { userId: id },
       create: { userId: id, freezeUntil, frozenById: req.userId, note: note || `Frozen ${hoursNum}h by staff` },
       update: { freezeUntil, frozenById: req.userId, frozenAt: new Date(), note: note || `Frozen ${hoursNum}h by staff` },
     });
-
+ 
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak frozen until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
+ 
 app.post('/api/players/:id/streak/extend-freeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
-
+    if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
+ 
     const { hours = 24, note = '' } = req.body;
     const hoursNum = parseFloat(hours);
     if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
       return res.status(400).json({ error: 'hours must be between 1 and 720' });
-
+ 
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
-
-    const existing = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
-    const base = existing && new Date(existing.freezeUntil) > new Date() ? new Date(existing.freezeUntil) : new Date();
+ 
+    const existing = await safeFreeze.findUnique({ where: { userId: id } });
+    const base     = existing && new Date(existing.freezeUntil) > new Date() ? new Date(existing.freezeUntil) : new Date();
     const newUntil = new Date(base.getTime() + hoursNum * 3_600_000);
-
+ 
     const freeze = await prisma.streakFreeze.upsert({
       where: { userId: id },
       create: { userId: id, freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
       update: { freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
     });
-
+ 
     broadcastTaskUpdate('player_updated', { playerId: id });
-    res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak freeze extended until ${fmtTX(freeze.freezeUntil)}` });
+    res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s freeze extended until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
+ 
 app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
-
+    if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
+ 
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
-
+ 
     await prisma.$transaction([
       prisma.streakFreeze.deleteMany({ where: { userId: id } }),
       prisma.user.update({ where: { id }, data: { currentStreak: 0, lastPlayedDate: null } }),
     ]);
-
+ 
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({
       data: { playerId: id, playerName: player.name, streakReset: true, previousStreak: player.currentStreak },
-      message: `${player.name}'s streak manually unfrozen and reset to 0`,
+      message: `${player.name}'s streak unfrozen and reset to 0`,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1349,7 +1353,10 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
 
     const results = await prisma.$transaction(ops);
     // Lift any active streak freeze — player deposited so streak is safe again
-    await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
+    // await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
+    if (prisma.streakFreeze) {
+    await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => {});
+  }
     const updatedPlayer = results[0];
     const updatedWallet = results[1];
     const depositTx = results[2];
