@@ -1211,7 +1211,7 @@ app.get('/api/profit/stats', authMiddleware, adminMiddleware, async (req, res) =
 // BONUSES ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
-app.get('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/bonuses', authMiddleware, async (req, res) => {
   try {
     const bonusTxns = await prisma.transaction.findMany({
       where: { type: 'BONUS' },
@@ -1250,7 +1250,7 @@ app.get('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/bonuses', authMiddleware, async (req, res) => {
   try {
     const { playerId, amount, gameId, notes, bonusType } = req.body;
     if (!playerId || !amount || !gameId) return res.status(400).json({ error: 'playerId, amount, and gameId are required' });
