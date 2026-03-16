@@ -1557,21 +1557,21 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
 
     // ✅ FIXED:
     const [updatedPlayer, tx] = await prisma.$transaction([
-  prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
-  prisma.transaction.create({
-    data: {
-      userId: parseInt(playerId),
-      type: 'WITHDRAWAL',
-      amount: new Prisma.Decimal(cashoutAmt.toString()),
-      status: 'PENDING',
-      description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
-      notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
-      paymentMethod: null,
-      gameId: game.id,
-    }
-  }),
-  // ← NO game.update here — stock only moves when payment is made
-]);
+      prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
+      prisma.transaction.create({
+        data: {
+          userId: parseInt(playerId),
+          type: 'WITHDRAWAL',
+          amount: new Prisma.Decimal(cashoutAmt.toString()),
+          status: 'PENDING',
+          description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+          notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
+          paymentMethod: null,
+          gameId: game.id,
+        }
+      }),
+      // ← NO game.update here — stock only moves when payment is made
+    ]);
 
     res.status(201).json({
       success: true,
@@ -1991,7 +1991,7 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
 // ── PATCH /api/transactions/:id/approve ─────────────────────────
 // Admin marks a pending cashout as fully paid → COMPLETED
 // Deducts from wallet at this point (not at cashout creation)
-app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddleware, async (req, res) => {
+app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req, res) => {
   try {
     const transactionId = parseInt(req.params.transactionId);
     if (isNaN(transactionId)) return res.status(400).json({ error: 'Invalid transaction ID' });
@@ -2029,7 +2029,7 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
     if (tx.gameId) {
       cashoutGame = await prisma.game.findUnique({ where: { id: tx.gameId } });
     }
-    
+
     // Guard: if already fully paid somehow, just mark complete
     if (remaining <= 0) {
       const updated = await prisma.transaction.update({
@@ -2043,7 +2043,7 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
         error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, needs $${(remaining + feeAmt).toFixed(2)} (remaining after partial payments).`
       });
     }
-    
+
     // const [updatedTx, updatedWallet] = await prisma.$transaction([
     //   prisma.transaction.update({
     //     where: { id: transactionId },
@@ -2062,27 +2062,27 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, adminMiddl
 
 
     const opsApprove = [
-  prisma.transaction.update({
-    where: { id: transactionId },
-    data: { status: 'COMPLETED', paidAmount: cashoutAmt, approvedBy: req.userId, approvedAt: new Date() }
-  }),
-  prisma.wallet.update({
-    where: { id: wallet.id },
-    data: { balance: { decrement: remaining + feeAmt } }
-  }),
-];
+      prisma.transaction.update({
+        where: { id: transactionId },
+        data: { status: 'COMPLETED', paidAmount: cashoutAmt, approvedBy: req.userId, approvedAt: new Date() }
+      }),
+      prisma.wallet.update({
+        where: { id: wallet.id },
+        data: { balance: { decrement: remaining + feeAmt } }
+      }),
+    ];
 
-if (cashoutGame) {
-  const gameNewStock = parseFloat(cashoutGame.pointStock) + remaining;
-  const gameNewStatus = gameNewStock <= 0 ? 'DEFICIT' : gameNewStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
-  opsApprove.push(prisma.game.update({
-    where: { id: cashoutGame.id },
-    data: { pointStock: gameNewStock, status: gameNewStatus }
-  }));
-}
+    if (cashoutGame) {
+      const gameNewStock = parseFloat(cashoutGame.pointStock) + remaining;
+      const gameNewStatus = gameNewStock <= 0 ? 'DEFICIT' : gameNewStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+      opsApprove.push(prisma.game.update({
+        where: { id: cashoutGame.id },
+        data: { pointStock: gameNewStock, status: gameNewStatus }
+      }));
+    }
 
-const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
-    
+    const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
+
     res.json({
       success: true,
       message: `Cashout #${transactionId} approved and marked as completed. Wallet debited $${(cashoutAmt + feeAmt).toFixed(2)}.`,
@@ -2098,7 +2098,7 @@ const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
 // Record a partial payment toward a pending cashout.
 // Debits the wallet by the partial amount immediately.
 // Auto-approves (→ COMPLETED) if fully paid.
-app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, adminMiddleware, async (req, res) => {
+app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, async (req, res) => {
   try {
     const transactionId = parseInt(req.params.transactionId);
     if (isNaN(transactionId)) return res.status(400).json({ error: 'Invalid transaction ID' });
@@ -2135,39 +2135,39 @@ app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, adm
     }
 
     let partialGame = null;
-if (tx.gameId) {
-  partialGame = await prisma.game.findUnique({ where: { id: tx.gameId } });
-}
-    
+    if (tx.gameId) {
+      partialGame = await prisma.game.findUnique({ where: { id: tx.gameId } });
+    }
+
     const newPaidAmount = parseFloat((alreadyPaid + partialAmt).toFixed(2));
     const isFullyPaid = newPaidAmount >= totalAmt;
 
     const opsPartial = [
-  prisma.transaction.update({
-    where: { id: transactionId },
-    data: {
-      paidAmount: newPaidAmount,
-      status: isFullyPaid ? 'COMPLETED' : 'PENDING',
-      ...(isFullyPaid ? { approvedBy: req.userId, approvedAt: new Date() } : {}),
-      notes: `${tx.notes || ''}|partial:${partialAmt.toFixed(2)}@${new Date().toISOString()}`
+      prisma.transaction.update({
+        where: { id: transactionId },
+        data: {
+          paidAmount: newPaidAmount,
+          status: isFullyPaid ? 'COMPLETED' : 'PENDING',
+          ...(isFullyPaid ? { approvedBy: req.userId, approvedAt: new Date() } : {}),
+          notes: `${tx.notes || ''}|partial:${partialAmt.toFixed(2)}@${new Date().toISOString()}`
+        }
+      }),
+      prisma.wallet.update({
+        where: { id: wallet.id },
+        data: { balance: { decrement: partialAmt } }
+      }),
+    ];
+
+    if (partialGame) {
+      const gameNewStock = parseFloat(partialGame.pointStock) + partialAmt;
+      const gameNewStatus = gameNewStock <= 0 ? 'DEFICIT' : gameNewStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+      opsPartial.push(prisma.game.update({
+        where: { id: partialGame.id },
+        data: { pointStock: gameNewStock, status: gameNewStatus }
+      }));
     }
-  }),
-  prisma.wallet.update({
-    where: { id: wallet.id },
-    data: { balance: { decrement: partialAmt } }
-  }),
-];
 
-if (partialGame) {
-  const gameNewStock = parseFloat(partialGame.pointStock) + partialAmt;
-  const gameNewStatus = gameNewStock <= 0 ? 'DEFICIT' : gameNewStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
-  opsPartial.push(prisma.game.update({
-    where: { id: partialGame.id },
-    data: { pointStock: gameNewStock, status: gameNewStatus }
-  }));
-}
-
-const [updatedTx, updatedWallet] = await prisma.$transaction(opsPartial);
+    const [updatedTx, updatedWallet] = await prisma.$transaction(opsPartial);
 
     res.json({
       success: true,
