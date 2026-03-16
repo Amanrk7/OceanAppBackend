@@ -2750,7 +2750,7 @@ async function enrichShift(shift) {
   const shiftEnd = shift.endTime || new Date();
   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
 
-  const [transactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
+  const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
     prisma.transaction.findMany({
       where: { createdAt: timeWindow, status: 'COMPLETED' },
       include: {
@@ -2789,6 +2789,59 @@ async function enrichShift(shift) {
       include: { user: { select: { id: true, name: true } } },
     }).catch(() => null),
   ]);
+
+  const transactions = rawTransactions.map(t => {
+    let displayType = t.type;
+    let bonusType = null;
+    if (t.type === 'DEPOSIT') displayType = 'Deposit';
+    else if (t.type === 'WITHDRAWAL') displayType = 'Cashout';
+    else if (t.type === 'BONUS') {
+      if (t.description?.includes('Match')) { displayType = 'Match Bonus'; bonusType = 'match'; }
+      else if (t.description?.includes('Special')) { displayType = 'Special Bonus'; bonusType = 'special'; }
+      else if (t.description?.includes('Streak')) { displayType = 'Streak Bonus'; bonusType = 'streak'; }
+      else if (t.description?.includes('Referral')) { displayType = 'Referral Bonus'; bonusType = 'referral'; }
+      else { displayType = 'Bonus'; bonusType = 'custom'; }
+    }
+
+    // Wallet: parse from description "via METHOD - NAME"
+    let walletMethod = null;
+    let walletName = null;
+    const walletMatch = t.description?.match(/via ([^ ]+) - (.+)$/);
+    if (walletMatch) { walletMethod = walletMatch[1]; walletName = walletMatch[2]; }
+
+    // Fee
+    const feeMatch = t.notes?.match(/fee:([\d.]+)/);
+    const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
+
+    // Game stock before/after
+    const stockBeforeMatch = t.notes?.match(/gameStockBefore:([\d.]+)/);
+    const stockAfterMatch = t.notes?.match(/gameStockAfter:([\d.]+)/);
+    const gameStockBefore = stockBeforeMatch ? parseFloat(stockBeforeMatch[1]) : null;
+    const gameStockAfter = stockAfterMatch ? parseFloat(stockAfterMatch[1]) : null;
+
+    // Balance before/after
+    const balBeforeMatch = t.notes?.match(/balanceBefore:([\d.]+)/);
+    const balAfterMatch = t.notes?.match(/balanceAfter:([\d.]+)/);
+    const balanceBefore = balBeforeMatch ? parseFloat(balBeforeMatch[1]) : null;
+    const balanceAfter = balAfterMatch ? parseFloat(balAfterMatch[1]) : null;
+
+    return {
+      ...t,
+      displayType,
+      bonusType,
+      walletMethod,
+      walletName,
+      fee,
+      gameStockBefore,
+      gameStockAfter,
+      balanceBefore,
+      balanceAfter,
+      gameName: t.game?.name || null,
+      playerName: t.user?.name || null,
+      amount: parseFloat(t.amount),
+      paidAmount: parseFloat(t.paidAmount ?? 0),
+    };
+  });
 
   const deposits = transactions.filter(t => t.type === 'DEPOSIT');
   const cashouts = transactions.filter(t => t.type === 'WITHDRAWAL');
