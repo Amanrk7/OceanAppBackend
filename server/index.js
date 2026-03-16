@@ -1289,7 +1289,8 @@ app.post('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
       prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newGameStatus } }),
       prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: { increment: bonusAmount } } }),
       prisma.bonus.create({ data: { userId: parseInt(playerId), type: isReferral ? 'REFERRAL' : 'CUSTOM', amount: bonusAmount, description: playerDesc, claimed: false } }),
-      prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'BONUS', amount: bonusAmount, status: 'COMPLETED', description: playerDesc, paymentMethod: null, notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|${notes?.trim() || ''}` } }),
+      prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'BONUS', amount: bonusAmount, status: 'COMPLETED', description: playerDesc, paymentMethod: null, notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes?.trim() || ''}` 
+ } }),
     ];
 
     if (isStreak) ops.push(prisma.user.update({ where: { id: parseInt(playerId) }, data: { currentStreak: 0, lastPlayedDate: null } }));
