@@ -36,9 +36,9 @@ const prisma = new PrismaClient();
 
 // Safe accessor — works before AND after Prisma migration runs
 const safeFreeze = {
-  findMany:  (args) => prisma.streakFreeze ? prisma.streakFreeze.findMany(args).catch(() => [])   : Promise.resolve([]),
-  findUnique:(args) => prisma.streakFreeze ? prisma.streakFreeze.findUnique(args).catch(() => null): Promise.resolve(null),
-  deleteMany:(args) => prisma.streakFreeze ? prisma.streakFreeze.deleteMany(args).catch(() => ({})) : Promise.resolve({}),
+  findMany: (args) => prisma.streakFreeze ? prisma.streakFreeze.findMany(args).catch(() => []) : Promise.resolve([]),
+  findUnique: (args) => prisma.streakFreeze ? prisma.streakFreeze.findUnique(args).catch(() => null) : Promise.resolve(null),
+  deleteMany: (args) => prisma.streakFreeze ? prisma.streakFreeze.deleteMany(args).catch(() => ({})) : Promise.resolve({}),
 };
 
 // ─── Unified notification helper ──────────────────────────────────────────────
@@ -49,7 +49,7 @@ async function notify(type, data) {
   });
 
   let discordPayload = null;
-  let whatsappText  = null;
+  let whatsappText = null;
 
   if (type === 'SHIFT_START') {
     const { memberName, teamRole, shiftId } = data;
@@ -59,8 +59,8 @@ async function notify(type, data) {
         color: 0x16a34a,
         fields: [
           { name: 'Member', value: memberName || teamRole, inline: true },
-          { name: 'Team',   value: teamRole,               inline: true },
-          { name: 'Time',   value: time,                   inline: true },
+          { name: 'Team', value: teamRole, inline: true },
+          { name: 'Time', value: time, inline: true },
         ],
         footer: { text: `Shift #${shiftId}` },
       }],
@@ -77,12 +77,12 @@ async function notify(type, data) {
         title: '🌙 Shift ended',
         color: 0xdc2626,
         fields: [
-          { name: 'Member',     value: memberName || teamRole, inline: true },
-          { name: 'Team',       value: teamRole,               inline: true },
-          { name: 'Duration',   value: duration != null ? `${duration} min` : '—', inline: true },
-          { name: 'Net profit', value: profitStr,              inline: true },
-          { name: 'Balanced',   value: balLabel,               inline: true },
-          { name: 'Time',       value: time,                   inline: true },
+          { name: 'Member', value: memberName || teamRole, inline: true },
+          { name: 'Team', value: teamRole, inline: true },
+          { name: 'Duration', value: duration != null ? `${duration} min` : '—', inline: true },
+          { name: 'Net profit', value: profitStr, inline: true },
+          { name: 'Balanced', value: balLabel, inline: true },
+          { name: 'Time', value: time, inline: true },
         ],
         footer: { text: `Shift #${shiftId}` },
       }],
@@ -99,12 +99,12 @@ async function notify(type, data) {
         title: '📋 New task assigned',
         color: priorityColor,
         fields: [
-          { name: 'Task',      value: taskTitle,                           inline: false },
-          { name: 'Assigned to', value: assigneeName || 'All members',    inline: true },
-          { name: 'Priority',  value: priority,                            inline: true },
-          { name: 'Type',      value: taskType?.replace(/_/g, ' ') || '—', inline: true },
-          { name: 'Due',       value: due,                                 inline: true },
-          { name: 'Created by',value: createdByName || '—',               inline: true },
+          { name: 'Task', value: taskTitle, inline: false },
+          { name: 'Assigned to', value: assigneeName || 'All members', inline: true },
+          { name: 'Priority', value: priority, inline: true },
+          { name: 'Type', value: taskType?.replace(/_/g, ' ') || '—', inline: true },
+          { name: 'Due', value: due, inline: true },
+          { name: 'Created by', value: createdByName || '—', inline: true },
         ],
       }],
     };
@@ -124,7 +124,7 @@ async function notify(type, data) {
 
   // ── WhatsApp via Twilio ──
   if (process.env.TWILIO_ACCOUNT_SID && process.env.NOTIFY_WHATSAPP_TO && whatsappText) {
-    const sid  = process.env.TWILIO_ACCOUNT_SID;
+    const sid = process.env.TWILIO_ACCOUNT_SID;
     const auth = process.env.TWILIO_AUTH_TOKEN;
     fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
       method: 'POST',
@@ -134,7 +134,7 @@ async function notify(type, data) {
       },
       body: new URLSearchParams({
         From: process.env.TWILIO_WHATSAPP_FROM,
-        To:   process.env.NOTIFY_WHATSAPP_TO,
+        To: process.env.NOTIFY_WHATSAPP_TO,
         Body: whatsappText,
       }),
     }).catch(err => console.error('WhatsApp notify failed:', err));
@@ -454,7 +454,7 @@ app.get('/api/players', authMiddleware, async (req, res) => {
     // const freezeRecords = await prisma.streakFreeze.findMany({
     //   where: { userId: { in: paginated.map(p => p.id) } },
     // }).catch(() => []);
-    const freezeRecords = prisma.streakFreeze ? await prisma.streakFreeze.findMany({ where: { userId: { in: paginated.map(p => p.id) } } }).catch(() => []): [];
+    const freezeRecords = prisma.streakFreeze ? await prisma.streakFreeze.findMany({ where: { userId: { in: paginated.map(p => p.id) } } }).catch(() => []) : [];
     const freezeMap = {};
     freezeRecords.forEach(f => { freezeMap[f.userId] = f; });
 
@@ -1015,77 +1015,77 @@ app.get('/api/players/:id/streak/freeze-status', authMiddleware, async (req, res
     res.json({ data: { ...computeFreezeStatus(player, freezeRecord), existingFreeze: freezeRecord } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
- 
+
 app.post('/api/players/:id/streak/freeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
     if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
- 
+
     const { hours = 24, note = '' } = req.body;
     const hoursNum = parseFloat(hours);
     if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
       return res.status(400).json({ error: 'hours must be between 1 and 720' });
- 
+
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true, lastPlayedDate: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
     if (!player.currentStreak) return res.status(400).json({ error: 'Player has no active streak to freeze' });
- 
+
     const freezeUntil = new Date(Date.now() + hoursNum * 3_600_000);
     const freeze = await prisma.streakFreeze.upsert({
       where: { userId: id },
       create: { userId: id, freezeUntil, frozenById: req.userId, note: note || `Frozen ${hoursNum}h by staff` },
       update: { freezeUntil, frozenById: req.userId, frozenAt: new Date(), note: note || `Frozen ${hoursNum}h by staff` },
     });
- 
+
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak frozen until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
- 
+
 app.post('/api/players/:id/streak/extend-freeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
     if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
- 
+
     const { hours = 24, note = '' } = req.body;
     const hoursNum = parseFloat(hours);
     if (isNaN(hoursNum) || hoursNum <= 0 || hoursNum > 720)
       return res.status(400).json({ error: 'hours must be between 1 and 720' });
- 
+
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
- 
+
     const existing = await safeFreeze.findUnique({ where: { userId: id } });
-    const base     = existing && new Date(existing.freezeUntil) > new Date() ? new Date(existing.freezeUntil) : new Date();
+    const base = existing && new Date(existing.freezeUntil) > new Date() ? new Date(existing.freezeUntil) : new Date();
     const newUntil = new Date(base.getTime() + hoursNum * 3_600_000);
- 
+
     const freeze = await prisma.streakFreeze.upsert({
       where: { userId: id },
       create: { userId: id, freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
       update: { freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
     });
- 
+
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s freeze extended until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
- 
+
 app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
     if (!prisma.streakFreeze) return res.status(503).json({ error: 'Run: npx prisma migrate deploy to enable this feature' });
- 
+
     const player = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, currentStreak: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
- 
+
     await prisma.$transaction([
       prisma.streakFreeze.deleteMany({ where: { userId: id } }),
       prisma.user.update({ where: { id }, data: { currentStreak: 0, lastPlayedDate: null } }),
     ]);
- 
+
     broadcastTaskUpdate('player_updated', { playerId: id });
     res.json({
       data: { playerId: id, playerName: player.name, streakReset: true, previousStreak: player.currentStreak },
@@ -1262,7 +1262,7 @@ app.post('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
     const player = await prisma.user.findUnique({ where: { id: parseInt(playerId) }, select: { id: true, name: true, balance: true, status: true, currentStreak: true, lastPlayedDate: true, referredBy: true } });
 
     if (!player) return res.status(404).json({ error: 'Player not found' });
-    
+
 
     const game = await prisma.game.findUnique({ where: { id: gameId } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
@@ -1292,18 +1292,20 @@ app.post('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
       prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newGameStatus } }),
       prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: { increment: bonusAmount } } }),
       prisma.bonus.create({ data: { userId: parseInt(playerId), type: isReferral ? 'REFERRAL' : 'CUSTOM', amount: bonusAmount, description: playerDesc, claimed: false } }),
-      prisma.transaction.create({ data: { 
-  userId: parseInt(playerId), 
-  type: 'BONUS', 
-  amount: bonusAmount, 
-  status: 'COMPLETED', 
-  description: playerDesc, 
-  paymentMethod: null, 
-  gameId: gameId,   // ← THIS is the only addition
-  // notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes?.trim() || ''}` 
-  notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|streakBefore:${player.currentStreak || 0}|lastPlayedDateBefore:${player.lastPlayedDate?.toISOString() || ''}|${notes?.trim() || ''}`
+      prisma.transaction.create({
+        data: {
+          userId: parseInt(playerId),
+          type: 'BONUS',
+          amount: bonusAmount,
+          status: 'COMPLETED',
+          description: playerDesc,
+          paymentMethod: null,
+          gameId: gameId,   // ← THIS is the only addition
+          // notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes?.trim() || ''}` 
+          notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|streakBefore:${player.currentStreak || 0}|lastPlayedDateBefore:${player.lastPlayedDate?.toISOString() || ''}|${notes?.trim() || ''}`
 
- } }),
+        }
+      }),
     ];
 
     if (isStreak) ops.push(prisma.user.update({ where: { id: parseInt(playerId) }, data: { currentStreak: 0, lastPlayedDate: null } }));
@@ -1479,8 +1481,8 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     // Lift any active streak freeze — player deposited so streak is safe again
     // await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
     if (prisma.streakFreeze) {
-    await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => {});
-  }
+      await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
+    }
     const updatedPlayer = results[0];
     const updatedWallet = results[1];
     const depositTx = results[2];
@@ -1930,42 +1932,43 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
 
       // Restore streak + lastPlayedDate if this was a streak bonus
       if (transaction.type === 'BONUS') {
-  // Recalculate streak from deposit history — works for all bonuses
-  // regardless of whether streakBefore was stored in notes
-  const remainingDeposits = await prisma.transaction.findMany({
-    where: {
-      userId: transaction.userId,
-      type: 'DEPOSIT',
-      status: 'COMPLETED',
-    },
-    orderBy: { createdAt: 'asc' },
-  });
+        // Recalculate streak from deposit history — works for all bonuses
+        // regardless of whether streakBefore was stored in notes
+        const remainingDeposits = await prisma.transaction.findMany({
+          where: {
+            userId: transaction.userId,
+            type: 'DEPOSIT',
+            status: 'COMPLETED',
+          },
+          orderBy: { createdAt: 'asc' },
+        });
 
-  let recalcStreak = 0;
-  let lastDepDate = null;
-  for (const dep of remainingDeposits) {
-    const depDate = new Date(dep.createdAt);
-    if (!lastDepDate) {
-      recalcStreak = 1;
-    } else if (sameDay(lastDepDate, depDate)) {
-      // same day — no change
-    } else if (isYesterday(lastDepDate, depDate)) {
-      recalcStreak += 1;
-    } else {
-      recalcStreak = 1;
+        let recalcStreak = 0;
+        let lastDepDate = null;
+        for (const dep of remainingDeposits) {
+          const depDate = new Date(dep.createdAt);
+          if (!lastDepDate) {
+            recalcStreak = 1;
+          } else if (sameDay(lastDepDate, depDate)) {
+            // same day — no change
+          } else if (isYesterday(lastDepDate, depDate)) {
+            recalcStreak += 1;
+          } else {
+            recalcStreak = 1;
+          }
+          lastDepDate = depDate;
+        }
+
+        const lastDeposit = remainingDeposits[remainingDeposits.length - 1];
+        ops.push(prisma.user.update({
+          where: { id: transaction.userId },
+          data: {
+            currentStreak: recalcStreak,
+            lastPlayedDate: lastDeposit ? lastDeposit.createdAt : null,
+          },
+        }));
+      }
     }
-    lastDepDate = depDate;
-  }
-
-  const lastDeposit = remainingDeposits[remainingDeposits.length - 1];
-  ops.push(prisma.user.update({
-    where: { id: transaction.userId },
-    data: {
-      currentStreak: recalcStreak,
-      lastPlayedDate: lastDeposit ? lastDeposit.createdAt : null,
-    },
-  }));
-}
 
     await prisma.$transaction(ops);
 
@@ -1978,6 +1981,7 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
       },
       gamePointsRestored: Object.keys(gameRestoreMap).length > 0 ? gameRestoreMap : null,
     });
+
   } catch (err) {
     console.error('Undo transaction error:', err);
     res.status(500).json({ error: 'Failed to undo transaction: ' + err.message });
@@ -2483,13 +2487,13 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
     let netProfit = null, isBalanced = null;
     if (checkin?.additionalNotes) {
       try {
-    const parsed = JSON.parse(checkin.additionalNotes);
-    netProfit  = parsed.endSnapshot?.netProfit  ?? null;
-    isBalanced = parsed.endSnapshot?.isBalanced ?? null;
-  } catch (_) {}
-}
-const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
-notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced });
+        const parsed = JSON.parse(checkin.additionalNotes);
+        netProfit = parsed.endSnapshot?.netProfit ?? null;
+        isBalanced = parsed.endSnapshot?.isBalanced ?? null;
+      } catch (_) { }
+    }
+    const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
+    notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced });
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
@@ -3233,10 +3237,10 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
 
     broadcastTaskUpdate('task_created', task);
     if (task.taskType !== 'MISSING_INFO') {
-  const assigneeName = task.assignedTo?.name ?? (assignToAll ? 'All members' : null);
-  const creator = await prisma.user.findUnique({ where: { id: req.userId }, select: { name: true } });
-  notify('TASK_ASSIGNED', { taskTitle: task.title, assigneeName, priority: task.priority, taskType: task.taskType, dueDate: task.dueDate, createdByName: creator?.name });
-}
+      const assigneeName = task.assignedTo?.name ?? (assignToAll ? 'All members' : null);
+      const creator = await prisma.user.findUnique({ where: { id: req.userId }, select: { name: true } });
+      notify('TASK_ASSIGNED', { taskTitle: task.title, assigneeName, priority: task.priority, taskType: task.taskType, dueDate: task.dueDate, createdByName: creator?.name });
+    }
     res.status(201).json({ data: task, message: 'Task created successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
