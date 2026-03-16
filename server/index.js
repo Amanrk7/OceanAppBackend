@@ -1258,8 +1258,11 @@ app.post('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
     const bonusAmount = parseFloat(amount);
     if (isNaN(bonusAmount) || bonusAmount <= 0) return res.status(400).json({ error: 'amount must be a positive number' });
 
-    const player = await prisma.user.findUnique({ where: { id: parseInt(playerId) }, select: { id: true, name: true, balance: true, status: true, currentStreak: true, referredBy: true } });
+    // const player = await prisma.user.findUnique({ where: { id: parseInt(playerId) }, select: { id: true, name: true, balance: true, status: true, currentStreak: true, referredBy: true } });
+    const player = await prisma.user.findUnique({ where: { id: parseInt(playerId) }, select: { id: true, name: true, balance: true, status: true, currentStreak: true, lastPlayedDate: true, referredBy: true } });
+
     if (!player) return res.status(404).json({ error: 'Player not found' });
+    
 
     const game = await prisma.game.findUnique({ where: { id: gameId } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
@@ -1297,7 +1300,9 @@ app.post('/api/bonuses', authMiddleware, adminMiddleware, async (req, res) => {
   description: playerDesc, 
   paymentMethod: null, 
   gameId: gameId,   // ← THIS is the only addition
-  notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes?.trim() || ''}` 
+  // notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes?.trim() || ''}` 
+  notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|streakBefore:${player.currentStreak || 0}|lastPlayedDateBefore:${player.lastPlayedDate?.toISOString() || ''}|${notes?.trim() || ''}`
+
  } }),
     ];
 
@@ -1767,7 +1772,10 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
     const transactionId = parseInt(req.params.transactionId);
     console.log(`\n🔄 UNDO: starting for transaction #${transactionId}`);
 
-    const transaction = await prisma.transaction.findUnique({ where: { id: transactionId }, include: { user: { select: { id: true, name: true, balance: true } } } });
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+      include: { user: { select: { id: true, name: true, balance: true } } }
+    });
     if (!transaction) return res.status(404).json({ error: 'Transaction not found' });
     if (transaction.status === 'CANCELLED') return res.status(400).json({ error: 'Transaction is already cancelled' });
 
@@ -1796,12 +1804,74 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
       }));
     }
 
-    const gameRestoreMap = {};
-    if (transaction.type === 'DEPOSIT' || transaction.type === 'BONUS') {
-      const bonusTxns = await prisma.transaction.findMany({
-        where: { userId: transaction.userId, type: 'BONUS', status: 'COMPLETED', createdAt: { gte: new Date(transaction.createdAt.getTime() - 10000), lte: new Date(transaction.createdAt.getTime() + 10000) } }
+    // Revert streak when undoing a deposit
+    if (transaction.type === 'DEPOSIT') {
+      const remainingDeposits = await prisma.transaction.findMany({
+        where: {
+          userId: transaction.userId,
+          type: 'DEPOSIT',
+          status: 'COMPLETED',
+          id: { not: transactionId },
+        },
+        orderBy: { createdAt: 'asc' },
       });
 
+      let recalcStreak = 0;
+      let lastDepDate = null;
+      for (const dep of remainingDeposits) {
+        const depDate = new Date(dep.createdAt);
+        if (!lastDepDate) {
+          recalcStreak = 1;
+        } else if (sameDay(lastDepDate, depDate)) {
+          // same day — no change
+        } else if (isYesterday(lastDepDate, depDate)) {
+          recalcStreak += 1;
+        } else {
+          recalcStreak = 1;
+        }
+        lastDepDate = depDate;
+      }
+
+      const lastRemainingDeposit = remainingDeposits[remainingDeposits.length - 1];
+      ops.push(prisma.user.update({
+        where: { id: transaction.userId },
+        data: {
+          currentStreak: recalcStreak,
+          lastPlayedDate: lastRemainingDeposit ? lastRemainingDeposit.createdAt : null,
+        },
+      }));
+    }
+
+    const gameRestoreMap = {};
+    if (transaction.type === 'DEPOSIT' || transaction.type === 'BONUS') {
+      // Player's own bonus txns in the same time window
+      const bonusTxns = await prisma.transaction.findMany({
+        where: {
+          userId: transaction.userId,
+          type: 'BONUS',
+          status: 'COMPLETED',
+          createdAt: {
+            gte: new Date(transaction.createdAt.getTime() - 10000),
+            lte: new Date(transaction.createdAt.getTime() + 10000),
+          },
+        },
+      });
+
+      // Referrer's bonus txns issued at the same time (different userId)
+      const referrerBonusTxns = await prisma.transaction.findMany({
+        where: {
+          userId: { not: transaction.userId },
+          type: 'BONUS',
+          status: 'COMPLETED',
+          description: { contains: 'Referral Bonus' },
+          createdAt: {
+            gte: new Date(transaction.createdAt.getTime() - 10000),
+            lte: new Date(transaction.createdAt.getTime() + 10000),
+          },
+        },
+      });
+
+      // Process player's bonus txns — game restore + cancel
       for (const bonusTx of bonusTxns) {
         const idMatch = bonusTx.notes?.match(/^gameId:([^|]+)\|/);
         if (idMatch) {
@@ -1817,6 +1887,28 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
         ops.push(prisma.transaction.update({ where: { id: bonusTx.id }, data: { status: 'CANCELLED' } }));
       }
 
+      // Process referrer's bonus txns — reverse balance + cancel + game restore
+      for (const refTx of referrerBonusTxns) {
+        const refAmt = parseFloat(refTx.amount);
+
+        ops.push(prisma.user.update({
+          where: { id: refTx.userId },
+          data: { balance: { decrement: refAmt } },
+        }));
+
+        ops.push(prisma.transaction.update({
+          where: { id: refTx.id },
+          data: { status: 'CANCELLED' },
+        }));
+
+        const refGameIdMatch = refTx.notes?.match(/^gameId:([^|]+)\|/);
+        if (refGameIdMatch) {
+          const gId = refGameIdMatch[1].trim();
+          gameRestoreMap[gId] = (gameRestoreMap[gId] || 0) + refAmt;
+        }
+      }
+
+      // Restore game stock for all collected deductions
       for (const [gameId, restoreAmount] of Object.entries(gameRestoreMap)) {
         const game = await prisma.game.findUnique({ where: { id: gameId } });
         if (game) {
@@ -1825,13 +1917,40 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
           ops.push(prisma.game.update({ where: { id: game.id }, data: { pointStock: newStock, status: newStatus } }));
         }
       }
+
+      // For direct BONUS undo (via /api/bonuses) — use gameId field directly
+      if (transaction.type === 'BONUS' && transaction.gameId && !gameRestoreMap[transaction.gameId]) {
+        const game = await prisma.game.findUnique({ where: { id: transaction.gameId } });
+        if (game) {
+          const newStock = parseFloat(game.pointStock) + parseFloat(transaction.amount);
+          const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+          ops.push(prisma.game.update({ where: { id: game.id }, data: { pointStock: newStock, status: newStatus } }));
+        }
+      }
+
+      // Restore streak + lastPlayedDate if this was a streak bonus
+      const streakBeforeMatch = transaction.notes?.match(/streakBefore:(\d+)/);
+      if (transaction.type === 'BONUS' && streakBeforeMatch) {
+        const streakBefore = parseInt(streakBeforeMatch[1]);
+        const lastPlayedBeforeMatch = transaction.notes?.match(/lastPlayedDateBefore:([^|]+)/);
+        const lastPlayedBeforeStr = lastPlayedBeforeMatch?.[1];
+        const lastPlayedBefore = lastPlayedBeforeStr ? new Date(lastPlayedBeforeStr) : null;
+        ops.push(prisma.user.update({
+          where: { id: transaction.userId },
+          data: { currentStreak: streakBefore, lastPlayedDate: lastPlayedBefore },
+        }));
+      }
     }
 
     await prisma.$transaction(ops);
+
     res.json({
       success: true,
       message: `Transaction #${transactionId} reversed successfully`,
-      updatedBalances: { playerBalance, walletBalance: wallet ? parseFloat(wallet.balance) + (transaction.type === 'WITHDRAWAL' ? parseFloat(transaction.amount) : -parseFloat(transaction.amount)) : null },
+      updatedBalances: {
+        playerBalance,
+        walletBalance: wallet ? parseFloat(wallet.balance) + (transaction.type === 'WITHDRAWAL' ? parseFloat(transaction.amount) : -parseFloat(transaction.amount)) : null,
+      },
       gamePointsRestored: Object.keys(gameRestoreMap).length > 0 ? gameRestoreMap : null,
     });
   } catch (err) {
