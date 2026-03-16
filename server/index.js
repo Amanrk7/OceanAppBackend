@@ -1929,18 +1929,43 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
       }
 
       // Restore streak + lastPlayedDate if this was a streak bonus
-      const streakBeforeMatch = transaction.notes?.match(/streakBefore:(\d+)/);
-      if (transaction.type === 'BONUS' && streakBeforeMatch) {
-        const streakBefore = parseInt(streakBeforeMatch[1]);
-        const lastPlayedBeforeMatch = transaction.notes?.match(/lastPlayedDateBefore:([^|]+)/);
-        const lastPlayedBeforeStr = lastPlayedBeforeMatch?.[1];
-        const lastPlayedBefore = lastPlayedBeforeStr ? new Date(lastPlayedBeforeStr) : null;
-        ops.push(prisma.user.update({
-          where: { id: transaction.userId },
-          data: { currentStreak: streakBefore, lastPlayedDate: lastPlayedBefore },
-        }));
-      }
+      if (transaction.type === 'BONUS') {
+  // Recalculate streak from deposit history — works for all bonuses
+  // regardless of whether streakBefore was stored in notes
+  const remainingDeposits = await prisma.transaction.findMany({
+    where: {
+      userId: transaction.userId,
+      type: 'DEPOSIT',
+      status: 'COMPLETED',
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  let recalcStreak = 0;
+  let lastDepDate = null;
+  for (const dep of remainingDeposits) {
+    const depDate = new Date(dep.createdAt);
+    if (!lastDepDate) {
+      recalcStreak = 1;
+    } else if (sameDay(lastDepDate, depDate)) {
+      // same day — no change
+    } else if (isYesterday(lastDepDate, depDate)) {
+      recalcStreak += 1;
+    } else {
+      recalcStreak = 1;
     }
+    lastDepDate = depDate;
+  }
+
+  const lastDeposit = remainingDeposits[remainingDeposits.length - 1];
+  ops.push(prisma.user.update({
+    where: { id: transaction.userId },
+    data: {
+      currentStreak: recalcStreak,
+      lastPlayedDate: lastDeposit ? lastDeposit.createdAt : null,
+    },
+  }));
+}
 
     await prisma.$transaction(ops);
 
