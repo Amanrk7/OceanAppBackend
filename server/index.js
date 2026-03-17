@@ -353,14 +353,31 @@ function shapePlayer(user) {
         .filter(t => t.type === 'DEPOSIT' && t.status === 'COMPLETED' && new Date(t.createdAt) >= sevenDaysAgo)
         .reduce((sum, t) => sum + parseFloat(t.amount), 0);
 
+      // return {
+      //   id: t.id, type, amount: parseFloat(t.amount), status: t.status,
+      //   walletMethod, walletName, gameName,
+      //   weeklyDepositTotal: parseFloat(weeklyDepositTotal.toFixed(2)),
+      //   date: fmtTXDate(t.createdAt),
+      //   gameStockBefore: (() => { const m = (t.notes || '').match(/gameStockBefore:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
+      //   gameStockAfter: (() => { const m = (t.notes || '').match(/gameStockAfter:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
+      // };
+
       return {
         id: t.id, type, amount: parseFloat(t.amount), status: t.status,
         walletMethod, walletName, gameName,
         weeklyDepositTotal: parseFloat(weeklyDepositTotal.toFixed(2)),
         date: fmtTXDate(t.createdAt),
-        gameStockBefore: (() => { const m = (t.notes || '').match(/gameStockBefore:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
-        gameStockAfter: (() => { const m = (t.notes || '').match(/gameStockAfter:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
-      };
+        // ── fee ─────────────────────────────────────────────────────────
+        fee: (() => {
+          const m = (t.notes || '').match(/fee:([\d.]+)/);
+          return m ? parseFloat(m[1]) : 0;
+      })(),
+      // ── paidAmount (for cashout partial payments) ────────────────────
+      paidAmount: parseFloat(t.paidAmount ?? 0),
+      // ── game stock snapshots ─────────────────────────────────────────
+      gameStockBefore: (() => { const m = (t.notes || '').match(/gameStockBefore:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
+      gameStockAfter:  (() => { const m = (t.notes || '').match(/gameStockAfter:([\d.]+)/);  return m ? parseFloat(m[1]) : null; })(),
+    };
     });
 
   const streakBonus = (user.currentStreak || 0) * 0.5;
