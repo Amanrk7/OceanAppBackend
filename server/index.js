@@ -106,6 +106,72 @@ async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
   }
 }
 
+// ─── Startup + Periodic Threshold Check ──────────────────────────────────────
+async function runStartupThresholdCheck() {
+  try {
+    const [lowGames, lowWallets] = await Promise.all([
+      prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
+      prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
+    ]);
+
+    for (const game of lowGames) {
+      if (!recentlyAlerted.games.has(game.id)) {
+        recentlyAlerted.games.add(game.id);
+        setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
+        fetch(DISCORD_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            embeds: [{
+              title: '⚠️ Low Game Points Alert (Startup Check)',
+              color: 0xf59e0b,
+              fields: [
+                { name: 'Game', value: game.name, inline: true },
+                { name: 'Current Stock', value: `${parseFloat(game.pointStock).toFixed(2)} pts`, inline: true },
+                { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
+              ],
+              footer: { text: 'Detected on server startup' },
+              timestamp: new Date().toISOString(),
+            }],
+          }),
+        }).catch(err => console.error('Discord startup game alert failed:', err));
+      }
+    }
+
+    for (const wallet of lowWallets) {
+      if (!recentlyAlerted.wallets.has(wallet.id)) {
+        recentlyAlerted.wallets.add(wallet.id);
+        setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
+        fetch(DISCORD_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            embeds: [{
+              title: '⚠️ Low Wallet Balance Alert (Startup Check)',
+              color: 0xef4444,
+              fields: [
+                { name: 'Wallet', value: wallet.name, inline: true },
+                { name: 'Method', value: wallet.method, inline: true },
+                { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
+                { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
+              ],
+              footer: { text: 'Detected on server startup' },
+              timestamp: new Date().toISOString(),
+            }],
+          }),
+        }).catch(err => console.error('Discord startup wallet alert failed:', err));
+      }
+    }
+
+    if (lowGames.length > 0 || lowWallets.length > 0) {
+      console.log(`⚠️ Startup check: ${lowGames.length} low games, ${lowWallets.length} low wallets — alerts sent`);
+    }
+  } catch (err) {
+    console.error('Startup threshold check failed:', err);
+  }
+}
+
+
 async function notify(type, data) {
   const time = new Date().toLocaleString('en-US', {
     timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit',
@@ -3775,8 +3841,33 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ═══════════════════════════════════════════════════════════════
 
+// app.listen(PORT, () => {
+//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
+// });
+
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
+  
+  // Run threshold check 3 seconds after boot
+  setTimeout(runStartupThresholdCheck, 3000);
+
+  // Periodic scan every 30 minutes
+  setInterval(async () => {
+    try {
+      const [lowGames, lowWallets] = await Promise.all([
+        prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
+        prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
+      ]);
+      for (const game of lowGames) {
+        await checkThresholdsAndNotify({ gameId: game.id });
+      }
+      for (const wallet of lowWallets) {
+        await checkThresholdsAndNotify({ walletId: wallet.id });
+      }
+    } catch (err) {
+      console.error('Periodic threshold check failed:', err);
+    }
+  }, 30 * 60 * 1000);
 });
 
 process.on('SIGINT', async () => {
