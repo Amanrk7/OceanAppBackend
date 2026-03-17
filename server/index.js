@@ -1329,7 +1329,17 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
     const ops = [
       prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newGameStatus } }),
       prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: { increment: bonusAmount } } }),
-      prisma.bonus.create({ data: { userId: parseInt(playerId), type: isReferral ? 'REFERRAL' : 'CUSTOM', amount: bonusAmount, description: playerDesc, claimed: false } }),
+      // prisma.bonus.create({ data: { userId: parseInt(playerId), type: isReferral ? 'REFERRAL' : 'CUSTOM', amount: bonusAmount, description: playerDesc, claimed: false } }),
+      prisma.bonus.create({
+        data: {
+            userId: parseInt(playerId),
+            type: isReferral ? 'REFERRAL' : 'CUSTOM',
+            amount: bonusAmount,
+            description: playerDesc,
+            claimed: true,          // ✅ balance already credited in same tx
+            claimedAt: new Date(),
+        }
+    });
       prisma.transaction.create({
         data: {
           userId: parseInt(playerId),
@@ -1352,7 +1362,17 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
       const referrerBalanceBefore = parseFloat(referrer.balance);
       const referrerBalanceAfter = referrerBalanceBefore + bonusAmount;
       ops.push(prisma.user.update({ where: { id: referrer.id }, data: { balance: { increment: bonusAmount } } }));
-      ops.push(prisma.bonus.create({ data: { userId: referrer.id, type: 'REFERRAL', amount: bonusAmount, description: referrerDesc, claimed: false } }));
+      // ops.push(prisma.bonus.create({ data: { userId: referrer.id, type: 'REFERRAL', amount: bonusAmount, description: referrerDesc, claimed: false } }));
+      prisma.bonus.create({
+        data: {
+            userId: referrer.id,
+            type: 'REFERRAL',
+            amount: bonusAmount,
+            description: referrerDesc,
+            claimed: true,          // ✅ same fix for referrer
+            claimedAt: new Date(),
+        }
+    });
       ops.push(prisma.transaction.create({ data: { userId: referrer.id, type: 'BONUS', amount: bonusAmount, status: 'COMPLETED', description: referrerDesc, paymentMethod: null, notes: `balanceBefore:${referrerBalanceBefore}|balanceAfter:${referrerBalanceAfter}` } }));
     }
 
