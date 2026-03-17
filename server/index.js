@@ -278,13 +278,29 @@ const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min cooldown per item
 
 // ─── Central Discord sender ────────────────────────────────────────────────────
 // Unlike fetch(), axios throws automatically on 4xx/5xx so errors are never silent
-async function discordSend(payload) {
-  try {
-    await axios.post(DISCORD_WEBHOOK_URL, payload);
-  } catch (err) {
-    const detail = err.response?.data?.message || err.response?.data || err.message;
-    console.error(`❌ Discord webhook failed [${err.response?.status ?? 'network'}]:`, detail);
+async function discordSend(payload, retries = 3, delayMs = 1000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await axios.post(DISCORD_WEBHOOK_URL, payload);
+      return; // success
+    } catch (err) {
+      const status = err.response?.status;
+      const retryAfter = err.response?.data?.retry_after;
+
+      if (status === 429) {
+        // Respect Discord's retry_after, fallback to exponential backoff
+        const wait = retryAfter ? retryAfter * 1000 : delayMs * attempt;
+        console.warn(`⏳ Discord rate limited. Retrying in ${wait}ms (attempt ${attempt}/${retries})`);
+        await new Promise(r => setTimeout(r, wait));
+      } else {
+        // Non-429 error — log and give up immediately
+        const detail = err.response?.data?.message || err.response?.data || err.message;
+        console.error(`❌ Discord webhook failed [${status ?? 'network'}]:`, detail);
+        return;
+      }
+    }
   }
+  console.error('❌ Discord webhook failed after max retries');
 }
 
 // ─── Threshold Alerts ─────────────────────────────────────────────────────────
@@ -345,11 +361,13 @@ async function runStartupThresholdCheck() {
       prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
     ]);
 
+    const alerts = [];
+
     for (const game of lowGames) {
       if (!recentlyAlerted.games.has(game.id)) {
         recentlyAlerted.games.add(game.id);
         setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
-        await discordSend({
+        alerts.push({
           embeds: [{
             title: '⚠️ Low Game Points Alert (Startup Check)',
             color: 0xf59e0b,
@@ -369,7 +387,7 @@ async function runStartupThresholdCheck() {
       if (!recentlyAlerted.wallets.has(wallet.id)) {
         recentlyAlerted.wallets.add(wallet.id);
         setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
-        await discordSend({
+        alerts.push({
           embeds: [{
             title: '⚠️ Low Wallet Balance Alert (Startup Check)',
             color: 0xef4444,
@@ -386,8 +404,14 @@ async function runStartupThresholdCheck() {
       }
     }
 
-    if (lowGames.length > 0 || lowWallets.length > 0) {
-      console.log(`⚠️ Startup check: ${lowGames.length} low games, ${lowWallets.length} low wallets — alerts sent`);
+    // ✅ Send one at a time with 1.5s gap — prevents rate limiting
+    for (const alert of alerts) {
+      await discordSend(alert);
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    if (alerts.length > 0) {
+      console.log(`⚠️ Startup check: sent ${alerts.length} alert(s)`);
     }
   } catch (err) {
     console.error('Startup threshold check failed:', err);
