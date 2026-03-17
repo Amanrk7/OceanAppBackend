@@ -350,22 +350,22 @@ function shapePlayer(user) {
       // }
 
       let gameName = null;
- 
-       // 1. For deposits & cashouts: game is available via the relation
+
+      // 1. For deposits & cashouts: game is available via the relation
       if (t.game?.name) {
-          gameName = t.game.name;
+        gameName = t.game.name;
       }
- 
+
       // 2. For bonuses: game name is in the description "Bonus from GameName —..."
       if (!gameName) {
-          const fromGameDesc = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
-          if (fromGameDesc) gameName = fromGameDesc[1].trim();
-       }
- 
+        const fromGameDesc = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
+        if (fromGameDesc) gameName = fromGameDesc[1].trim();
+      }
+
       // 3. Fallback: parse from notes "From game: GameName|..."
       if (!gameName) {
-          const noteGameMatch = (t.notes || '').match(/From game: ([^\|]+?)(?:\||$)/);
-          if (noteGameMatch) gameName = noteGameMatch[1].trim();
+        const noteGameMatch = (t.notes || '').match(/From game: ([^\|]+?)(?:\||$)/);
+        if (noteGameMatch) gameName = noteGameMatch[1].trim();
       }
 
       const weeklyDepositTotal = (user.transactions || [])
@@ -390,13 +390,13 @@ function shapePlayer(user) {
         fee: (() => {
           const m = (t.notes || '').match(/fee:([\d.]+)/);
           return m ? parseFloat(m[1]) : 0;
-      })(),
-      // ── paidAmount (for cashout partial payments) ────────────────────
-      paidAmount: parseFloat(t.paidAmount ?? 0),
-      // ── game stock snapshots ─────────────────────────────────────────
-      gameStockBefore: (() => { const m = (t.notes || '').match(/gameStockBefore:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
-      gameStockAfter:  (() => { const m = (t.notes || '').match(/gameStockAfter:([\d.]+)/);  return m ? parseFloat(m[1]) : null; })(),
-    };
+        })(),
+        // ── paidAmount (for cashout partial payments) ────────────────────
+        paidAmount: parseFloat(t.paidAmount ?? 0),
+        // ── game stock snapshots ─────────────────────────────────────────
+        gameStockBefore: (() => { const m = (t.notes || '').match(/gameStockBefore:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
+        gameStockAfter: (() => { const m = (t.notes || '').match(/gameStockAfter:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
+      };
     });
 
   const streakBonus = (user.currentStreak || 0) * 0.5;
@@ -947,9 +947,10 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
     const user = await prisma.user.findUnique({
       where: { id },
       include: {
-        transactions: { orderBy: { createdAt: 'desc' }, take: 200, 
-                         include: { game: { select: { id: true, name: true } }, }, 
-                      },
+        transactions: {
+          orderBy: { createdAt: 'desc' }, take: 200,
+          include: { game: { select: { id: true, name: true } }, },
+        },
         bonuses: true,
         referrals: { select: { id: true, name: true, username: true } },
         referrer: { select: { id: true, name: true, username: true } },
@@ -1332,14 +1333,14 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
       // prisma.bonus.create({ data: { userId: parseInt(playerId), type: isReferral ? 'REFERRAL' : 'CUSTOM', amount: bonusAmount, description: playerDesc, claimed: false } }),
       prisma.bonus.create({
         data: {
-            userId: parseInt(playerId),
-            type: isReferral ? 'REFERRAL' : 'CUSTOM',
-            amount: bonusAmount,
-            description: playerDesc,
-            claimed: true,          // ✅ balance already credited in same tx
-            claimedAt: new Date(),
+          userId: parseInt(playerId),
+          type: isReferral ? 'REFERRAL' : 'CUSTOM',
+          amount: bonusAmount,
+          description: playerDesc,
+          claimed: true,          // ✅ balance already credited in same tx
+          claimedAt: new Date(),
         }
-    });
+      }),
       prisma.transaction.create({
         data: {
           userId: parseInt(playerId),
@@ -1363,16 +1364,17 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
       const referrerBalanceAfter = referrerBalanceBefore + bonusAmount;
       ops.push(prisma.user.update({ where: { id: referrer.id }, data: { balance: { increment: bonusAmount } } }));
       // ops.push(prisma.bonus.create({ data: { userId: referrer.id, type: 'REFERRAL', amount: bonusAmount, description: referrerDesc, claimed: false } }));
-      prisma.bonus.create({
+
+      ops.push(prisma.bonus.create({
         data: {
-            userId: referrer.id,
-            type: 'REFERRAL',
-            amount: bonusAmount,
-            description: referrerDesc,
-            claimed: true,          // ✅ same fix for referrer
-            claimedAt: new Date(),
+          userId: referrer.id,
+          type: 'REFERRAL',
+          amount: bonusAmount,
+          description: referrerDesc,
+          claimed: true,          // ✅ same fix for referrer
+          claimedAt: new Date(),
         }
-    });
+      }));
       ops.push(prisma.transaction.create({ data: { userId: referrer.id, type: 'BONUS', amount: bonusAmount, status: 'COMPLETED', description: referrerDesc, paymentMethod: null, notes: `balanceBefore:${referrerBalanceBefore}|balanceAfter:${referrerBalanceAfter}` } }));
     }
 
