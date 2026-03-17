@@ -341,12 +341,31 @@ function shapePlayer(user) {
       const walletMethod = walletMatch?.[1] || null;
       const walletName = walletMatch?.[2] || null;
 
+      // let gameName = null;
+      // const fromGameDesc = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
+      // if (fromGameDesc) gameName = fromGameDesc[1].trim();
+      // if (!gameName) {
+      //   const noteGameMatch = (t.notes || '').match(/From game: ([^\|]+?)(?:\||$)/);
+      //   if (noteGameMatch) gameName = noteGameMatch[1].trim();
+      // }
+
       let gameName = null;
-      const fromGameDesc = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
-      if (fromGameDesc) gameName = fromGameDesc[1].trim();
+ 
+       // 1. For deposits & cashouts: game is available via the relation
+      if (t.game?.name) {
+          gameName = t.game.name;
+      }
+ 
+      // 2. For bonuses: game name is in the description "Bonus from GameName —..."
       if (!gameName) {
-        const noteGameMatch = (t.notes || '').match(/From game: ([^\|]+?)(?:\||$)/);
-        if (noteGameMatch) gameName = noteGameMatch[1].trim();
+          const fromGameDesc = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
+          if (fromGameDesc) gameName = fromGameDesc[1].trim();
+       }
+ 
+      // 3. Fallback: parse from notes "From game: GameName|..."
+      if (!gameName) {
+          const noteGameMatch = (t.notes || '').match(/From game: ([^\|]+?)(?:\||$)/);
+          if (noteGameMatch) gameName = noteGameMatch[1].trim();
       }
 
       const weeklyDepositTotal = (user.transactions || [])
@@ -928,7 +947,9 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
     const user = await prisma.user.findUnique({
       where: { id },
       include: {
-        transactions: { orderBy: { createdAt: 'desc' }, take: 200 },
+        transactions: { orderBy: { createdAt: 'desc' }, take: 200, 
+                         include: { game: { select: { id: true, name: true } }, }, 
+                      },
         bonuses: true,
         referrals: { select: { id: true, name: true, username: true } },
         referrer: { select: { id: true, name: true, username: true } },
