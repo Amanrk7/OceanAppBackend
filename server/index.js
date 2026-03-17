@@ -13,7 +13,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 dotenv.config();
 
 
-const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1482125214283202612/cn2P4sgNCHx5r28UYa-TXOcjN7BhFM872suIJOAO5seIma6t9wV945kU-mCXbsefgn3P';
+const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1483530715584008393/ArJ80NEGSTeNVd4OCMQ7GpiCKpjyHS4Ey5dPi_2sz2_WgnBrTZQhz4NvbWzpxiBMamIY';
 
 const TX_TZ = 'America/Chicago';
 
