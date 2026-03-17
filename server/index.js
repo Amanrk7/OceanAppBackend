@@ -376,6 +376,27 @@ function shapePlayer(user) {
   const totalBonusEarned = claimed.reduce((s, b) => s + parseFloat(b.amount), 0);
   const usedBonus = claimed.reduce((s, b) => s + parseFloat(b.wagerMet || 0), 0);
   const availableBonus = unclaimed.reduce((s, b) => s + parseFloat(b.amount), 0);
+  const bonusByType = {};
+  const BONUS_TYPE_LABELS = {
+    'streak bonus': 'Streak',
+    'referral bonus': 'Referral',
+    'match bonus': 'Match',
+    'special bonus': 'Special',
+    'bonus': 'Other',
+    'bonus_credited': 'Other',
+  };
+
+  (user.transactions || []).forEach(t => {
+    if (t.type !== 'BONUS' || t.status !== 'COMPLETED') return;
+    const desc = (t.description || '').toLowerCase();
+    let label = 'Other';
+    if (desc.includes('streak')) label = 'Streak';
+    else if (desc.includes('referral')) label = 'Referral';
+    else if (desc.includes('match')) label = 'Match';
+    else if (desc.includes('special')) label = 'Special';
+    bonusByType[label] = (bonusByType[label] || 0) + parseFloat(t.amount);
+  });
+
 
   const referralsList = (user.referrals || []).map(r => ({ id: r.id, name: r.name, username: r.username }));
   const friendsList = [...(user.friends || []), ...(user.friendOf || [])].map(f => ({ id: f.id, name: f.name, username: f.username }));
@@ -405,14 +426,6 @@ function shapePlayer(user) {
       const walletMethod = walletMatch?.[1] || null;
       const walletName = walletMatch?.[2] || null;
 
-      // let gameName = null;
-      // const fromGameDesc = desc.match(/^(?:Streak Bonus|Referral Bonus|Match Bonus|Special Bonus|Bonus) from ([^—\n]+?)(?:\s*—|$)/);
-      // if (fromGameDesc) gameName = fromGameDesc[1].trim();
-      // if (!gameName) {
-      //   const noteGameMatch = (t.notes || '').match(/From game: ([^\|]+?)(?:\||$)/);
-      //   if (noteGameMatch) gameName = noteGameMatch[1].trim();
-      // }
-
       let gameName = null;
 
       // 1. For deposits & cashouts: game is available via the relation
@@ -435,15 +448,6 @@ function shapePlayer(user) {
       const weeklyDepositTotal = (user.transactions || [])
         .filter(t => t.type === 'DEPOSIT' && t.status === 'COMPLETED' && new Date(t.createdAt) >= sevenDaysAgo)
         .reduce((sum, t) => sum + parseFloat(t.amount), 0);
-
-      // return {
-      //   id: t.id, type, amount: parseFloat(t.amount), status: t.status,
-      //   walletMethod, walletName, gameName,
-      //   weeklyDepositTotal: parseFloat(weeklyDepositTotal.toFixed(2)),
-      //   date: fmtTXDate(t.createdAt),
-      //   gameStockBefore: (() => { const m = (t.notes || '').match(/gameStockBefore:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
-      //   gameStockAfter: (() => { const m = (t.notes || '').match(/gameStockAfter:([\d.]+)/); return m ? parseFloat(m[1]) : null; })(),
-      // };
 
       return {
         id: t.id, type, amount: parseFloat(t.amount), status: t.status,
@@ -488,7 +492,14 @@ function shapePlayer(user) {
       progressPercentage: progressPct,
       nextTierRequirement: nextReq,
     },
-    bonusTracker: { availableBonus, totalBonusEarned, usedBonus },
+    // bonusTracker: { availableBonus, totalBonusEarned, usedBonus },
+    bonusTracker: {
+      availableBonus,          // unclaimed (usually 0 now)
+      totalBonusEarned,        // all claimed bonuses total
+      usedBonus,
+      bonusByType,             // ← NEW: { Streak: 50, Match: 30, ... }
+      pendingCount: unclaimed.length,
+    },
     referralsList, friendsList, transactionHistory,
   };
 }
