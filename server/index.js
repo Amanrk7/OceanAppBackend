@@ -42,6 +42,70 @@ const safeFreeze = {
 };
 
 // ─── Unified notification helper ──────────────────────────────────────────────
+// ─── Threshold Alerts ─────────────────────────────────────────────────────────
+const LOW_THRESHOLD = 500;
+
+// Track recently alerted IDs to avoid spam (resets on server restart)
+const recentlyAlerted = { games: new Set(), wallets: new Set() };
+const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min cooldown per item
+
+async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
+  // ── Check a specific game ─────────────────────────────────────
+  if (gameId) {
+    const game = await prisma.game.findUnique({ where: { id: gameId } });
+    if (game && game.pointStock < LOW_THRESHOLD && !recentlyAlerted.games.has(gameId)) {
+      recentlyAlerted.games.add(gameId);
+      setTimeout(() => recentlyAlerted.games.delete(gameId), ALERT_COOLDOWN_MS);
+
+      fetch(DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          embeds: [{
+            title: '⚠️ Low Game Points Alert',
+            color: 0xf59e0b,
+            fields: [
+              { name: 'Game', value: game.name, inline: true },
+              { name: 'Current Stock', value: `${game.pointStock.toFixed(2)} pts`, inline: true },
+              { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
+            ],
+            footer: { text: 'Reload points soon to avoid service disruption' },
+            timestamp: new Date().toISOString(),
+          }],
+        }),
+      }).catch(err => console.error('Discord game alert failed:', err));
+    }
+  }
+
+  // ── Check a specific wallet ───────────────────────────────────
+  if (walletId) {
+    const wallet = await prisma.wallet.findUnique({ where: { id: walletId } });
+    if (wallet && wallet.balance < LOW_THRESHOLD && !recentlyAlerted.wallets.has(walletId)) {
+      recentlyAlerted.wallets.add(walletId);
+      setTimeout(() => recentlyAlerted.wallets.delete(walletId), ALERT_COOLDOWN_MS);
+
+      fetch(DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          embeds: [{
+            title: '⚠️ Low Wallet Balance Alert',
+            color: 0xef4444,
+            fields: [
+              { name: 'Wallet', value: wallet.name, inline: true },
+              { name: 'Method', value: wallet.method, inline: true },
+              { name: 'Balance', value: `$${wallet.balance.toFixed(2)}`, inline: true },
+              { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
+            ],
+            footer: { text: 'Top up this wallet to continue processing cashouts' },
+            timestamp: new Date().toISOString(),
+          }],
+        }),
+      }).catch(err => console.error('Discord wallet alert failed:', err));
+    }
+  }
+}
+
 async function notify(type, data) {
   const time = new Date().toLocaleString('en-US', {
     timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit',
@@ -1379,6 +1443,7 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
     }
 
     const results = await prisma.$transaction(ops);
+    checkThresholdsAndNotify({ gameId });
     const updatedGame = results[0];
     const updatedPlayer = results[1];
 
@@ -1538,6 +1603,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     }
 
     const results = await prisma.$transaction(ops);
+    checkThresholdsAndNotify({ gameId, walletId: parseInt(walletId) });
     // Lift any active streak freeze — player deposited so streak is safe again
     // await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
     if (prisma.streakFreeze) {
@@ -2142,6 +2208,7 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
+    checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined });
 
     res.json({
       success: true,
@@ -2228,6 +2295,7 @@ app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, asy
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsPartial);
+    checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined });
 
     res.json({
       success: true,
@@ -2285,6 +2353,7 @@ app.patch('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) =>
     const game = await prisma.game.findUnique({ where: { id } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
     const updatedGame = await prisma.game.update({ where: { id }, data: { ...(pointStock !== undefined && { pointStock }), ...(status && { status }) } });
+    checkThresholdsAndNotify({ gameId: id });
     res.json({ data: updatedGame, message: 'Game updated successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update game' });
@@ -2391,6 +2460,7 @@ app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) 
     const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(id) } });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }) } });
+    checkThresholdsAndNotify({ walletId: parseInt(id) });
     res.json({ data: updated, message: 'Wallet updated' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update wallet' });
