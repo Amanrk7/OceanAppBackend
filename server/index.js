@@ -354,6 +354,69 @@ async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
 }
 
 // ─── Startup threshold check ──────────────────────────────────────────────────
+// async function runStartupThresholdCheck() {
+//   try {
+//     const [lowGames, lowWallets] = await Promise.all([
+//       prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
+//       prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
+//     ]);
+
+//     const alerts = [];
+
+//     for (const game of lowGames) {
+//       if (!recentlyAlerted.games.has(game.id)) {
+//         recentlyAlerted.games.add(game.id);
+//         setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
+//         alerts.push({
+//           embeds: [{
+//             title: '⚠️ Low Game Points Alert (Startup Check)',
+//             color: 0xf59e0b,
+//             fields: [
+//               { name: 'Game', value: game.name, inline: true },
+//               { name: 'Current Stock', value: `${parseFloat(game.pointStock).toFixed(2)} pts`, inline: true },
+//               { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
+//             ],
+//             footer: { text: 'Detected on server startup' },
+//             timestamp: new Date().toISOString(),
+//           }],
+//         });
+//       }
+//     }
+
+//     for (const wallet of lowWallets) {
+//       if (!recentlyAlerted.wallets.has(wallet.id)) {
+//         recentlyAlerted.wallets.add(wallet.id);
+//         setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
+//         alerts.push({
+//           embeds: [{
+//             title: '⚠️ Low Wallet Balance Alert (Startup Check)',
+//             color: 0xef4444,
+//             fields: [
+//               { name: 'Wallet', value: wallet.name, inline: true },
+//               { name: 'Method', value: wallet.method, inline: true },
+//               { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
+//               { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
+//             ],
+//             footer: { text: 'Detected on server startup' },
+//             timestamp: new Date().toISOString(),
+//           }],
+//         });
+//       }
+//     }
+
+//     // ✅ Send one at a time with 1.5s gap — prevents rate limiting
+//     for (const alert of alerts) {
+//       await discordSend(alert);
+//       await new Promise(r => setTimeout(r, 1500));
+//     }
+
+//     if (alerts.length > 0) {
+//       console.log(`⚠️ Startup check: sent ${alerts.length} alert(s)`);
+//     }
+//   } catch (err) {
+//     console.error('Startup threshold check failed:', err);
+//   }
+// }
 async function runStartupThresholdCheck() {
   try {
     const [lowGames, lowWallets] = await Promise.all([
@@ -364,10 +427,8 @@ async function runStartupThresholdCheck() {
     const alerts = [];
 
     for (const game of lowGames) {
-      if (!recentlyAlerted.games.has(game.id)) {
-        recentlyAlerted.games.add(game.id);
-        setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
-        alerts.push({
+      alerts.push({
+        payload: {
           embeds: [{
             title: '⚠️ Low Game Points Alert (Startup Check)',
             color: 0xf59e0b,
@@ -379,15 +440,18 @@ async function runStartupThresholdCheck() {
             footer: { text: 'Detected on server startup' },
             timestamp: new Date().toISOString(),
           }],
-        });
-      }
+        },
+        // ✅ FIX: store the ID to add ONLY after successful send
+        onSuccess: () => {
+          recentlyAlerted.games.add(game.id);
+          setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
+        }
+      });
     }
 
     for (const wallet of lowWallets) {
-      if (!recentlyAlerted.wallets.has(wallet.id)) {
-        recentlyAlerted.wallets.add(wallet.id);
-        setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
-        alerts.push({
+      alerts.push({
+        payload: {
           embeds: [{
             title: '⚠️ Low Wallet Balance Alert (Startup Check)',
             color: 0xef4444,
@@ -400,24 +464,33 @@ async function runStartupThresholdCheck() {
             footer: { text: 'Detected on server startup' },
             timestamp: new Date().toISOString(),
           }],
-        });
-      }
+        },
+        onSuccess: () => {
+          recentlyAlerted.wallets.add(wallet.id);
+          setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
+        }
+      });
     }
 
-    // ✅ Send one at a time with 1.5s gap — prevents rate limiting
+    // ✅ FIX: 3s gap instead of 1.5s, and only mark as alerted on SUCCESS
     for (const alert of alerts) {
-      await discordSend(alert);
-      await new Promise(r => setTimeout(r, 1500));
+      try {
+        await discordSend(alert.payload);
+        alert.onSuccess(); // ← only blocks future alerts if this one actually sent
+      } catch (err) {
+        console.error('Startup alert failed (will retry next restart):', err.message);
+        // ← NOT adding to recentlyAlerted, so next server restart will try again
+      }
+      await new Promise(r => setTimeout(r, 3000)); // ✅ 3s gap is safe for Discord
     }
 
     if (alerts.length > 0) {
-      console.log(`⚠️ Startup check: sent ${alerts.length} alert(s)`);
+      console.log(`⚠️ Startup check: attempted ${alerts.length} alert(s)`);
     }
   } catch (err) {
     console.error('Startup threshold check failed:', err);
   }
 }
-
 // ─── Shift + Task notifications ───────────────────────────────────────────────
 async function notify(type, data) {
   const time = new Date().toLocaleString('en-US', {
@@ -1901,7 +1974,8 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     }
 
     const results = await prisma.$transaction(ops);
-    checkThresholdsAndNotify({ gameId, walletId: parseInt(walletId) });
+    // checkThresholdsAndNotify({ gameId, walletId: parseInt(walletId) });
+    checkThresholdsAndNotify({ gameId }).catch(err => console.error('Threshold check failed:', err));
     // Lift any active streak freeze — player deposited so streak is safe again
     // await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
     if (prisma.streakFreeze) {
@@ -2506,7 +2580,8 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
-    checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined });
+    // checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined });
+    checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined }).catch(err => console.error('Threshold check failed:', err));
 
     res.json({
       success: true,
