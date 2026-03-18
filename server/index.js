@@ -50,234 +50,11 @@ const LOW_THRESHOLD = 500;
 const recentlyAlerted = { games: new Set(), wallets: new Set() };
 const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min cooldown per item
 
-// async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
-//   // ── Check a specific game ─────────────────────────────────────
-//   if (gameId) {
-//     const game = await prisma.game.findUnique({ where: { id: gameId } });
-//     if (game && game.pointStock < LOW_THRESHOLD && !recentlyAlerted.games.has(gameId)) {
-//       recentlyAlerted.games.add(gameId);
-//       setTimeout(() => recentlyAlerted.games.delete(gameId), ALERT_COOLDOWN_MS);
-
-//       fetch(DISCORD_WEBHOOK_URL, {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' },
-//         body: JSON.stringify({
-//           embeds: [{
-//             title: '⚠️ Low Game Points Alert',
-//             color: 0xf59e0b,
-//             fields: [
-//               { name: 'Game', value: game.name, inline: true },
-//               { name: 'Current Stock', value: `${game.pointStock.toFixed(2)} pts`, inline: true },
-//               { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
-//             ],
-//             footer: { text: 'Reload points soon to avoid service disruption' },
-//             timestamp: new Date().toISOString(),
-//           }],
-//         }),
-//       }).catch(err => console.error('Discord game alert failed:', err));
-//     }
-//   }
-
-//   // ── Check a specific wallet ───────────────────────────────────
-//   if (walletId) {
-//     const wallet = await prisma.wallet.findUnique({ where: { id: walletId } });
-//     if (wallet && wallet.balance < LOW_THRESHOLD && !recentlyAlerted.wallets.has(walletId)) {
-//       recentlyAlerted.wallets.add(walletId);
-//       setTimeout(() => recentlyAlerted.wallets.delete(walletId), ALERT_COOLDOWN_MS);
-
-//       fetch(DISCORD_WEBHOOK_URL, {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' },
-//         body: JSON.stringify({
-//           embeds: [{
-//             title: '⚠️ Low Wallet Balance Alert',
-//             color: 0xef4444,
-//             fields: [
-//               { name: 'Wallet', value: wallet.name, inline: true },
-//               { name: 'Method', value: wallet.method, inline: true },
-//               { name: 'Balance', value: `$${wallet.balance.toFixed(2)}`, inline: true },
-//               { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
-//             ],
-//             footer: { text: 'Top up this wallet to continue processing cashouts' },
-//             timestamp: new Date().toISOString(),
-//           }],
-//         }),
-//       }).catch(err => console.error('Discord wallet alert failed:', err));
-//     }
-//   }
+// const fields = lowGames.slice(0, 25).map(g => ({ ... }));
+// // Add a note if truncated
+// if (lowGames.length > 25) {
+//   fields.push({ name: '...and more', value: `${lowGames.length - 25} additional games not shown`, inline: false });
 // }
-
-// // ─── Startup + Periodic Threshold Check ──────────────────────────────────────
-// async function runStartupThresholdCheck() {
-//   try {
-//     const [lowGames, lowWallets] = await Promise.all([
-//       prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
-//       prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
-//     ]);
-
-//     for (const game of lowGames) {
-//       if (!recentlyAlerted.games.has(game.id)) {
-//         recentlyAlerted.games.add(game.id);
-//         setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
-//         fetch(DISCORD_WEBHOOK_URL, {
-//           method: 'POST',
-//           headers: { 'Content-Type': 'application/json' },
-//           body: JSON.stringify({
-//             embeds: [{
-//               title: '⚠️ Low Game Points Alert (Startup Check)',
-//               color: 0xf59e0b,
-//               fields: [
-//                 { name: 'Game', value: game.name, inline: true },
-//                 { name: 'Current Stock', value: `${parseFloat(game.pointStock).toFixed(2)} pts`, inline: true },
-//                 { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
-//               ],
-//               footer: { text: 'Detected on server startup' },
-//               timestamp: new Date().toISOString(),
-//             }],
-//           }),
-//         }).catch(err => console.error('Discord startup game alert failed:', err));
-//       }
-//     }
-
-//     for (const wallet of lowWallets) {
-//       if (!recentlyAlerted.wallets.has(wallet.id)) {
-//         recentlyAlerted.wallets.add(wallet.id);
-//         setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
-//         fetch(DISCORD_WEBHOOK_URL, {
-//           method: 'POST',
-//           headers: { 'Content-Type': 'application/json' },
-//           body: JSON.stringify({
-//             embeds: [{
-//               title: '⚠️ Low Wallet Balance Alert (Startup Check)',
-//               color: 0xef4444,
-//               fields: [
-//                 { name: 'Wallet', value: wallet.name, inline: true },
-//                 { name: 'Method', value: wallet.method, inline: true },
-//                 { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
-//                 { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
-//               ],
-//               footer: { text: 'Detected on server startup' },
-//               timestamp: new Date().toISOString(),
-//             }],
-//           }),
-//         }).catch(err => console.error('Discord startup wallet alert failed:', err));
-//       }
-//     }
-
-//     if (lowGames.length > 0 || lowWallets.length > 0) {
-//       console.log(`⚠️ Startup check: ${lowGames.length} low games, ${lowWallets.length} low wallets — alerts sent`);
-//     }
-//   } catch (err) {
-//     console.error('Startup threshold check failed:', err);
-//   }
-// }
-
-
-// async function notify(type, data) {
-//   const time = new Date().toLocaleString('en-US', {
-//     timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit',
-//     hour12: true, month: 'short', day: 'numeric',
-//   });
-
-//   let discordPayload = null;
-//   let whatsappText = null;
-
-//   if (type === 'SHIFT_START') {
-//     const { memberName, teamRole, shiftId } = data;
-//     discordPayload = {
-//       embeds: [{
-//         title: '🌅 Shift started',
-//         color: 0x16a34a,
-//         fields: [
-//           { name: 'Member', value: memberName || teamRole, inline: true },
-//           { name: 'Team', value: teamRole, inline: true },
-//           { name: 'Time', value: time, inline: true },
-//         ],
-//         footer: { text: `Shift #${shiftId}` },
-//       }],
-//     };
-//     whatsappText = `🌅 *Shift started*\nMember: ${memberName || teamRole}\nTeam: ${teamRole}\nTime: ${time}`;
-//   }
-
-//   else if (type === 'SHIFT_END') {
-//     const { memberName, teamRole, shiftId, duration, netProfit, isBalanced } = data;
-//     const balLabel = isBalanced === true ? '✓ Balanced' : isBalanced === false ? '⚠️ Discrepancy' : '—';
-//     const profitStr = netProfit != null ? `$${netProfit.toFixed(2)}` : '—';
-//     discordPayload = {
-//       embeds: [{
-//         title: '🌙 Shift ended',
-//         color: 0xdc2626,
-//         fields: [
-//           { name: 'Member', value: memberName || teamRole, inline: true },
-//           { name: 'Team', value: teamRole, inline: true },
-//           { name: 'Duration', value: duration != null ? `${duration} min` : '—', inline: true },
-//           { name: 'Net profit', value: profitStr, inline: true },
-//           { name: 'Balanced', value: balLabel, inline: true },
-//           { name: 'Time', value: time, inline: true },
-//         ],
-//         footer: { text: `Shift #${shiftId}` },
-//       }],
-//     };
-//     whatsappText = `🌙 *Shift ended*\nMember: ${memberName || teamRole}\nTeam: ${teamRole}\nDuration: ${duration ?? '—'} min\nNet profit: ${profitStr}\nBalanced: ${balLabel}\nTime: ${time}`;
-//   }
-
-//   else if (type === 'TASK_ASSIGNED') {
-//     const { taskTitle, assigneeName, priority, taskType, dueDate, createdByName } = data;
-//     const due = dueDate ? new Date(dueDate).toLocaleDateString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric' }) : 'No due date';
-//     const priorityColor = priority === 'HIGH' ? 0xdc2626 : priority === 'MEDIUM' ? 0xd97706 : 0x64748b;
-//     discordPayload = {
-//       embeds: [{
-//         title: '📋 New task assigned',
-//         color: priorityColor,
-//         fields: [
-//           { name: 'Task', value: taskTitle, inline: false },
-//           { name: 'Assigned to', value: assigneeName || 'All members', inline: true },
-//           { name: 'Priority', value: priority, inline: true },
-//           { name: 'Type', value: taskType?.replace(/_/g, ' ') || '—', inline: true },
-//           { name: 'Due', value: due, inline: true },
-//           { name: 'Created by', value: createdByName || '—', inline: true },
-//         ],
-//       }],
-//     };
-//     whatsappText = `📋 *New task assigned*\nTask: ${taskTitle}\nAssigned to: ${assigneeName || 'All members'}\nPriority: ${priority}\nDue: ${due}\nCreated by: ${createdByName || '—'}`;
-//   }
-
-//   if (!discordPayload) return;
-
-//   // ── Discord ──
-//   if (DISCORD_WEBHOOK_URL) {
-//     fetch(DISCORD_WEBHOOK_URL, {
-//       method: 'POST',
-//       headers: { 'Content-Type': 'application/json' },
-//       body: JSON.stringify(discordPayload),
-//     }).catch(err => console.error('Discord notify failed:', err));
-//   }
-
-//   // ── WhatsApp via Twilio ──
-//   if (process.env.TWILIO_ACCOUNT_SID && process.env.NOTIFY_WHATSAPP_TO && whatsappText) {
-//     const sid = process.env.TWILIO_ACCOUNT_SID;
-//     const auth = process.env.TWILIO_AUTH_TOKEN;
-//     fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-//       method: 'POST',
-//       headers: {
-//         Authorization: 'Basic ' + Buffer.from(`${sid}:${auth}`).toString('base64'),
-//         'Content-Type': 'application/x-www-form-urlencoded',
-//       },
-//       body: new URLSearchParams({
-//         From: process.env.TWILIO_WHATSAPP_FROM,
-//         To: process.env.NOTIFY_WHATSAPP_TO,
-//         Body: whatsappText,
-//       }),
-//     }).catch(err => console.error('WhatsApp notify failed:', err));
-//   }
-// }
-
-
-
-
-
-// ─── Central Discord sender ────────────────────────────────────────────────────
-// Unlike fetch(), axios throws automatically on 4xx/5xx so errors are never silent
 async function discordSend(payload, retries = 3, delayMs = 1000) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -302,11 +79,6 @@ async function discordSend(payload, retries = 3, delayMs = 1000) {
   }
   console.error('❌ Discord webhook failed after max retries');
 }
-
-// ─── Threshold Alerts ─────────────────────────────────────────────────────────
-// const LOW_THRESHOLD = 500;
-// const recentlyAlerted = { games: new Set(), wallets: new Set() };
-// const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
   if (gameId) {
@@ -353,70 +125,6 @@ async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
   }
 }
 
-// ─── Startup threshold check ──────────────────────────────────────────────────
-// async function runStartupThresholdCheck() {
-//   try {
-//     const [lowGames, lowWallets] = await Promise.all([
-//       prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
-//       prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
-//     ]);
-
-//     const alerts = [];
-
-//     for (const game of lowGames) {
-//       if (!recentlyAlerted.games.has(game.id)) {
-//         recentlyAlerted.games.add(game.id);
-//         setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
-//         alerts.push({
-//           embeds: [{
-//             title: '⚠️ Low Game Points Alert (Startup Check)',
-//             color: 0xf59e0b,
-//             fields: [
-//               { name: 'Game', value: game.name, inline: true },
-//               { name: 'Current Stock', value: `${parseFloat(game.pointStock).toFixed(2)} pts`, inline: true },
-//               { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
-//             ],
-//             footer: { text: 'Detected on server startup' },
-//             timestamp: new Date().toISOString(),
-//           }],
-//         });
-//       }
-//     }
-
-//     for (const wallet of lowWallets) {
-//       if (!recentlyAlerted.wallets.has(wallet.id)) {
-//         recentlyAlerted.wallets.add(wallet.id);
-//         setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
-//         alerts.push({
-//           embeds: [{
-//             title: '⚠️ Low Wallet Balance Alert (Startup Check)',
-//             color: 0xef4444,
-//             fields: [
-//               { name: 'Wallet', value: wallet.name, inline: true },
-//               { name: 'Method', value: wallet.method, inline: true },
-//               { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
-//               { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
-//             ],
-//             footer: { text: 'Detected on server startup' },
-//             timestamp: new Date().toISOString(),
-//           }],
-//         });
-//       }
-//     }
-
-//     // ✅ Send one at a time with 1.5s gap — prevents rate limiting
-//     for (const alert of alerts) {
-//       await discordSend(alert);
-//       await new Promise(r => setTimeout(r, 1500));
-//     }
-
-//     if (alerts.length > 0) {
-//       console.log(`⚠️ Startup check: sent ${alerts.length} alert(s)`);
-//     }
-//   } catch (err) {
-//     console.error('Startup threshold check failed:', err);
-//   }
-// }
 async function runStartupThresholdCheck() {
   try {
     const [lowGames, lowWallets] = await Promise.all([
@@ -424,69 +132,69 @@ async function runStartupThresholdCheck() {
       prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
     ]);
 
-    const alerts = [];
+    // ✅ ONE message for ALL low games combined
+    if (lowGames.length > 0) {
+      const fields = lowGames.map(g => ({
+        name: g.name,
+        value: `${parseFloat(g.pointStock).toFixed(0)} pts`,
+        inline: true,
+      }));
 
-    for (const game of lowGames) {
-      alerts.push({
-        payload: {
-          embeds: [{
-            title: '⚠️ Low Game Points Alert (Startup Check)',
-            color: 0xf59e0b,
-            fields: [
-              { name: 'Game', value: game.name, inline: true },
-              { name: 'Current Stock', value: `${parseFloat(game.pointStock).toFixed(2)} pts`, inline: true },
-              { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
-            ],
-            footer: { text: 'Detected on server startup' },
-            timestamp: new Date().toISOString(),
-          }],
-        },
-        // ✅ FIX: store the ID to add ONLY after successful send
-        onSuccess: () => {
-          recentlyAlerted.games.add(game.id);
-          setTimeout(() => recentlyAlerted.games.delete(game.id), ALERT_COOLDOWN_MS);
-        }
-      });
-    }
-
-    for (const wallet of lowWallets) {
-      alerts.push({
-        payload: {
-          embeds: [{
-            title: '⚠️ Low Wallet Balance Alert (Startup Check)',
-            color: 0xef4444,
-            fields: [
-              { name: 'Wallet', value: wallet.name, inline: true },
-              { name: 'Method', value: wallet.method, inline: true },
-              { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
-              { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
-            ],
-            footer: { text: 'Detected on server startup' },
-            timestamp: new Date().toISOString(),
-          }],
-        },
-        onSuccess: () => {
-          recentlyAlerted.wallets.add(wallet.id);
-          setTimeout(() => recentlyAlerted.wallets.delete(wallet.id), ALERT_COOLDOWN_MS);
-        }
-      });
-    }
-
-    // ✅ FIX: 3s gap instead of 1.5s, and only mark as alerted on SUCCESS
-    for (const alert of alerts) {
       try {
-        await discordSend(alert.payload);
-        alert.onSuccess(); // ← only blocks future alerts if this one actually sent
+        await discordSend({
+          embeds: [{
+            title: `⚠️ ${lowGames.length} Game(s) Low on Points (Startup Check)`,
+            color: 0xf59e0b,
+            fields,
+            footer: { text: `Threshold: ${LOW_THRESHOLD} pts — detected on server startup` },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+        // Only mark as alerted AFTER successful send
+        lowGames.forEach(g => {
+          recentlyAlerted.games.add(g.id);
+          setTimeout(() => recentlyAlerted.games.delete(g.id), ALERT_COOLDOWN_MS);
+        });
+        console.log(`⚠️ Startup: sent 1 batch alert for ${lowGames.length} low game(s)`);
       } catch (err) {
-        console.error('Startup alert failed (will retry next restart):', err.message);
-        // ← NOT adding to recentlyAlerted, so next server restart will try again
+        console.error('Startup game alert failed (will retry next restart):', err.message);
       }
-      await new Promise(r => setTimeout(r, 3000)); // ✅ 3s gap is safe for Discord
     }
 
-    if (alerts.length > 0) {
-      console.log(`⚠️ Startup check: attempted ${alerts.length} alert(s)`);
+    // ✅ 3s gap between the two messages
+    if (lowGames.length > 0 && lowWallets.length > 0) {
+      await new Promise(r => setTimeout(r, 3000));
     }
+
+    // ✅ ONE message for ALL low wallets combined
+    if (lowWallets.length > 0) {
+      const fields = lowWallets.map(w => ({
+        name: `${w.method} — ${w.name}`,
+        value: `$${parseFloat(w.balance).toFixed(2)}`,
+        inline: true,
+      }));
+
+      try {
+        await discordSend({
+          embeds: [{
+            title: `⚠️ ${lowWallets.length} Wallet(s) Low on Balance (Startup Check)`,
+            color: 0xef4444,
+            fields,
+            footer: { text: `Threshold: $${LOW_THRESHOLD} — detected on server startup` },
+            timestamp: new Date().toISOString(),
+          }],
+        });
+        // Only mark as alerted AFTER successful send
+        lowWallets.forEach(w => {
+          recentlyAlerted.wallets.add(w.id);
+          setTimeout(() => recentlyAlerted.wallets.delete(w.id), ALERT_COOLDOWN_MS);
+        });
+        console.log(`⚠️ Startup: sent 1 batch alert for ${lowWallets.length} low wallet(s)`);
+      } catch (err) {
+        console.error('Startup wallet alert failed (will retry next restart):', err.message);
+      }
+    }
+
   } catch (err) {
     console.error('Startup threshold check failed:', err);
   }
