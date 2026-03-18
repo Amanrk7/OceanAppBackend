@@ -3834,6 +3834,17 @@ app.get('/api/team-members', authMiddleware, adminMiddleware, async (req, res) =
   }
 });
 
+app.get('/api/test-discord', async (req, res) => {
+  try {
+    await axios.post(DISCORD_WEBHOOK_URL, {
+      content: '✅ Webhook test — ' + new Date().toLocaleTimeString()
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.json({ ok: false, status: err.response?.status, error: err.response?.data });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════
