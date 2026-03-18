@@ -14,7 +14,7 @@ import axios from 'axios';
 dotenv.config();
 
 
-const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1483530715584008393/ArJ80NEGSTeNVd4OCMQ7GpiCKpjyHS4Ey5dPi_2sz2_WgnBrTZQhz4NvbWzpxiBMamIY';
+const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1483731067541393579/z6dYGSEZl0ESYDASbXReArz45yI-deCRTChS_lUx2Pqh4FI_r12D8dx6JPVVNcvpIwvN';
 
 const TX_TZ = 'America/Chicago';
 
@@ -42,63 +42,141 @@ const safeFreeze = {
   deleteMany: (args) => prisma.streakFreeze ? prisma.streakFreeze.deleteMany(args).catch(() => ({})) : Promise.resolve({}),
 };
 
-// ─── Unified notification helper ──────────────────────────────────────────────
-// ─── Threshold Alerts ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// DISCORD NOTIFICATION
+// ═══════════════════════════════════════════════════════════════
+
 const LOW_THRESHOLD = 500;
-
-// Track recently alerted IDs to avoid spam (resets on server restart)
+const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min
 const recentlyAlerted = { games: new Set(), wallets: new Set() };
-const ALERT_COOLDOWN_MS = 30 * 60 * 1000; // 30 min cooldown per item
 
-// const fields = lowGames.slice(0, 25).map(g => ({ ... }));
-// // Add a note if truncated
-// if (lowGames.length > 25) {
-//   fields.push({ name: '...and more', value: `${lowGames.length - 25} additional games not shown`, inline: false });
-// }
-async function discordSend(payload, retries = 3, delayMs = 1000) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      await axios.post(DISCORD_WEBHOOK_URL, payload);
-      return; // success
-    } catch (err) {
-      const status = err.response?.status;
-      const retryAfter = err.response?.data?.retry_after;
+// ─── Global send lock — prevents ANY parallel Discord sends ──────────────────
+let discordSendLock = Promise.resolve();
 
-      if (status === 429) {
-        // Respect Discord's retry_after, fallback to exponential backoff
-        const wait = retryAfter ? retryAfter * 1000 : delayMs * attempt;
-        console.warn(`⏳ Discord rate limited. Retrying in ${wait}ms (attempt ${attempt}/${retries})`);
-        await new Promise(r => setTimeout(r, wait));
-      } else {
-        // Non-429 error — log and give up immediately
-        const detail = err.response?.data?.message || err.response?.data || err.message;
-        console.error(`❌ Discord webhook failed [${status ?? 'network'}]:`, detail);
+async function discordSend(payload, retries = 1) {
+  // Chain every send behind the previous one — NO parallel sends ever
+  discordSendLock = discordSendLock.then(async () => {
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
+      try {
+        await axios.post(DISCORD_WEBHOOK_URL, payload);
+        // Mandatory 1s gap after every successful send — stays under rate limit
+        await new Promise(r => setTimeout(r, 1000));
         return;
+      } catch (err) {
+        const status = err.response?.status;
+        const retryAfter = err.response?.data?.retry_after;
+
+        if (status === 429 && attempt <= retries) {
+          const wait = retryAfter ? Math.ceil(retryAfter) * 1000 + 500 : 5000;
+          console.warn(`⏳ Discord rate limited — waiting ${wait}ms`);
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          const detail = err.response?.data?.message || err.message;
+          console.error(`❌ Discord failed [${status ?? 'network'}]: ${detail}`);
+          return; // give up — don't retry forever
+        }
       }
     }
-  }
-  console.error('❌ Discord webhook failed after max retries');
+  });
+  await discordSendLock;
 }
 
+// ─── Startup threshold check — max 2 messages total ──────────────────────────
+async function runStartupThresholdCheck() {
+  try {
+    const [lowGames, lowWallets] = await Promise.all([
+      prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
+      prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
+    ]);
+
+    if (lowGames.length === 0 && lowWallets.length === 0) {
+      console.log('✅ Startup check: all games and wallets above threshold');
+      return;
+    }
+
+    // ONE message for all low games
+    if (lowGames.length > 0) {
+      const fields = lowGames.slice(0, 25).map(g => ({
+        name: g.name,
+        value: `${parseFloat(g.pointStock).toFixed(0)} pts`,
+        inline: true,
+      }));
+      if (lowGames.length > 25) {
+        fields.push({ name: `+${lowGames.length - 25} more`, value: 'Check dashboard', inline: false });
+      }
+
+      await discordSend({
+        embeds: [{
+          title: `⚠️ ${lowGames.length} Game(s) Low on Points`,
+          color: 0xf59e0b,
+          fields,
+          footer: { text: `Threshold: ${LOW_THRESHOLD} pts  •  Server startup check` },
+          timestamp: new Date().toISOString(),
+        }],
+      }, 0); // 0 retries on startup — never retry-flood Discord
+
+      // Mark as alerted regardless of send success — prevents retry loops
+      lowGames.forEach(g => {
+        recentlyAlerted.games.add(g.id);
+        setTimeout(() => recentlyAlerted.games.delete(g.id), ALERT_COOLDOWN_MS);
+      });
+      console.log(`⚠️ Startup: sent batch alert for ${lowGames.length} low game(s)`);
+    }
+
+    // ONE message for all low wallets
+    if (lowWallets.length > 0) {
+      const fields = lowWallets.slice(0, 25).map(w => ({
+        name: `${w.method} — ${w.name}`,
+        value: `$${parseFloat(w.balance).toFixed(2)}`,
+        inline: true,
+      }));
+      if (lowWallets.length > 25) {
+        fields.push({ name: `+${lowWallets.length - 25} more`, value: 'Check dashboard', inline: false });
+      }
+
+      await discordSend({
+        embeds: [{
+          title: `⚠️ ${lowWallets.length} Wallet(s) Low on Balance`,
+          color: 0xef4444,
+          fields,
+          footer: { text: `Threshold: $${LOW_THRESHOLD}  •  Server startup check` },
+          timestamp: new Date().toISOString(),
+        }],
+      }, 0); // 0 retries on startup
+
+      lowWallets.forEach(w => {
+        recentlyAlerted.wallets.add(w.id);
+        setTimeout(() => recentlyAlerted.wallets.delete(w.id), ALERT_COOLDOWN_MS);
+      });
+      console.log(`⚠️ Startup: sent batch alert for ${lowWallets.length} low wallet(s)`);
+    }
+
+  } catch (err) {
+    console.error('Startup threshold check failed:', err);
+  }
+}
+
+// ─── Per-transaction threshold alerts ────────────────────────────────────────
 async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
   if (gameId) {
     const game = await prisma.game.findUnique({ where: { id: gameId } });
     if (game && game.pointStock < LOW_THRESHOLD && !recentlyAlerted.games.has(gameId)) {
       recentlyAlerted.games.add(gameId);
       setTimeout(() => recentlyAlerted.games.delete(gameId), ALERT_COOLDOWN_MS);
+
       await discordSend({
         embeds: [{
           title: '⚠️ Low Game Points Alert',
           color: 0xf59e0b,
           fields: [
             { name: 'Game', value: game.name, inline: true },
-            { name: 'Current Stock', value: `${game.pointStock.toFixed(2)} pts`, inline: true },
+            { name: 'Current Stock', value: `${parseFloat(game.pointStock).toFixed(0)} pts`, inline: true },
             { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
           ],
           footer: { text: 'Reload points soon to avoid service disruption' },
           timestamp: new Date().toISOString(),
         }],
-      });
+      }, 1);
     }
   }
 
@@ -107,6 +185,7 @@ async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
     if (wallet && wallet.balance < LOW_THRESHOLD && !recentlyAlerted.wallets.has(walletId)) {
       recentlyAlerted.wallets.add(walletId);
       setTimeout(() => recentlyAlerted.wallets.delete(walletId), ALERT_COOLDOWN_MS);
+
       await discordSend({
         embeds: [{
           title: '⚠️ Low Wallet Balance Alert',
@@ -114,96 +193,23 @@ async function checkThresholdsAndNotify({ gameId, walletId } = {}) {
           fields: [
             { name: 'Wallet', value: wallet.name, inline: true },
             { name: 'Method', value: wallet.method, inline: true },
-            { name: 'Balance', value: `$${wallet.balance.toFixed(2)}`, inline: true },
+            { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
             { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
           ],
           footer: { text: 'Top up this wallet to continue processing cashouts' },
           timestamp: new Date().toISOString(),
         }],
-      });
+      }, 1);
     }
   }
 }
 
-async function runStartupThresholdCheck() {
-  try {
-    const [lowGames, lowWallets] = await Promise.all([
-      prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
-      prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
-    ]);
-
-    // ✅ ONE message for ALL low games combined
-    if (lowGames.length > 0) {
-      const fields = lowGames.map(g => ({
-        name: g.name,
-        value: `${parseFloat(g.pointStock).toFixed(0)} pts`,
-        inline: true,
-      }));
-
-      try {
-        await discordSend({
-          embeds: [{
-            title: `⚠️ ${lowGames.length} Game(s) Low on Points (Startup Check)`,
-            color: 0xf59e0b,
-            fields,
-            footer: { text: `Threshold: ${LOW_THRESHOLD} pts — detected on server startup` },
-            timestamp: new Date().toISOString(),
-          }],
-        });
-        // Only mark as alerted AFTER successful send
-        lowGames.forEach(g => {
-          recentlyAlerted.games.add(g.id);
-          setTimeout(() => recentlyAlerted.games.delete(g.id), ALERT_COOLDOWN_MS);
-        });
-        console.log(`⚠️ Startup: sent 1 batch alert for ${lowGames.length} low game(s)`);
-      } catch (err) {
-        console.error('Startup game alert failed (will retry next restart):', err.message);
-      }
-    }
-
-    // ✅ 3s gap between the two messages
-    if (lowGames.length > 0 && lowWallets.length > 0) {
-      await new Promise(r => setTimeout(r, 3000));
-    }
-
-    // ✅ ONE message for ALL low wallets combined
-    if (lowWallets.length > 0) {
-      const fields = lowWallets.map(w => ({
-        name: `${w.method} — ${w.name}`,
-        value: `$${parseFloat(w.balance).toFixed(2)}`,
-        inline: true,
-      }));
-
-      try {
-        await discordSend({
-          embeds: [{
-            title: `⚠️ ${lowWallets.length} Wallet(s) Low on Balance (Startup Check)`,
-            color: 0xef4444,
-            fields,
-            footer: { text: `Threshold: $${LOW_THRESHOLD} — detected on server startup` },
-            timestamp: new Date().toISOString(),
-          }],
-        });
-        // Only mark as alerted AFTER successful send
-        lowWallets.forEach(w => {
-          recentlyAlerted.wallets.add(w.id);
-          setTimeout(() => recentlyAlerted.wallets.delete(w.id), ALERT_COOLDOWN_MS);
-        });
-        console.log(`⚠️ Startup: sent 1 batch alert for ${lowWallets.length} low wallet(s)`);
-      } catch (err) {
-        console.error('Startup wallet alert failed (will retry next restart):', err.message);
-      }
-    }
-
-  } catch (err) {
-    console.error('Startup threshold check failed:', err);
-  }
-}
 // ─── Shift + Task notifications ───────────────────────────────────────────────
 async function notify(type, data) {
   const time = new Date().toLocaleString('en-US', {
-    timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit',
-    hour12: true, month: 'short', day: 'numeric',
+    timeZone: 'America/Chicago',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+    month: 'short', day: 'numeric',
   });
 
   let payload = null;
@@ -220,6 +226,7 @@ async function notify(type, data) {
           { name: 'Time', value: time, inline: true },
         ],
         footer: { text: `Shift #${shiftId}` },
+        timestamp: new Date().toISOString(),
       }],
     };
   }
@@ -241,6 +248,7 @@ async function notify(type, data) {
           { name: 'Time', value: time, inline: true },
         ],
         footer: { text: `Shift #${shiftId}` },
+        timestamp: new Date().toISOString(),
       }],
     };
   }
@@ -263,15 +271,15 @@ async function notify(type, data) {
           { name: 'Due', value: due, inline: true },
           { name: 'Created by', value: createdByName || '—', inline: true },
         ],
+        timestamp: new Date().toISOString(),
       }],
     };
   }
 
-  if (payload) await discordSend(payload);
-
-  // ── WhatsApp via Twilio (unchanged) ──────────────────────────────────────────
-  // ... keep your existing Twilio block here if needed
+  if (payload) await discordSend(payload, 1);
 }
+
+
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-production';
 const PORT = process.env.PORT || 3001;
@@ -3849,29 +3857,28 @@ app.use((err, req, res, next) => {
 //   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
 // });
 
+// ─── server startup (inside app.listen callback) ─────────────────────────────
+// Replace your existing app.listen block with this:
+//
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
 
-  // Run threshold check 3 seconds after boot
-  setTimeout(runStartupThresholdCheck, 3000);
+  // Startup check fires once, 5s after boot
+  setTimeout(runStartupThresholdCheck, 5000);
 
-  // Periodic scan every 30 minutes
+  // Periodic scan every 60 minutes (not 30 — reduces noise)
   setInterval(async () => {
     try {
       const [lowGames, lowWallets] = await Promise.all([
         prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
         prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
       ]);
-      for (const game of lowGames) {
-        await checkThresholdsAndNotify({ gameId: game.id });
-      }
-      for (const wallet of lowWallets) {
-        await checkThresholdsAndNotify({ walletId: wallet.id });
-      }
+      for (const game of lowGames) await checkThresholdsAndNotify({ gameId: game.id });
+      for (const wallet of lowWallets) await checkThresholdsAndNotify({ walletId: wallet.id });
     } catch (err) {
       console.error('Periodic threshold check failed:', err);
     }
-  }, 30 * 60 * 1000);
+  }, 60 * 60 * 1000);
 });
 
 process.on('SIGINT', async () => {
