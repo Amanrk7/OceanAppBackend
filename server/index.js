@@ -14,7 +14,7 @@ import axios from 'axios';
 dotenv.config();
 
 
-const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1483731067541393579/z6dYGSEZl0ESYDASbXReArz45yI-deCRTChS_lUx2Pqh4FI_r12D8dx6JPVVNcvpIwvN';
+const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1483734547786104844/HXN1NReV-4-5zk_SOljSGuHeF56iY_bYdTrh8E0d015A2GG4FL-s9pkn-eLTAnbM2yTn';
 
 const TX_TZ = 'America/Chicago';
 
