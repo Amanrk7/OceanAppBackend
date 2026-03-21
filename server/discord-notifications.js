@@ -1,21 +1,31 @@
 // ═══════════════════════════════════════════════════════════════
-// DISCORD NOTIFICATION SYSTEM — Bot API (not webhooks)
+// DISCORD NOTIFICATION SYSTEM — via Cloudflare Worker proxy
 //
-// Why Bot API instead of webhooks?
-//   • Webhooks share a global IP-based rate limit on shared hosts
-//     (Render, Railway, Fly.io) — other tenants can exhaust it
-//   • Bot API rate limits are per-channel (5 msg / 5 s) and are
-//     tied to YOUR bot token, not your server's IP
-//   • Bots never get "globally rate-limited" from a burst at startup
+// Why a proxy?
+//   Discord rate limits are enforced at the Cloudflare/IP level.
+//   Render's shared IPs get flagged when any tenant on the same IP
+//   abuses Discord. By routing through a Cloudflare Worker, requests
+//   come from Cloudflare's own trusted infrastructure → no IP bans.
 //
-// One-time setup (5 min):
-//   1. https://discord.com/developers/applications → New Application
-//   2. Bot tab → Add Bot → copy TOKEN → add to .env as DISCORD_BOT_TOKEN
-//   3. OAuth2 → URL Generator → scopes: bot → permissions: Send Messages
-//   4. Open the generated URL → add bot to your server
-//   5. In Discord: enable Developer Mode (User Settings → Advanced)
-//   6. Right-click your #shifts channel → Copy Channel ID → DISCORD_CHANNEL_SHIFTS
-//   7. Right-click your #alerts channel → Copy Channel ID → DISCORD_CHANNEL_ALERTS
+// One-time setup:
+//   1. workers.cloudflare.com → free account → Create Worker
+//   2. Paste the proxy worker code (see README / setup guide)
+//   3. Settings → Variables → add PROXY_SECRET = any random string
+//   4. Copy your worker URL → DISCORD_PROXY_URL in .env
+//
+//   Discord bot setup:
+//   5. discord.com/developers → New Application → Bot → copy token
+//   6. OAuth2 → URL Generator → bot + Send Messages → add to server
+//   7. Enable Developer Mode in Discord (User Settings → Advanced)
+//   8. Right-click #shifts channel → Copy Channel ID → DISCORD_CHANNEL_SHIFTS
+//   9. Right-click #alerts channel → Copy Channel ID → DISCORD_CHANNEL_ALERTS
+//
+// .env variables:
+//   DISCORD_BOT_TOKEN        = your bot token
+//   DISCORD_CHANNEL_SHIFTS   = shifts channel ID
+//   DISCORD_CHANNEL_ALERTS   = alerts channel ID
+//   DISCORD_PROXY_URL        = https://your-worker.workers.dev
+//   DISCORD_PROXY_SECRET     = same value as PROXY_SECRET in worker
 // ═══════════════════════════════════════════════════════════════
 
 import axios from 'axios';
@@ -38,29 +48,31 @@ export function fmtTX(date) {
     });
 }
 
-// ── Config (all from .env) ────────────────────────────────────────
+// ── Config ────────────────────────────────────────────────────────
 const BOT_TOKEN      = process.env.DISCORD_BOT_TOKEN;
-const CHANNEL_SHIFTS = process.env.DISCORD_CHANNEL_SHIFTS;   // channel ID string
-const CHANNEL_ALERTS = process.env.DISCORD_CHANNEL_ALERTS;   // channel ID string
+const CHANNEL_SHIFTS = process.env.DISCORD_CHANNEL_SHIFTS;
+const CHANNEL_ALERTS = process.env.DISCORD_CHANNEL_ALERTS;
+const PROXY_URL      = process.env.DISCORD_PROXY_URL;
+const PROXY_SECRET   = process.env.DISCORD_PROXY_SECRET;
 
 if (!BOT_TOKEN)      console.warn('⚠️  DISCORD_BOT_TOKEN not set — notifications disabled');
 if (!CHANNEL_SHIFTS) console.warn('⚠️  DISCORD_CHANNEL_SHIFTS not set');
 if (!CHANNEL_ALERTS) console.warn('⚠️  DISCORD_CHANNEL_ALERTS not set');
+if (!PROXY_URL)      console.warn('⚠️  DISCORD_PROXY_URL not set — set up the Cloudflare Worker proxy');
 
 // ═══════════════════════════════════════════════════════════════
 // PER-CHANNEL QUEUE
 // Each channel gets its own FIFO queue → independent rate limits.
-// Gap: 1100 ms between sends per channel (well under 5/5 s limit).
-// On 429: uses the exact X-RateLimit-Reset-After header value.
-// Dedup: identical tag within 30 s is silently dropped.
+// All requests go through the Cloudflare Worker proxy.
+// Gap: 1100ms between sends (well under Discord's 5/5s limit).
+// Dedup: same tag within 30s is silently dropped.
 // Never throws — callers always get a boolean.
 // ═══════════════════════════════════════════════════════════════
 
 const SEND_GAP_MS = 1_100;
-const MAX_RETRIES = 4;
+const MAX_RETRIES = 3;
 const DEDUP_MS    = 30_000;
 
-// Map<channelId, { queue[], running, lastSentAt, recentTags }>
 const chanState = new Map();
 
 function getChanState(channelId) {
@@ -80,7 +92,6 @@ async function drainQueue(channelId) {
     while (s.queue.length > 0) {
         const { payload, resolve, tag } = s.queue.shift();
 
-        // Enforce per-channel gap
         const gap = Date.now() - s.lastSentAt;
         if (gap < SEND_GAP_MS) await sleep(SEND_GAP_MS - gap);
 
@@ -88,15 +99,16 @@ async function drainQueue(channelId) {
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
+                // ── Route through Cloudflare Worker proxy ─────────────
                 const resp = await axios.post(
-                    `https://discord.com/api/v10/channels/${channelId}/messages`,
-                    payload,
+                    PROXY_URL,
+                    { channelId, botToken: BOT_TOKEN, payload },
                     {
                         headers: {
-                            Authorization: `Bot ${BOT_TOKEN}`,
-                            'Content-Type': 'application/json',
+                            'Content-Type':   'application/json',
+                            'X-Proxy-Secret': PROXY_SECRET,
                         },
-                        timeout: 10_000,
+                        timeout: 15_000,
                         validateStatus: null,
                     }
                 );
@@ -108,33 +120,29 @@ async function drainQueue(channelId) {
                 }
 
                 if (resp.status === 429) {
-                    // Use Discord's exact reset header — never guess
-                    const resetAfter = parseFloat(
-                        resp.headers['x-ratelimit-reset-after'] ??
-                        resp.data?.retry_after ??
-                        2
-                    );
-                    const waitMs = Math.ceil(resetAfter * 1000) + 100;
-                    console.warn(`⏳ Discord 429 ch:${channelId} — waiting ${waitMs}ms (attempt ${attempt}/${MAX_RETRIES})`);
+                    // Discord rate limit forwarded through proxy
+                    const retryAfter = parseFloat(resp.data?.retry_after ?? 2);
+                    const waitMs = Math.ceil(retryAfter * 1000) + 200;
+                    console.warn(`⏳ Discord 429 via proxy ch:${channelId} — waiting ${waitMs}ms (attempt ${attempt}/${MAX_RETRIES})`);
                     await sleep(waitMs);
                     continue;
                 }
 
-                // 4xx other than 429 = bad payload, don't retry
-                if (resp.status >= 400 && resp.status < 500) {
-                    console.error(`❌ Discord ${resp.status} ch:${channelId}:`, resp.data?.message);
+                if (resp.status === 401) {
+                    console.error('❌ Proxy auth failed — check DISCORD_PROXY_SECRET matches worker PROXY_SECRET');
                     break;
                 }
 
-                // 5xx = Discord outage, wait and retry
-                if (resp.status >= 500) {
-                    console.warn(`⚠️  Discord ${resp.status} — retrying in ${2 * attempt}s`);
-                    await sleep(2_000 * attempt);
-                    continue;
+                if (resp.status >= 400 && resp.status < 500) {
+                    console.error(`❌ Discord ${resp.status}:`, resp.data?.message);
+                    break;
                 }
 
+                // 5xx — wait and retry
+                await sleep(2_000 * attempt);
+
             } catch (err) {
-                console.error(`❌ Discord network error (attempt ${attempt}):`, err.message);
+                console.error(`❌ Proxy network error (attempt ${attempt}):`, err.message);
                 if (attempt < MAX_RETRIES) await sleep(2_000 * attempt);
             }
         }
@@ -148,14 +156,14 @@ async function drainQueue(channelId) {
 }
 
 /**
- * Send a Discord message via Bot API.
- * @param {object}  payload    Discord message body (embeds, content, etc.)
- * @param {string}  [tag]      Dedup key — same tag within 30 s is dropped
+ * Enqueue a Discord message (routed via Cloudflare Worker proxy).
+ * @param {object}  payload    Discord message body
+ * @param {string}  [tag]      Dedup key — same tag within 30s is dropped
  * @param {'shifts'|'alerts'} [channel]
  * @returns {Promise<boolean>}
  */
 export function discordSend(payload, tag = null, channel = 'shifts') {
-    if (!BOT_TOKEN) return Promise.resolve(false);
+    if (!BOT_TOKEN || !PROXY_URL) return Promise.resolve(false);
 
     const channelId = channel === 'alerts' ? CHANNEL_ALERTS : CHANNEL_SHIFTS;
     if (!channelId) {
@@ -184,8 +192,7 @@ export function discordSend(payload, tag = null, channel = 'shifts') {
 // ═══════════════════════════════════════════════════════════════
 
 const LOW_THRESHOLD  = 500;
-const ALERT_COOLDOWN = 60 * 60 * 1_000;   // 1 hour per entity
-
+const ALERT_COOLDOWN = 60 * 60 * 1_000;
 const alerted = { games: new Set(), wallets: new Set() };
 
 export async function checkThresholdsAndNotify({ gameId, walletId } = {}, prisma) {
@@ -196,7 +203,6 @@ export async function checkThresholdsAndNotify({ gameId, walletId } = {}, prisma
             const game = await prisma.game.findUnique({ where: { id: gameId } });
             if (!game || game.pointStock >= LOW_THRESHOLD) return;
             if (alerted.games.has(gameId)) return;
-
             alerted.games.add(gameId);
             setTimeout(() => alerted.games.delete(gameId), ALERT_COOLDOWN);
 
@@ -222,7 +228,6 @@ export async function checkThresholdsAndNotify({ gameId, walletId } = {}, prisma
             const wallet = await prisma.wallet.findUnique({ where: { id: walletId } });
             if (!wallet || wallet.balance >= LOW_THRESHOLD) return;
             if (alerted.wallets.has(walletId)) return;
-
             alerted.wallets.add(walletId);
             setTimeout(() => alerted.wallets.delete(walletId), ALERT_COOLDOWN);
 
@@ -246,7 +251,6 @@ export async function checkThresholdsAndNotify({ gameId, walletId } = {}, prisma
     await Promise.all(tasks);
 }
 
-// ── Startup scan ─────────────────────────────────────────────────
 export async function runStartupThresholdCheck(prisma) {
     try {
         const [lowGames, lowWallets] = await Promise.all([
@@ -260,48 +264,27 @@ export async function runStartupThresholdCheck(prisma) {
         }
 
         if (lowGames.length) {
-            const fields = lowGames.slice(0, 25).map(g => ({
-                name: g.name, value: `${parseFloat(g.pointStock).toFixed(0)} pts`, inline: true,
-            }));
+            const fields = lowGames.slice(0, 25).map(g => ({ name: g.name, value: `${parseFloat(g.pointStock).toFixed(0)} pts`, inline: true }));
             if (lowGames.length > 25) fields.push({ name: `+${lowGames.length - 25} more`, value: 'Check dashboard', inline: false });
             await discordSend({
-                embeds: [{
-                    title: `⚠️ ${lowGames.length} Game(s) Low on Points`,
-                    color: 0xf59e0b, fields,
-                    footer: { text: `Threshold: ${LOW_THRESHOLD} pts  •  Startup scan` },
-                    timestamp: new Date().toISOString(),
-                }],
+                embeds: [{ title: `⚠️ ${lowGames.length} Game(s) Low on Points`, color: 0xf59e0b, fields, footer: { text: `Threshold: ${LOW_THRESHOLD} pts  •  Startup scan` }, timestamp: new Date().toISOString() }],
             }, 'startup-games', 'alerts');
-            lowGames.forEach(g => {
-                alerted.games.add(g.id);
-                setTimeout(() => alerted.games.delete(g.id), ALERT_COOLDOWN);
-            });
+            lowGames.forEach(g => { alerted.games.add(g.id); setTimeout(() => alerted.games.delete(g.id), ALERT_COOLDOWN); });
         }
 
         if (lowWallets.length) {
-            const fields = lowWallets.slice(0, 25).map(w => ({
-                name: `${w.method} — ${w.name}`, value: `$${parseFloat(w.balance).toFixed(2)}`, inline: true,
-            }));
+            const fields = lowWallets.slice(0, 25).map(w => ({ name: `${w.method} — ${w.name}`, value: `$${parseFloat(w.balance).toFixed(2)}`, inline: true }));
             if (lowWallets.length > 25) fields.push({ name: `+${lowWallets.length - 25} more`, value: 'Check dashboard', inline: false });
             await discordSend({
-                embeds: [{
-                    title: `⚠️ ${lowWallets.length} Wallet(s) Low on Balance`,
-                    color: 0xef4444, fields,
-                    footer: { text: `Threshold: $${LOW_THRESHOLD}  •  Startup scan` },
-                    timestamp: new Date().toISOString(),
-                }],
+                embeds: [{ title: `⚠️ ${lowWallets.length} Wallet(s) Low on Balance`, color: 0xef4444, fields, footer: { text: `Threshold: $${LOW_THRESHOLD}  •  Startup scan` }, timestamp: new Date().toISOString() }],
             }, 'startup-wallets', 'alerts');
-            lowWallets.forEach(w => {
-                alerted.wallets.add(w.id);
-                setTimeout(() => alerted.wallets.delete(w.id), ALERT_COOLDOWN);
-            });
+            lowWallets.forEach(w => { alerted.wallets.add(w.id); setTimeout(() => alerted.wallets.delete(w.id), ALERT_COOLDOWN); });
         }
     } catch (err) {
         console.error('Startup threshold check failed:', err.message);
     }
 }
 
-// ── Periodic scan (every 60 min) ─────────────────────────────────
 export async function runPeriodicThresholdCheck(prisma) {
     try {
         const [lowGames, lowWallets] = await Promise.all([
@@ -351,18 +334,19 @@ async function sendShiftStart({ memberName, teamRole, shiftId }) {
 async function sendShiftEnd({ memberName, teamRole, shiftId, duration, stats, endSnapshot, effortReason, improvements }) {
     const st = stats || {};
     const es = endSnapshot || {};
+    const f2 = n => (n ?? 0).toFixed(2);
 
     const financialFields = [
-        { name: '💰 Deposits',   value: `$${(st.totalDeposits ?? 0).toFixed(2)}`, inline: true },
-        { name: '💸 Cashouts',   value: `$${(st.totalCashouts ?? 0).toFixed(2)}`, inline: true },
-        { name: '📈 Net Profit', value: `$${(st.netProfit    ?? 0).toFixed(2)}`, inline: true },
+        { name: '💰 Deposits',   value: `$${f2(st.totalDeposits)}`, inline: true },
+        { name: '💸 Cashouts',   value: `$${f2(st.totalCashouts)}`, inline: true },
+        { name: '📈 Net Profit', value: `$${f2(st.netProfit)}`,     inline: true },
     ];
 
     const activityFields = [
-        { name: '🎮 Transactions',  value: String(st.transactionCount ?? 0),  inline: true },
-        { name: '🎁 Bonuses',       value: `${st.bonusesGranted ?? 0} ($${(st.totalBonusAmount ?? 0).toFixed(2)})`, inline: true },
-        { name: '👤 Players Added', value: String(st.playersAdded ?? 0),       inline: true },
-        { name: '✅ Tasks Done',    value: String(st.tasksCompleted ?? 0),     inline: true },
+        { name: '🎮 Transactions',  value: String(st.transactionCount ?? 0), inline: true },
+        { name: '🎁 Bonuses',       value: `${st.bonusesGranted ?? 0} ($${f2(st.totalBonusAmount)})`, inline: true },
+        { name: '👤 Players Added', value: String(st.playersAdded ?? 0),     inline: true },
+        { name: '✅ Tasks Done',    value: String(st.tasksCompleted ?? 0),   inline: true },
         { name: '🐛 Issues',        value: `${st.issuesCreated ?? 0} created / ${st.issuesResolved ?? 0} resolved`, inline: true },
     ];
 
@@ -370,8 +354,8 @@ async function sendShiftEnd({ memberName, teamRole, shiftId, duration, stats, en
     if (es.walletChange != null || es.gameChange != null) {
         reconFields.push(
             { name: '\u200b', value: '**── Reconciliation ──**', inline: false },
-            { name: '🏦 Wallet Δ', value: `$${(es.walletChange ?? 0).toFixed(2)}`,  inline: true },
-            { name: '🎲 Game Δ',   value: `${(es.gameChange  ?? 0).toFixed(2)} pts`, inline: true },
+            { name: '🏦 Wallet Δ', value: `$${f2(es.walletChange)}`,   inline: true },
+            { name: '🎲 Game Δ',   value: `${f2(es.gameChange)} pts`,  inline: true },
             { name: '⚖️ Balanced', value: es.isBalanced === true ? '✅ Yes' : es.isBalanced === false ? '❌ No' : '—', inline: true },
         );
         if (es.walletDiscrepancy) reconFields.push({ name: '⚠️ Wallet Gap', value: `$${Math.abs(es.walletDiscrepancy).toFixed(2)}`, inline: true });
@@ -384,12 +368,10 @@ async function sendShiftEnd({ memberName, teamRole, shiftId, duration, stats, en
     if (improvements) feedbackFields.push({ name: '💡 Improvements', value: improvements.slice(0, 300), inline: false });
 
     const netProfit = st.netProfit ?? 0;
-    const color = netProfit > 0 ? 0x22c55e : netProfit < 0 ? 0xef4444 : 0x64748b;
-
     await discordSend({
         embeds: [{
             title: '🌙 Shift Ended — Report',
-            color,
+            color: netProfit > 0 ? 0x22c55e : netProfit < 0 ? 0xef4444 : 0x64748b,
             fields: [
                 { name: '👤 Member',   value: memberName || '—',   inline: true },
                 { name: '🏷️ Team',     value: roleLabel(teamRole), inline: true },
