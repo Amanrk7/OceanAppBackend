@@ -2475,17 +2475,50 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
       prisma.shift.update({ where: { id: shiftId }, data: { endTime: now, duration, isActive: false } }),
       prisma.team.updateMany({ where: { teamName: existing.teamRole }, data: { isShiftActive: false } }),
     ]);
+
     const checkin = await prisma.shiftCheckin.findUnique({ where: { shiftId } }).catch(() => null);
+
     let netProfit = null, isBalanced = null;
+    let shiftEndSnapshot = null, shiftEffortReason = null, shiftImprovements = null;
     if (checkin?.additionalNotes) {
       try {
         const parsed = JSON.parse(checkin.additionalNotes);
-        netProfit = parsed.endSnapshot?.netProfit ?? null;
-        isBalanced = parsed.endSnapshot?.isBalanced ?? null;
-      } catch (_) { }
+        shiftEndSnapshot = parsed.endSnapshot ?? null;
+        shiftEffortReason = parsed.effortReason ?? null;
+        shiftImprovements = parsed.improvements ?? null;
+        netProfit = shiftEndSnapshot?.netProfit ?? null;
+        isBalanced = shiftEndSnapshot?.isBalanced ?? null;
+      } catch (_) {}
     }
+
+    const shiftStats = {
+      netProfit,
+      effortRating: checkin?.effortRating ?? null,
+      isBalanced,
+      totalDeposits: shiftEndSnapshot?.deposits ?? null,
+      totalCashouts: shiftEndSnapshot?.cashouts ?? null,
+      transactionCount: null,
+      bonusesGranted: null,
+      totalBonusAmount: null,
+      playersAdded: null,
+      tasksCompleted: null,
+      issuesCreated: null,
+      issuesResolved: null,
+    };
+
     const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
-    notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced, stats, endSnapshot, effortReason, improvements });
+
+    notify('SHIFT_END', {
+      memberName: endMember?.name,
+      teamRole: existing.teamRole,
+      shiftId,
+      duration,
+      stats: shiftStats,
+      endSnapshot: shiftEndSnapshot,
+      effortReason: shiftEffortReason,
+      improvements: shiftImprovements,
+    });
+
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
