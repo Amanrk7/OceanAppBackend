@@ -2485,7 +2485,7 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
       } catch (_) { }
     }
     const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
-    notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced });
+    notify('SHIFT_END', { memberName: endMember?.name, teamRole: existing.teamRole, shiftId, duration, netProfit, isBalanced, stats, endSnapshot, effortReason, improvements });
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
