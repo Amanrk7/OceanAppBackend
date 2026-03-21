@@ -40,9 +40,9 @@ export function fmtTX(date) {
 
 const WEBHOOK = {
     shifts: process.env.DISCORD_WEBHOOK_SHIFTS
-        || 'https://discord.com/api/webhooks/1484784105559163003/dwJplAm2cIVdSnlCbI7jo-cez1TXAUk8WXDjE6DkyD9efwGTVii303ImQeUBQV4ZKMip',
+        || 'https://discord.com/api/webhooks/1484794783925927957/iapQKccd8JfBPnkZNejeOQ8PIKEdX82hapFAtR4OQfYoUY8_70PkO2cB6YJgf8bBbvE8',
     alerts: process.env.DISCORD_WEBHOOK_ALERTS
-        || 'https://discord.com/api/webhooks/1484784328213921882/U1f0ODSma8P7kBL3K46izSmtyHkjCn8IG_bm7DC-tke9wsFl4eGpgVV3AYTFeNefCpGo',
+        || 'https://discord.com/api/webhooks/1484795044002140262/GZxSFySond9s7E1iJfm_maxydYWiG1KPTAdXRJB9RX3RufYqzdYmaGv8s2Gxs_D3Dd7m',
 };
 
 // ═══════════════════════════════════════════════════════════════
