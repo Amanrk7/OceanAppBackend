@@ -1,16 +1,16 @@
 // ═══════════════════════════════════════════════════════════════
-// DISCORD NOTIFICATION SYSTEM — Robust, rate-limit-safe
-// Drop this in place of your existing Discord section in index.js
+// DISCORD NOTIFICATION SYSTEM
+// ─ Two dedicated webhooks (shifts + alerts) → separate rate limits
+// ─ Per-webhook queues with header-based rate limit handling
+// ─ Deduplication within a 30 s window
+// ─ Never throws — callers always get a boolean result
 // ═══════════════════════════════════════════════════════════════
 
 import axios from 'axios';
 
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL ||
-    'https://discord.com/api/webhooks/1484117222325620786/pKEWZ7fNYDTPSVuLcj8cC0yRZSIer_M-2d_Ry8vxLHvkEVtkkoKJoCH0X4_8uDJApcVQ';
-
+// ── Timezone helper ──────────────────────────────────────────────
 const TX_TZ = 'America/Chicago';
 
-// ── Formatting helpers ────────────────────────────────────────────
 export function fmtTXDate(date) {
     if (!date) return '—';
     return new Date(date).toLocaleDateString('en-US', {
@@ -27,193 +27,213 @@ export function fmtTX(date) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// QUEUE-BASED DISCORD SENDER
-// - Processes one message at a time (FIFO)
-// - Enforces 2.5s minimum gap between sends
-// - Exponential backoff on 429s (max 3 retries)
-// - Drops duplicates within a 30s window
+// WEBHOOK REGISTRY
+//
+// Add TWO webhooks to your .env:
+//   DISCORD_WEBHOOK_SHIFTS   → #shifts channel  (shift start / end)
+//   DISCORD_WEBHOOK_ALERTS   → #alerts channel  (low game stock / low wallet)
+//
+// If you only set one, both channels fall back to it. That degrades
+// back to the old single-bucket behaviour, but at least the code
+// won't crash.
 // ═══════════════════════════════════════════════════════════════
 
-const MIN_SEND_GAP_MS = 2500;   // Discord safe: ~2.5s between webhook calls
+const WEBHOOK = {
+    shifts: process.env.DISCORD_WEBHOOK_SHIFTS
+        || 'https://discord.com/api/webhooks/1484784105559163003/dwJplAm2cIVdSnlCbI7jo-cez1TXAUk8WXDjE6DkyD9efwGTVii303ImQeUBQV4ZKMip',
+    alerts: process.env.DISCORD_WEBHOOK_ALERTS
+        || 'https://discord.com/api/webhooks/1484784328213921882/U1f0ODSma8P7kBL3K46izSmtyHkjCn8IG_bm7DC-tke9wsFl4eGpgVV3AYTFeNefCpGo',
+};
+
+// ═══════════════════════════════════════════════════════════════
+// PER-WEBHOOK QUEUE
+// Each webhook gets its own independent queue so they never share
+// a rate-limit bucket.
+// ═══════════════════════════════════════════════════════════════
+
+const SAFE_GAP_MS = 600;   // 600 ms ≈ 1.7 req/s — well under 5/2 s Discord limit
 const MAX_RETRIES = 3;
-const DEDUP_WINDOW_MS = 30_000; // ignore identical payloads within 30s
+const DEDUP_MS = 30_000;
 
-const queue = [];          // Array<{ payload, resolve, reject }>
-let queueRunning = false;
-let lastSentAt = 0;
-const recentHashes = new Set();   // dedup cache
+// Map<webhookUrl, { queue, running, lastSentAt, recentHashes }>
+const webhookState = new Map();
 
-// Simple hash to deduplicate identical payloads
-function hashPayload(payload) {
-    const str = JSON.stringify(payload);
-    let h = 0;
-    for (let i = 0; i < str.length; i++) {
-        h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+function getState(url) {
+    if (!webhookState.has(url)) {
+        webhookState.set(url, {
+            queue: [],
+            running: false,
+            lastSentAt: 0,
+            recentHashes: new Set(),
+        });
     }
-    return h.toString();
-}
-
-async function processQueue() {
-    if (queueRunning) return;
-    queueRunning = true;
-
-    while (queue.length > 0) {
-        const { payload, resolve, reject } = queue.shift();
-
-        // Enforce minimum gap
-        const sinceLast = Date.now() - lastSentAt;
-        if (sinceLast < MIN_SEND_GAP_MS) {
-            await sleep(MIN_SEND_GAP_MS - sinceLast);
-        }
-
-        let lastError = null;
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-                await axios.post(DISCORD_WEBHOOK_URL, payload, { timeout: 8000 });
-                lastSentAt = Date.now();
-                resolve(true);
-                lastError = null;
-                break;
-            } catch (err) {
-                lastError = err;
-                const status = err.response?.status;
-                const retryAfter = err.response?.data?.retry_after;
-
-                if (status === 429) {
-                    const waitMs = retryAfter
-                        ? Math.ceil(retryAfter) * 1000 + 500
-                        : Math.pow(2, attempt) * 2000;   // 4s, 8s, 16s
-                    console.warn(`⏳ Discord 429 — waiting ${waitMs}ms (attempt ${attempt}/${MAX_RETRIES})`);
-                    await sleep(waitMs);
-                } else {
-                    // Non-rate-limit error — log and give up immediately
-                    const detail = err.response?.data?.message || err.message;
-                    console.error(`❌ Discord send failed [${status ?? 'network'}]: ${detail}`);
-                    break;
-                }
-            }
-        }
-
-        if (lastError) {
-            console.error('❌ Discord: gave up after retries');
-            resolve(false);   // resolve (not reject) so callers don't crash
-        }
-
-        // Always wait the gap before the next message, even after an error
-        await sleep(MIN_SEND_GAP_MS);
-    }
-
-    queueRunning = false;
-}
-
-/**
- * Primary send function — enqueues payload, deduplicates, never throws.
- * @param {object} payload  Discord webhook body
- * @param {string} [tag]    Optional dedup tag (same tag = same message ignored)
- * @returns {Promise<boolean>}
- */
-export function discordSend(payload, tag = null) {
-    // Deduplication
-    const hash = tag ?? hashPayload(payload);
-    if (recentHashes.has(hash)) {
-        console.log(`🔇 Discord: duplicate suppressed (tag: ${hash})`);
-        return Promise.resolve(false);
-    }
-    recentHashes.add(hash);
-    setTimeout(() => recentHashes.delete(hash), DEDUP_WINDOW_MS);
-
-    return new Promise((resolve, reject) => {
-        queue.push({ payload, resolve, reject });
-        processQueue();   // idempotent — only starts loop if not running
-    });
+    return webhookState.get(url);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function hash(payload) {
+    const s = JSON.stringify(payload);
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+    return h.toString();
+}
+
+async function processQueue(url) {
+    const state = getState(url);
+    if (state.running) return;
+    state.running = true;
+
+    while (state.queue.length > 0) {
+        const { payload, resolve, tag } = state.queue.shift();
+
+        // Enforce minimum gap between sends
+        const gap = Date.now() - state.lastSentAt;
+        if (gap < SAFE_GAP_MS) await sleep(SAFE_GAP_MS - gap);
+
+        let success = false;
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                const resp = await axios.post(url, payload, {
+                    timeout: 8_000,
+                    validateStatus: null, // don't throw on 4xx
+                });
+
+                if (resp.status === 204 || resp.status === 200) {
+                    state.lastSentAt = Date.now();
+                    success = true;
+                    break;
+                }
+
+                if (resp.status === 429) {
+                    // Discord returns retry_after in SECONDS (float)
+                    const retryAfter = resp.data?.retry_after ?? 5;
+                    const waitMs = Math.ceil(retryAfter * 1000) + 200;
+                    console.warn(`⏳ Discord 429 on ${url.slice(-20)} — waiting ${waitMs} ms (attempt ${attempt}/${MAX_RETRIES})`);
+                    await sleep(waitMs);
+                    continue;
+                }
+
+                // Any other error — log and bail
+                console.error(`❌ Discord ${resp.status}:`, resp.data?.message ?? resp.statusText);
+                break;
+
+            } catch (err) {
+                console.error(`❌ Discord network error (attempt ${attempt}):`, err.message);
+                if (attempt < MAX_RETRIES) await sleep(2_000 * attempt);
+            }
+        }
+
+        if (!success) {
+            console.error(`❌ Discord: gave up after ${MAX_RETRIES} retries (tag: ${tag})`);
+        }
+        resolve(success);
+
+        // Always enforce gap before next message
+        await sleep(SAFE_GAP_MS);
+    }
+
+    state.running = false;
+}
+
+/**
+ * Enqueue a Discord message on the given webhook channel.
+ * @param {'shifts'|'alerts'} channel
+ * @param {object}  payload   Discord webhook body
+ * @param {string}  [tag]     Dedup key — same tag within 30 s is dropped
+ * @returns {Promise<boolean>}
+ */
+export function discordSend(payload, tag = null, channel = 'shifts') {
+    const url = WEBHOOK[channel] || WEBHOOK.shifts;
+    if (!url) {
+        console.error(`discordSend: no webhook URL configured for channel "${channel}"`);
+        return Promise.resolve(false);
+    }
+
+    const state = getState(url);
+    const dedupKey = tag ?? hash(payload);
+
+    if (state.recentHashes.has(dedupKey)) {
+        console.log(`🔇 Discord[${channel}]: duplicate suppressed (${dedupKey})`);
+        return Promise.resolve(false);
+    }
+    state.recentHashes.add(dedupKey);
+    setTimeout(() => state.recentHashes.delete(dedupKey), DEDUP_MS);
+
+    return new Promise(resolve => {
+        state.queue.push({ payload, resolve, tag: dedupKey });
+        processQueue(url);
+    });
+}
+
 // ═══════════════════════════════════════════════════════════════
-// THRESHOLD ALERTS
+// THRESHOLD ALERTS  →  #alerts channel
 // ═══════════════════════════════════════════════════════════════
 
 const LOW_THRESHOLD = 500;
-const ALERT_COOLDOWN_MS = 60 * 60 * 1000;  // 1 hour cooldown per entity
-const recentlyAlerted = { games: new Set(), wallets: new Set() };
+const ALERT_COOLDOWN = 60 * 60 * 1_000; // 1 hour per entity
 
-/**
- * Check a single game and/or wallet and send an alert if below threshold.
- * Called after every deposit/cashout/bonus.
- */
+const alerted = { games: new Set(), wallets: new Set() };
+
 export async function checkThresholdsAndNotify({ gameId, walletId } = {}, prisma) {
     const tasks = [];
 
-    if (gameId) {
-        tasks.push((async () => {
-            try {
-                const game = await prisma.game.findUnique({ where: { id: gameId } });
-                if (!game) return;
-                if (game.pointStock >= LOW_THRESHOLD) return;
-                if (recentlyAlerted.games.has(gameId)) return;
+    if (gameId) tasks.push((async () => {
+        try {
+            const game = await prisma.game.findUnique({ where: { id: gameId } });
+            if (!game || game.pointStock >= LOW_THRESHOLD) return;
+            if (alerted.games.has(gameId)) return;
 
-                recentlyAlerted.games.add(gameId);
-                setTimeout(() => recentlyAlerted.games.delete(gameId), ALERT_COOLDOWN_MS);
+            alerted.games.add(gameId);
+            setTimeout(() => alerted.games.delete(gameId), ALERT_COOLDOWN);
 
-                await discordSend({
-                    embeds: [{
-                        title: '⚠️ Low Game Points Alert',
-                        color: 0xf59e0b,
-                        fields: [
-                            { name: 'Game', value: game.name, inline: true },
-                            { name: 'Current Stock', value: `${parseFloat(game.pointStock).toFixed(0)} pts`, inline: true },
-                            { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
-                        ],
-                        footer: { text: 'Reload points soon to avoid service disruption' },
-                        timestamp: new Date().toISOString(),
-                    }],
-                }, `game-low-${gameId}`);
-            } catch (err) {
-                console.error('Game threshold check error:', err.message);
-            }
-        })());
-    }
+            const level = game.pointStock <= 0 ? '🔴 DEFICIT' : '🟡 Low Stock';
+            await discordSend({
+                embeds: [{
+                    title: `⚠️ Game Points ${level}`,
+                    color: game.pointStock <= 0 ? 0xdc2626 : 0xf59e0b,
+                    fields: [
+                        { name: 'Game', value: game.name, inline: true },
+                        { name: 'Stock', value: `${parseFloat(game.pointStock).toFixed(0)} pts`, inline: true },
+                        { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
+                    ],
+                    footer: { text: 'Top up soon to avoid service disruption' },
+                    timestamp: new Date().toISOString(),
+                }],
+            }, `game-low-${gameId}`, 'alerts');
+        } catch (err) { console.error('Game threshold check error:', err.message); }
+    })());
 
-    if (walletId) {
-        tasks.push((async () => {
-            try {
-                const wallet = await prisma.wallet.findUnique({ where: { id: walletId } });
-                if (!wallet) return;
-                if (wallet.balance >= LOW_THRESHOLD) return;
-                if (recentlyAlerted.wallets.has(walletId)) return;
+    if (walletId) tasks.push((async () => {
+        try {
+            const wallet = await prisma.wallet.findUnique({ where: { id: walletId } });
+            if (!wallet || wallet.balance >= LOW_THRESHOLD) return;
+            if (alerted.wallets.has(walletId)) return;
 
-                recentlyAlerted.wallets.add(walletId);
-                setTimeout(() => recentlyAlerted.wallets.delete(walletId), ALERT_COOLDOWN_MS);
+            alerted.wallets.add(walletId);
+            setTimeout(() => alerted.wallets.delete(walletId), ALERT_COOLDOWN);
 
-                await discordSend({
-                    embeds: [{
-                        title: '⚠️ Low Wallet Balance Alert',
-                        color: 0xef4444,
-                        fields: [
-                            { name: 'Wallet', value: wallet.name, inline: true },
-                            { name: 'Method', value: wallet.method, inline: true },
-                            { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
-                            { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
-                        ],
-                        footer: { text: 'Top up this wallet to continue processing cashouts' },
-                        timestamp: new Date().toISOString(),
-                    }],
-                }, `wallet-low-${walletId}`);
-            } catch (err) {
-                console.error('Wallet threshold check error:', err.message);
-            }
-        })());
-    }
+            await discordSend({
+                embeds: [{
+                    title: '⚠️ Wallet Balance Low',
+                    color: 0xef4444,
+                    fields: [
+                        { name: 'Wallet', value: wallet.name, inline: true },
+                        { name: 'Method', value: wallet.method, inline: true },
+                        { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
+                        { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
+                    ],
+                    footer: { text: 'Top up this wallet to continue processing cashouts' },
+                    timestamp: new Date().toISOString(),
+                }],
+            }, `wallet-low-${walletId}`, 'alerts');
+        } catch (err) { console.error('Wallet threshold check error:', err.message); }
+    })());
 
     await Promise.all(tasks);
 }
 
-/**
- * Startup scan — sends ONE batched message for all low games,
- * ONE batched message for all low wallets.
- * Called once, 5s after server boot.
- */
+// ── Startup scan ─────────────────────────────────────────────────
 export async function runStartupThresholdCheck(prisma) {
     try {
         const [lowGames, lowWallets] = await Promise.all([
@@ -221,191 +241,231 @@ export async function runStartupThresholdCheck(prisma) {
             prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
         ]);
 
-        if (lowGames.length === 0 && lowWallets.length === 0) {
-            console.log('✅ Startup check: all games and wallets above threshold');
+        if (!lowGames.length && !lowWallets.length) {
+            console.log('✅ Startup check: all games and wallets are above threshold');
             return;
         }
 
-        // ONE message for all low games
-        if (lowGames.length > 0) {
+        if (lowGames.length) {
             const fields = lowGames.slice(0, 25).map(g => ({
                 name: g.name,
                 value: `${parseFloat(g.pointStock).toFixed(0)} pts`,
                 inline: true,
             }));
-            if (lowGames.length > 25) {
-                fields.push({ name: `+${lowGames.length - 25} more`, value: 'Check dashboard', inline: false });
-            }
+            if (lowGames.length > 25) fields.push({ name: `+${lowGames.length - 25} more`, value: 'Check dashboard', inline: false });
 
             await discordSend({
                 embeds: [{
                     title: `⚠️ ${lowGames.length} Game(s) Low on Points`,
                     color: 0xf59e0b,
                     fields,
-                    footer: { text: `Threshold: ${LOW_THRESHOLD} pts  •  Server startup check` },
+                    footer: { text: `Threshold: ${LOW_THRESHOLD} pts  •  Startup scan` },
                     timestamp: new Date().toISOString(),
                 }],
-            }, 'startup-games');
+            }, 'startup-games', 'alerts');
 
-            // Mark as alerted so they don't fire again in the periodic scan immediately after
             lowGames.forEach(g => {
-                recentlyAlerted.games.add(g.id);
-                setTimeout(() => recentlyAlerted.games.delete(g.id), ALERT_COOLDOWN_MS);
+                alerted.games.add(g.id);
+                setTimeout(() => alerted.games.delete(g.id), ALERT_COOLDOWN);
             });
-            console.log(`⚠️ Startup: queued batch alert for ${lowGames.length} low game(s)`);
+            console.log(`⚠️ Startup: ${lowGames.length} low game(s) queued`);
         }
 
-        // ONE message for all low wallets (queued AFTER games — 2.5s gap enforced by queue)
-        if (lowWallets.length > 0) {
+        if (lowWallets.length) {
             const fields = lowWallets.slice(0, 25).map(w => ({
                 name: `${w.method} — ${w.name}`,
                 value: `$${parseFloat(w.balance).toFixed(2)}`,
                 inline: true,
             }));
-            if (lowWallets.length > 25) {
-                fields.push({ name: `+${lowWallets.length - 25} more`, value: 'Check dashboard', inline: false });
-            }
+            if (lowWallets.length > 25) fields.push({ name: `+${lowWallets.length - 25} more`, value: 'Check dashboard', inline: false });
 
             await discordSend({
                 embeds: [{
                     title: `⚠️ ${lowWallets.length} Wallet(s) Low on Balance`,
                     color: 0xef4444,
                     fields,
-                    footer: { text: `Threshold: $${LOW_THRESHOLD}  •  Server startup check` },
+                    footer: { text: `Threshold: $${LOW_THRESHOLD}  •  Startup scan` },
                     timestamp: new Date().toISOString(),
                 }],
-            }, 'startup-wallets');
+            }, 'startup-wallets', 'alerts');
 
             lowWallets.forEach(w => {
-                recentlyAlerted.wallets.add(w.id);
-                setTimeout(() => recentlyAlerted.wallets.delete(w.id), ALERT_COOLDOWN_MS);
+                alerted.wallets.add(w.id);
+                setTimeout(() => alerted.wallets.delete(w.id), ALERT_COOLDOWN);
             });
-            console.log(`⚠️ Startup: queued batch alert for ${lowWallets.length} low wallet(s)`);
+            console.log(`⚠️ Startup: ${lowWallets.length} low wallet(s) queued`);
         }
     } catch (err) {
         console.error('Startup threshold check failed:', err.message);
     }
 }
 
-/**
- * Periodic scan — runs every 60 minutes.
- * Scans ALL games + wallets and sends individual alerts for any below threshold.
- * Dedup + cooldown prevents floods.
- */
+// ── Periodic scan (every 60 min) ─────────────────────────────────
 export async function runPeriodicThresholdCheck(prisma) {
     try {
         const [lowGames, lowWallets] = await Promise.all([
             prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
             prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
         ]);
-
-        // Process sequentially — the queue handles spacing automatically
-        for (const game of lowGames) {
-            await checkThresholdsAndNotify({ gameId: game.id }, prisma);
-        }
-        for (const wallet of lowWallets) {
-            await checkThresholdsAndNotify({ walletId: wallet.id }, prisma);
-        }
+        for (const g of lowGames) await checkThresholdsAndNotify({ gameId: g.id }, prisma);
+        for (const w of lowWallets) await checkThresholdsAndNotify({ walletId: w.id }, prisma);
     } catch (err) {
         console.error('Periodic threshold check failed:', err.message);
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SHIFT + TASK NOTIFICATIONS
+// SHIFT NOTIFICATIONS  →  #shifts channel
+// ═══════════════════════════════════════════════════════════════
+
+function now() {
+    return new Date().toLocaleString('en-US', {
+        timeZone: TX_TZ, month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: true,
+    });
+}
+
+const ROLE_LABELS = {
+    ADMIN: '👑 Admin',
+    TEAM1: '🔵 Team 1',
+    TEAM2: '🟢 Team 2',
+    TEAM3: '🟠 Team 3',
+    TEAM4: '🟣 Team 4',
+};
+
+function roleLabel(role) { return ROLE_LABELS[role] || role; }
+
+// ── Shift start ──────────────────────────────────────────────────
+async function sendShiftStart({ memberName, teamRole, shiftId }) {
+    await discordSend({
+        embeds: [{
+            title: '🌅 Shift Started',
+            color: 0x22c55e,
+            fields: [
+                { name: 'Who', value: memberName || '—', inline: true },
+                { name: 'Team', value: roleLabel(teamRole), inline: true },
+                { name: 'Time', value: now(), inline: true },
+            ],
+            footer: { text: `Shift #${shiftId} • OceanBets` },
+            timestamp: new Date().toISOString(),
+        }],
+    }, `shift-start-${shiftId}`, 'shifts');
+}
+
+// ── Shift end ────────────────────────────────────────────────────
+// Sends a rich detailed embed (equivalent to a shift report).
+// Discord embeds support up to 25 fields, which is enough for the
+// full breakdown without needing a PDF attachment.
+async function sendShiftEnd({ memberName, teamRole, shiftId, duration, stats, startSnapshot, endSnapshot, effortReason, improvements }) {
+    const st = stats || {};
+    const es = endSnapshot || {};
+
+    // ── Financial summary fields ──────────────────────────────────
+    const financialFields = [
+        { name: '💰 Deposits', value: `$${(st.totalDeposits ?? 0).toFixed(2)}`, inline: true },
+        { name: '💸 Cashouts', value: `$${(st.totalCashouts ?? 0).toFixed(2)}`, inline: true },
+        { name: '📈 Net Profit', value: `$${(st.netProfit ?? 0).toFixed(2)}`, inline: true },
+    ];
+
+    // ── Activity fields ───────────────────────────────────────────
+    const activityFields = [
+        { name: '🎮 Transactions', value: String(st.transactionCount ?? 0), inline: true },
+        { name: '🎁 Bonuses', value: `${st.bonusesGranted ?? 0} ($${(st.totalBonusAmount ?? 0).toFixed(2)})`, inline: true },
+        { name: '👤 Players Added', value: String(st.playersAdded ?? 0), inline: true },
+        { name: '✅ Tasks Done', value: String(st.tasksCompleted ?? 0), inline: true },
+        { name: '🐛 Issues', value: `${st.issuesCreated ?? 0} created / ${st.issuesResolved ?? 0} resolved`, inline: true },
+    ];
+
+    // ── Reconciliation fields (only if snapshot data is present) ──
+    const reconFields = [];
+    if (es.walletChange != null || es.gameChange != null) {
+        reconFields.push(
+            { name: '\u200b', value: '**── Reconciliation ──**', inline: false },
+            { name: '🏦 Wallet Δ', value: `$${(es.walletChange ?? 0).toFixed(2)}`, inline: true },
+            { name: '🎲 Game Δ', value: `${(es.gameChange ?? 0).toFixed(2)} pts`, inline: true },
+            { name: '⚖️ Balanced', value: es.isBalanced === true ? '✅ Yes' : es.isBalanced === false ? '❌ No' : '—', inline: true },
+        );
+        if (es.walletDiscrepancy != null && es.walletDiscrepancy !== 0) {
+            reconFields.push({ name: '⚠️ Wallet Discrepancy', value: `$${Math.abs(es.walletDiscrepancy).toFixed(2)}`, inline: true });
+        }
+        if (es.gameDiscrepancy != null && es.gameDiscrepancy !== 0) {
+            reconFields.push({ name: '⚠️ Game Discrepancy', value: `${Math.abs(es.gameDiscrepancy).toFixed(2)} pts`, inline: true });
+        }
+    }
+
+    // ── Feedback fields ───────────────────────────────────────────
+    const feedbackFields = [];
+    if (st.effortRating != null) {
+        const stars = '⭐'.repeat(Math.min(st.effortRating, 10));
+        feedbackFields.push({ name: `⭐ Effort (${st.effortRating}/10)`, value: stars, inline: false });
+    }
+    if (effortReason) feedbackFields.push({ name: '📝 Effort Notes', value: effortReason.slice(0, 300), inline: false });
+    if (improvements) feedbackFields.push({ name: '💡 Improvements', value: improvements.slice(0, 300), inline: false });
+
+    // ── Color by balance status ───────────────────────────────────
+    const netProfit = st.netProfit ?? 0;
+    const color = netProfit > 0 ? 0x22c55e : netProfit < 0 ? 0xef4444 : 0x64748b;
+
+    await discordSend({
+        embeds: [{
+            title: '🌙 Shift Ended — Report',
+            color,
+            fields: [
+                { name: '👤 Member', value: memberName || '—', inline: true },
+                { name: '🏷️ Team', value: roleLabel(teamRole), inline: true },
+                { name: '⏱️ Duration', value: duration != null ? `${duration} min` : '—', inline: true },
+                { name: '\u200b', value: '**── Financial Summary ──**', inline: false },
+                ...financialFields,
+                { name: '\u200b', value: '**── Activity ──**', inline: false },
+                ...activityFields,
+                ...reconFields,
+                ...feedbackFields,
+            ],
+            footer: { text: `Shift #${shiftId} • OceanBets` },
+            timestamp: new Date().toISOString(),
+        }],
+    }, `shift-end-${shiftId}`, 'shifts');
+}
+
+// ── Task assigned ─────────────────────────────────────────────────
+async function sendTaskAssigned({ taskTitle, assigneeName, priority, taskType, dueDate, createdByName }) {
+    const due = dueDate
+        ? new Date(dueDate).toLocaleDateString('en-US', { timeZone: TX_TZ, month: 'short', day: 'numeric' })
+        : 'No due date';
+    const color = priority === 'HIGH' ? 0xdc2626 : priority === 'MEDIUM' ? 0xd97706 : 0x64748b;
+
+    await discordSend({
+        embeds: [{
+            title: '📋 New Task Assigned',
+            color,
+            fields: [
+                { name: 'Task', value: taskTitle, inline: false },
+                { name: 'Assigned To', value: assigneeName || 'All Members', inline: true },
+                { name: 'Priority', value: priority, inline: true },
+                { name: 'Type', value: (taskType || '').replace(/_/g, ' '), inline: true },
+                { name: 'Due', value: due, inline: true },
+                { name: 'Created By', value: createdByName || '—', inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+        }],
+    }, `task-assigned-${taskTitle}-${Date.now()}`, 'shifts');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PUBLIC notify() DISPATCHER
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Send a shift or task notification.
  * @param {'SHIFT_START'|'SHIFT_END'|'TASK_ASSIGNED'} type
  * @param {object} data
  */
 export async function notify(type, data) {
-    const time = new Date().toLocaleString('en-US', {
-        timeZone: 'America/Chicago',
-        hour: '2-digit', minute: '2-digit', hour12: true,
-        month: 'short', day: 'numeric',
-    });
-
-    let payload = null;
-    let dedupTag = null;
-
-    if (type === 'SHIFT_START') {
-        const { memberName, teamRole, shiftId } = data;
-        payload = {
-            embeds: [{
-                title: '🌅 Shift started',
-                color: 0x16a34a,
-                fields: [
-                    { name: 'Member', value: memberName || teamRole, inline: true },
-                    { name: 'Team', value: teamRole, inline: true },
-                    { name: 'Time', value: time, inline: true },
-                ],
-                footer: { text: `Shift #${shiftId}` },
-                timestamp: new Date().toISOString(),
-            }],
-        };
-        dedupTag = `shift-start-${shiftId}`;
-    }
-
-    else if (type === 'SHIFT_END') {
-        const { memberName, teamRole, shiftId, duration, netProfit, isBalanced } = data;
-        const balLabel = isBalanced === true ? '✓ Balanced' : isBalanced === false ? '⚠️ Discrepancy' : '—';
-        const profitStr = netProfit != null ? `$${Number(netProfit).toFixed(2)}` : '—';
-        payload = {
-            embeds: [{
-                title: '🌙 Shift ended',
-                color: 0xdc2626,
-                fields: [
-                    { name: 'Member', value: memberName || teamRole, inline: true },
-                    { name: 'Team', value: teamRole, inline: true },
-                    { name: 'Duration', value: duration != null ? `${duration} min` : '—', inline: true },
-                    { name: 'Net profit', value: profitStr, inline: true },
-                    { name: 'Balanced', value: balLabel, inline: true },
-                    { name: 'Time', value: time, inline: true },
-                ],
-                footer: { text: `Shift #${shiftId}` },
-                timestamp: new Date().toISOString(),
-            }],
-        };
-        dedupTag = `shift-end-${shiftId}`;
-    }
-
-    else if (type === 'TASK_ASSIGNED') {
-        const { taskTitle, assigneeName, priority, taskType, dueDate, createdByName } = data;
-        const due = dueDate
-            ? new Date(dueDate).toLocaleDateString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric' })
-            : 'No due date';
-        const color = priority === 'HIGH' ? 0xdc2626 : priority === 'MEDIUM' ? 0xd97706 : 0x64748b;
-        payload = {
-            embeds: [{
-                title: '📋 New task assigned',
-                color,
-                fields: [
-                    { name: 'Task', value: taskTitle, inline: false },
-                    { name: 'Assigned to', value: assigneeName || 'All members', inline: true },
-                    { name: 'Priority', value: priority, inline: true },
-                    { name: 'Type', value: taskType?.replace(/_/g, ' ') || '—', inline: true },
-                    { name: 'Due', value: due, inline: true },
-                    { name: 'Created by', value: createdByName || '—', inline: true },
-                ],
-                timestamp: new Date().toISOString(),
-            }],
-        };
-        dedupTag = `task-assigned-${taskTitle}-${Date.now()}`;
-    }
-
-    if (!payload) {
-        console.warn(`notify(): unknown type "${type}"`);
-        return;
-    }
-
     try {
-        const sent = await discordSend(payload, dedupTag);
-        if (!sent) console.log(`🔇 notify(${type}): suppressed or failed`);
-        else console.log(`✅ notify(${type}): queued successfully`);
+        if (type === 'SHIFT_START') return await sendShiftStart(data);
+        if (type === 'SHIFT_END') return await sendShiftEnd(data);
+        if (type === 'TASK_ASSIGNED') return await sendTaskAssigned(data);
+        console.warn(`notify(): unknown type "${type}"`);
     } catch (err) {
-        // Never crash the caller — shift start/end must succeed even if Discord is down
         console.error(`notify(${type}) error:`, err.message);
     }
 }
