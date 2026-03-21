@@ -105,14 +105,18 @@ async function processQueue(url) {
                     break;
                 }
 
-                if (resp.status === 429) {
-                    // Discord returns retry_after in SECONDS (float)
-                    const retryAfter = resp.data?.retry_after ?? 5;
-                    const waitMs = Math.ceil(retryAfter * 1000) + 200;
-                    console.warn(`⏳ Discord 429 on ${url.slice(-20)} — waiting ${waitMs} ms (attempt ${attempt}/${MAX_RETRIES})`);
-                    await sleep(waitMs);
-                    continue;
-                }
+                // NEW — bails early if token is globally rate-limited
+if (resp.status === 429) {
+    const retryAfter = resp.data?.retry_after ?? 5;
+    const waitMs = Math.ceil(retryAfter * 1000) + 200;
+    if (retryAfter > 10 && attempt >= 2) {
+        console.error(`❌ Discord: webhook globally rate-limited (${retryAfter}s). Regenerate webhook token.`);
+        break;
+    }
+    console.warn(`⏳ Discord 429 on ${url.slice(-20)} — waiting ${waitMs} ms (attempt ${attempt}/${MAX_RETRIES})`);
+    await sleep(waitMs);
+    continue;
+}
 
                 // Any other error — log and bail
                 console.error(`❌ Discord ${resp.status}:`, resp.data?.message ?? resp.statusText);
