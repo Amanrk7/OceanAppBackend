@@ -398,7 +398,7 @@ app.get('/api/players', authMiddleware, async (req, res) => {
     const formatted = paginated.map(p => {
       const dynamicStatus = computeStatus(p.id);
       return {
-        id: p.id, name: p.name, email: p.email, phone: p.phone,
+        id: p.id, name: p.name, username: p.username, email: p.email, phone: p.phone,
         status: dynamicStatus, balance: parseFloat(p.balance), tier: p.tier,
         tierPoints: p.tierPoints, cashoutLimit: parseFloat(p.cashoutLimit || 250),
         source: p.source,
