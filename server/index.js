@@ -500,7 +500,7 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     const {
       name, email, phone, tier, status, balance, cashoutLimit,
       facebook, telegram, instagram, x, snapchat, source,
-      currentStreak, lastPlayedDate,
+      currentStreak, lastPlayedDate, totalBonusEarned
     } = req.body;
 
     const updateData = {};
@@ -524,6 +524,55 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
 
     const updated = await prisma.user.update({ where: { id }, data: updateData });
+
+    // ── NEW: adjust totalBonusEarned via a bonus record ──────────────────
+if (totalBonusEarned !== undefined) {
+  const currentTotal = await prisma.bonus.aggregate({
+    where: { userId: id, claimed: true },
+    _sum: { amount: true },
+  });
+  const currentSum = parseFloat(currentTotal._sum.amount || 0);
+  const newTotal   = parseFloat(totalBonusEarned);
+  const diff       = parseFloat((newTotal - currentSum).toFixed(2));
+
+  if (Math.abs(diff) >= 0.01) {
+    if (diff > 0) {
+      // Create a positive adjustment bonus
+      await prisma.bonus.create({
+        data: {
+          userId: id,
+          type: 'CUSTOM',
+          amount: diff,
+          description: 'Manual adjustment by admin',
+          claimed: true,
+          claimedAt: new Date(),
+        },
+      });
+    } else {
+      // Reduce by deleting smallest bonuses until the diff is absorbed
+      const bonuses = await prisma.bonus.findMany({
+        where: { userId: id, claimed: true },
+        orderBy: { amount: 'asc' },
+      });
+      let toRemove = Math.abs(diff);
+      for (const b of bonuses) {
+        if (toRemove <= 0) break;
+        const bAmt = parseFloat(b.amount);
+        if (bAmt <= toRemove) {
+          await prisma.bonus.delete({ where: { id: b.id } });
+          toRemove = parseFloat((toRemove - bAmt).toFixed(2));
+        } else {
+          await prisma.bonus.update({
+            where: { id: b.id },
+            data: { amount: parseFloat((bAmt - toRemove).toFixed(2)) },
+          });
+          toRemove = 0;
+        }
+      }
+    }
+  }
+}
+// ── end adjustment ───────────────────────────────────────────────────
 
     // ── Auto-sync MISSING_INFO task ────────────────────────────────────────────
     try {
