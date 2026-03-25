@@ -19,6 +19,7 @@ import {
   runPeriodicThresholdCheck,
   notify,
 } from './discord-notifications.js';
+import { syncCreatePlayer, warmMilkywaySession } from '../sync-test/milkyway-test.js';
 
 dotenv.config();
 
@@ -792,6 +793,13 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
       await incrementTaskProgress(activeTask.id, req.userId, 1, 'PLAYER_ADDED', { playerId: newPlayer.id, playerName: newPlayer.name });
     }
 
+    // ── Sync to MilkyWay (fire-and-forget, non-blocking) ──
+syncCreatePlayer(username.trim()).then(result => {
+  if (!result.ok) {
+    console.error(`⚠️  MilkyWay sync failed for "${username}": ${result.error}`);
+  }
+}).catch(() => {});
+    
     res.status(201).json({
       data: { ...fullPlayer, password: undefined },
       message: 'Player created successfully',
@@ -3675,16 +3683,21 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ═══════════════════════════════════════════════════════════════
 
+// app.listen(PORT, () => {
+//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
+
+//   // Startup check fires once, 10s after boot (gives DB time to warm up)
+//   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
+
+//   // Periodic scan every 60 minutes — queue-based, never floods Discord
+//   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
+// });
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
-
-  // Startup check fires once, 10s after boot (gives DB time to warm up)
+  warmMilkywaySession(); // ← add this
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
-
-  // Periodic scan every 60 minutes — queue-based, never floods Discord
   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
 });
-
 process.on('SIGINT', async () => {
   console.log('\n👋 Shutting down gracefully...');
   await prisma.$disconnect();
