@@ -19,7 +19,7 @@ import {
   runPeriodicThresholdCheck,
   notify,
 } from './discord-notifications.js';
-import { syncCreatePlayer, warmMilkywaySession } from '../milkyway-test.js';
+// import { syncCreatePlayer, warmMilkywaySession } from '../milkyway-test.js';
 
 
 dotenv.config();
@@ -3684,21 +3684,21 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ═══════════════════════════════════════════════════════════════
 
-// app.listen(PORT, () => {
-//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
-
-//   // Startup check fires once, 10s after boot (gives DB time to warm up)
-//   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
-
-//   // Periodic scan every 60 minutes — queue-based, never floods Discord
-//   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
-// });
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
-  warmMilkywaySession(); // ← add this
+
+  // Startup check fires once, 10s after boot (gives DB time to warm up)
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
+
+  // Periodic scan every 60 minutes — queue-based, never floods Discord
   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
 });
+// app.listen(PORT, () => {
+//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
+//   warmMilkywaySession(); // ← add this
+//   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
+//   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
+// });
 process.on('SIGINT', async () => {
   console.log('\n👋 Shutting down gracefully...');
   await prisma.$disconnect();
