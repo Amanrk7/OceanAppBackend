@@ -1,35 +1,21 @@
 {
-  "name": "oceanbets-dashboard",
+  "name": "oceanbets-milkyway-sync-test",
   "version": "1.0.0",
   "type": "module",
+  "description": "Player list sync test between OceanBets and MilkyWay",
   "scripts": {
-    "server": "node server/index.js",
-    "dev": "nodemon server/index.js",
-    "db:migrate": "prisma migrate dev",
-    "db:generate": "prisma generate",
-    "db:studio": "prisma studio",
-    "db:seed": "node prisma/seed.js",
-    "db:reset": "prisma migrate reset --force",
-    "start": "node server/index.js",
-    "build": "npx prisma generate"
+    "test": "node milkyway-test.js",
+    "test:create": "node milkyway-test.js --create",
+    "test:headless": "cross-env HEADLESS=true node milkyway-test.js"
   },
   "dependencies": {
-    "@prisma/client": "^5.22.0",
-    "bcrypt": "^5.1.1",
-    "cookie-parser": "^1.4.6",
-    "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "jsonwebtoken": "^9.0.2",
-    "node-cron": "^4.2.1",
-    "pdfkit": "^0.17.2"
+    "jimp": "^0.22.12",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.40.0",
+    "tesseract.js": "^5.1.1"
   },
   "devDependencies": {
-    "autoprefixer": "^10.4.24",
-    "nodemon": "^3.0.2",
-    "postcss": "^8.5.6",
-    "prisma": "^5.19.1",
-    "tailwindcss": "^4.1.18",
-    "axios": "^1.7.0"
+    "cross-env": "^7.0.3"
   }
 }
