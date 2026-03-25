@@ -19,7 +19,8 @@ import {
   runPeriodicThresholdCheck,
   notify,
 } from './discord-notifications.js';
-import { syncCreatePlayer, warmMilkywaySession } from '../sync-test/milkyway-test.js';
+import { syncCreatePlayer, warmMilkywaySession } from '../milkyway-test.js';
+
 
 dotenv.config();
 
