@@ -1,0 +1,21 @@
+{
+  "name": "oceanbets-milkyway-sync-test",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Player list sync test between OceanBets and MilkyWay",
+  "scripts": {
+    "test": "node milkyway-test.js",
+    "test:create": "node milkyway-test.js --create",
+    "test:headless": "cross-env HEADLESS=true node milkyway-test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "jimp": "^0.22.12",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.40.0",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}
