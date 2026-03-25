@@ -291,7 +291,7 @@ async function createPlayerOnMW(page, username, password) {
  * @param {string} [password]  Defaults to "Players@123" (same as OceanBets default)
  * @returns {Promise<{ ok: boolean, error?: string }>}
  */
-export async function syncCreatePlayer(username, password = 'Players@123') {
+export async function syncCreatePlayer(username, password = 'Players_123') {
     if (!MW_USER || !MW_PASS) {
         console.log('ℹ️  [MW Sync] Skipped — MW_USER / MW_PASS not configured.');
         return { ok: false, error: 'MW credentials not configured' };
