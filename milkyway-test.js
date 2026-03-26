@@ -1,15 +1,10 @@
 /**
- * milkyway-sync.js  (fixed)
+ * milkyway-sync.js
  * ─────────────────────────────────────────────────────────────
- * Key fixes vs previous version:
- *  1. MW_BASE is now the base URL only (no path suffix like /Store.aspx)
- *     Previously MW_HOST included /Store.aspx which caused broken URLs like
- *     https://milkywayapp.xyz:8781/Store.aspx/default.aspx  ← was causing all login failures
- *  2. All page.goto() calls now use MW_BASE + correct path
- *  3. goToUserManagement() navigates DIRECTLY to AccountsList.aspx
- *  4. waitForFrame() polls until the target iframe is actually loaded
- *  5. Create-Player button is clicked directly via the known selector
- *  6. Better per-step logging so you can see exactly where it fails
+ * Key fixes:
+ *  1. MW_BASE is base URL only (no /Store.aspx suffix)
+ *  2. Login uses many selector fallbacks — dumps page HTML + input list for debugging
+ *  3. All page.goto() calls use MW_BASE + correct path
  */
 
 import { chromium } from 'playwright';
@@ -19,16 +14,11 @@ import Jimp from 'jimp';
 import Tesseract from 'tesseract.js';
 
 // ─── Config ───────────────────────────────────────────────────
-// ✅ FIX: MW_BASE is the base URL only — NO trailing path like /Store.aspx
-// Previously: MW_HOST = 'https://milkywayapp.xyz:8781/Store.aspx'
-//   → produced broken URLs: https://milkywayapp.xyz:8781/Store.aspx/default.aspx
-// Now: MW_BASE = 'https://milkywayapp.xyz:8781'
-//   → produces correct URLs: https://milkywayapp.xyz:8781/default.aspx
-const MW_BASE   = process.env.MW_BASE || 'https://milkywayapp.xyz:8781';
-const MW_USER   = process.env.MW_USER;
-const MW_PASS   = process.env.MW_PASS;
-const OUTPUT    = './mw-output';
-const HEADLESS  = process.env.MW_HEADLESS !== 'false'; // set MW_HEADLESS=false to debug visually
+const MW_BASE  = process.env.MW_BASE || 'https://milkywayapp.xyz:8781';
+const MW_USER  = process.env.MW_USER;
+const MW_PASS  = process.env.MW_PASS;
+const OUTPUT   = './mw-output';
+const HEADLESS = process.env.MW_HEADLESS !== 'false';
 
 if (!MW_USER || !MW_PASS) {
     console.warn('⚠️  MW_USER / MW_PASS not set — MilkyWay sync is disabled');
@@ -58,6 +48,38 @@ async function getBrowser() {
     return mwPage;
 }
 
+// ─── Save debug snapshot (screenshot + HTML + input list) ─────
+async function saveDebugSnapshot(page, label) {
+    try {
+        await page.screenshot({ path: path.join(OUTPUT, `${label}.png`), fullPage: true });
+        const html = await page.content();
+        fs.writeFileSync(path.join(OUTPUT, `${label}.html`), html);
+
+        // Log every input on the page so we know the exact selectors to use
+        const inputs = await page.evaluate(() =>
+            Array.from(document.querySelectorAll('input')).map(el => ({
+                id:          el.id          || '(none)',
+                name:        el.name        || '(none)',
+                type:        el.type        || '(none)',
+                placeholder: el.placeholder || '(none)',
+                className:   el.className   || '(none)',
+                visible:     el.offsetParent !== null,
+            }))
+        );
+        console.log(`   📸 [MW Sync] Snapshot → mw-output/${label}.png + .html`);
+        console.log(`   🔍 [MW Sync] ALL INPUTS on page [${label}]:\n` +
+            inputs.map(i =>
+                `      id="${i.id}" name="${i.name}" type="${i.type}" placeholder="${i.placeholder}" visible=${i.visible}`
+            ).join('\n')
+        );
+
+        const frameUrls = page.frames().map(f => f.url());
+        console.log(`   🖼️  [MW Sync] Frames [${label}]: ${frameUrls.join(', ')}`);
+    } catch (e) {
+        console.warn(`   ⚠️  [MW Sync] saveDebugSnapshot("${label}") failed: ${e.message}`);
+    }
+}
+
 // ─── Wait for a frame whose URL contains a given string ───────
 async function waitForFrame(page, urlFragment, timeoutMs = 15_000) {
     const deadline = Date.now() + timeoutMs;
@@ -67,7 +89,21 @@ async function waitForFrame(page, urlFragment, timeoutMs = 15_000) {
         await page.waitForTimeout(400);
     }
     const frameUrls = page.frames().map(f => f.url()).join('\n  ');
-    throw new Error(`Frame containing "${urlFragment}" not found within ${timeoutMs}ms.\nFrames available:\n  ${frameUrls}`);
+    throw new Error(`Frame containing "${urlFragment}" not found within ${timeoutMs}ms.\nFrames:\n  ${frameUrls}`);
+}
+
+// ─── Find an input by trying many selectors ───────────────────
+async function findInput(frame, selectorList) {
+    for (const sel of selectorList) {
+        try {
+            const el = frame.locator(sel).first();
+            if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+                console.log(`   ✅ [MW Sync] Found input via selector: ${sel}`);
+                return el;
+            }
+        } catch { /* continue */ }
+    }
+    return null;
 }
 
 // ─── CAPTCHA solver ───────────────────────────────────────────
@@ -78,6 +114,8 @@ async function solveCaptcha(page) {
         'img[src*="aptcha"]', 'img[id*="aptcha"]',
         'img[id*="Image"]',   'img[src*="Verify"]',
         'img[src*="verify"]', 'img[src*="code"]',
+        'img[src*="Code"]',   'img[id*="imgCode"]',
+        'img[id*="imgVerify"]',
     ];
     let captchaEl = null;
     for (const sel of selectors) {
@@ -131,42 +169,103 @@ async function solveCaptcha(page) {
 // ─── Login ────────────────────────────────────────────────────
 async function login(page) {
     console.log('🔐 [MW Sync] Navigating to login page…');
-
-    // ✅ FIX: was `${MW_HOST}/default.aspx` which produced a broken URL
-    // when MW_HOST already contained /Store.aspx
     try {
         await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'load', timeout: 45_000 });
     } catch {
         await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
     }
 
-    // Save a debug screenshot so you can verify the login page loaded correctly
-    await page.screenshot({ path: path.join(OUTPUT, 'login-page-debug.png') });
-    console.log('   📸 [MW Sync] Login page screenshot saved → mw-output/login-page-debug.png');
+    // Always dump the page — this prints all input id/name/type/placeholder to logs
+    await saveDebugSnapshot(page, 'login-page');
 
     // Already logged in?
-    if (!page.url().toLowerCase().includes('default.aspx')) {
+    const url = page.url().toLowerCase();
+    if (!url.includes('default.aspx') && !url.includes('login')) {
         loggedIn = true;
         console.log('✅ [MW Sync] Session still active — skipping login.');
         return;
     }
 
+    // ── Selectors — wide net covering ASP.NET WebForms naming conventions ──
+    const userSelectors = [
+        // Placeholder-based
+        'input[placeholder="Enter your username"]',
+        'input[placeholder*="username" i]',
+        'input[placeholder*="user" i]',
+        'input[placeholder*="account" i]',
+        // Name-based (ASP.NET WebForms: ctl00$ContentPlaceHolder1$txtUserName etc.)
+        'input[name*="UserName" i]',
+        'input[name*="txtUser" i]',
+        'input[name*="Account" i]',
+        'input[name*="user" i]',
+        'input[name*="login" i]',
+        // ID-based
+        'input[id*="UserName" i]',
+        'input[id*="txtUser" i]',
+        'input[id*="Account" i]',
+        'input[id*="user" i]',
+        // Generic fallback — first visible text input
+        'input[type="text"]:visible',
+    ];
+
+    const passSelectors = [
+        'input[placeholder="Enter your password"]',
+        'input[placeholder*="password" i]',
+        'input[placeholder*="pass" i]',
+        'input[type="password"]',
+        'input[name*="Password" i]',
+        'input[name*="txtPass" i]',
+        'input[name*="pass" i]',
+        'input[id*="Password" i]',
+        'input[id*="txtPass" i]',
+    ];
+
+    const captchaSelectors = [
+        'input[placeholder="Code"]',
+        'input[placeholder*="code" i]',
+        'input[placeholder*="captcha" i]',
+        'input[placeholder*="verify" i]',
+        'input[name*="Code" i]',
+        'input[name*="captcha" i]',
+        'input[name*="verify" i]',
+        'input[id*="Code" i]',
+        'input[id*="txtCode" i]',
+        'input[id*="captcha" i]',
+        'input[id*="verify" i]',
+    ];
+
+    const loginBtnSelectors = [
+        'button:has-text("Login in")',
+        'input[value="Login in"]',
+        'button:has-text("Login")',
+        'input[value="Login"]',
+        'button:has-text("Sign in")',
+        'input[value="Sign in"]',
+        'button[type="submit"]',
+        'input[type="submit"]',
+    ];
+
     for (let attempt = 1; attempt <= 8; attempt++) {
         console.log(`   🔑 [MW Sync] Login attempt ${attempt}/8…`);
 
-        try {
-            await page.locator('input[placeholder="Enter your username"]')
-                .waitFor({ state: 'visible', timeout: 10_000 });
-        } catch {
-            console.warn('   ⚠️  [MW Sync] Login form not visible — reloading…');
+        const userInput = await findInput(page.mainFrame(), userSelectors);
+        if (!userInput) {
+            console.warn('   ⚠️  [MW Sync] Username field not visible — saving snapshot & reloading…');
+            await saveDebugSnapshot(page, `login-attempt-${attempt}-no-form`);
             await page.reload({ waitUntil: 'load' });
-            // Screenshot after reload to see what changed
-            await page.screenshot({ path: path.join(OUTPUT, `login-reload-attempt-${attempt}.png`) });
+            await page.waitForTimeout(2000);
             continue;
         }
 
-        await page.locator('input[placeholder="Enter your username"]').fill(MW_USER);
-        await page.locator('input[placeholder="Enter your password"]').fill(MW_PASS);
+        await userInput.fill(MW_USER);
+
+        const passInput = await findInput(page.mainFrame(), passSelectors);
+        if (!passInput) {
+            console.warn('   ⚠️  [MW Sync] Password field not found — reloading…');
+            await page.reload({ waitUntil: 'load' });
+            continue;
+        }
+        await passInput.fill(MW_PASS);
 
         const captchaCode = await solveCaptcha(page);
         if (!captchaCode) {
@@ -175,20 +274,37 @@ async function login(page) {
             continue;
         }
 
-        await page.locator('input[placeholder="Code"]').fill(captchaCode);
-        await page.locator('button:has-text("Login in"), input[value="Login in"]').first().click();
+        const captchaInput = await findInput(page.mainFrame(), captchaSelectors);
+        if (captchaInput) {
+            await captchaInput.fill(captchaCode);
+        } else {
+            console.warn('   ⚠️  [MW Sync] CAPTCHA input not found — proceeding anyway…');
+        }
+
+        const loginBtn = await findInput(page.mainFrame(), loginBtnSelectors);
+        if (loginBtn) {
+            await loginBtn.click();
+        } else {
+            console.warn('   ⚠️  [MW Sync] Login button not found — submitting form directly…');
+            await page.evaluate(() => { const f = document.querySelector('form'); if (f) f.submit(); });
+        }
 
         try { await page.waitForLoadState('networkidle', { timeout: 20_000 }); }
         catch { await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }); }
 
-        if (!page.url().toLowerCase().includes('default.aspx')) {
+        const newUrl = page.url().toLowerCase();
+        console.log(`   🔗 [MW Sync] URL after attempt ${attempt}: ${newUrl}`);
+
+        if (!newUrl.includes('default.aspx') && !newUrl.includes('login')) {
             loggedIn = true;
             console.log('✅ [MW Sync] Login successful!');
             return;
         }
 
-        console.warn(`   ⚠️  [MW Sync] Still on login page after attempt ${attempt} — retrying…`);
+        console.warn(`   ⚠️  [MW Sync] Still on login page after attempt ${attempt}`);
+        await saveDebugSnapshot(page, `login-failed-attempt-${attempt}`);
         await page.reload({ waitUntil: 'load' });
+        await page.waitForTimeout(1000);
     }
     throw new Error('[MW Sync] Login failed after 8 attempts');
 }
@@ -197,31 +313,23 @@ async function login(page) {
 async function goToUserManagement(page) {
     console.log('   📂 [MW Sync] Navigating to User Management…');
 
-    // ✅ FIX: was `${MW_HOST}/AccountsList.aspx` — now uses MW_BASE correctly
     try {
         await page.goto(`${MW_BASE}/AccountsList.aspx`, { waitUntil: 'load', timeout: 20_000 });
-
-        // If redirected to login, session expired
         if (page.url().toLowerCase().includes('default.aspx')) {
             throw new Error('Redirected to login — session expired');
         }
         console.log('   ✅ [MW Sync] Reached AccountsList directly.');
         return;
     } catch (directErr) {
-        console.warn(`   ⚠️  [MW Sync] Direct nav failed (${directErr.message}), trying frameset approach…`);
+        console.warn(`   ⚠️  [MW Sync] Direct nav failed (${directErr.message}), trying frameset…`);
     }
 
-    // Fallback: navigate to the root Store.aspx which has the frameset,
-    // then click the sidebar link
-    // ✅ FIX: was `${MW_HOST}/Store.aspx` — MW_HOST already had /Store.aspx appended
     await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
 
-    // Find the left-nav frame
     let leftFrame;
     try {
         leftFrame = await waitForFrame(page, 'Left.aspx', 8_000);
     } catch {
-        // Some builds just have a single-page layout — try on main frame
         leftFrame = page.mainFrame();
     }
 
@@ -229,6 +337,7 @@ async function goToUserManagement(page) {
         'a:has-text("User Management")',
         'span:has-text("User Management")',
         'li:has-text("User Management")',
+        'td:has-text("User Management")',
     ];
     let clicked = false;
     for (const sel of navSelectors) {
@@ -251,7 +360,6 @@ async function goToUserManagement(page) {
 async function createPlayerOnMW(page, username, password) {
     await goToUserManagement(page);
 
-    // Wait for the AccountsList frame (or main frame if single-page)
     let listFrame;
     try {
         listFrame = await waitForFrame(page, 'AccountsList', 10_000);
@@ -261,21 +369,19 @@ async function createPlayerOnMW(page, username, password) {
         listFrame = page.mainFrame();
     }
 
-    // Screenshot of the user management page for debugging
-    await page.screenshot({ path: path.join(OUTPUT, 'user-management-debug.png') });
-    console.log('   📸 [MW Sync] User management screenshot saved → mw-output/user-management-debug.png');
+    await saveDebugSnapshot(page, 'user-management');
 
-    // ── Click the "Create Player" button ────────────────────────
     console.log('   🖱️  [MW Sync] Looking for Create Player button…');
     const createBtnSelectors = [
         'input[value="Create Player"]',
         'button:has-text("Create Player")',
         'a:has-text("Create Player")',
+        'input[value*="Create" i]',
+        'button:has-text("Create")',
     ];
 
     let btnClicked = false;
 
-    // Check inside list frame first
     for (const sel of createBtnSelectors) {
         const el = listFrame.locator(sel).first();
         if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
@@ -286,7 +392,6 @@ async function createPlayerOnMW(page, username, password) {
         }
     }
 
-    // Fall back to any frame on the page
     if (!btnClicked) {
         for (const frame of page.frames()) {
             for (const sel of createBtnSelectors) {
@@ -302,7 +407,6 @@ async function createPlayerOnMW(page, username, password) {
         }
     }
 
-    // Last resort: trigger via JS showDialog
     if (!btnClicked) {
         console.warn('   ⚠️  [MW Sync] Button not found — trying JS showDialog…');
         const triggered = await listFrame.evaluate(() => {
@@ -312,23 +416,19 @@ async function createPlayerOnMW(page, username, password) {
             }
             return false;
         });
-        if (!triggered) throw new Error('[MW Sync] Could not open Create Player dialog — no button or showDialog found');
+        if (!triggered) throw new Error('[MW Sync] Could not open Create Player dialog');
         btnClicked = true;
     }
 
-    // ── Wait for the Create Account form to appear ────────────
     console.log('   ⏳ [MW Sync] Waiting for Create Account form…');
     let createFrame = null;
     for (let i = 0; i < 25; i++) {
         await page.waitForTimeout(500);
-
-        // Check for a new iframe
         createFrame = page.frames().find(
             f => f.url().includes('CreateAccount') || f.url().includes('create')
         );
         if (createFrame) break;
 
-        // Check if the dialog rendered inline inside the list frame
         const inDialog = await listFrame.evaluate(() => {
             const d = document.getElementById('DialogBySHFLayer');
             return d ? d.querySelectorAll('input[type="text"],input:not([type="hidden"]):not([type="submit"]):not([type="button"])').length : 0;
@@ -337,16 +437,17 @@ async function createPlayerOnMW(page, username, password) {
     }
 
     if (!createFrame) {
-        await page.screenshot({ path: path.join(OUTPUT, 'debug-no-dialog.png') });
-        throw new Error('[MW Sync] Create Player dialog did not appear (screenshot saved to mw-output/)');
+        await saveDebugSnapshot(page, 'debug-no-dialog');
+        throw new Error('[MW Sync] Create Player dialog did not appear (snapshot saved)');
     }
     console.log('   ✅ [MW Sync] Create Account form found.');
 
-    // ── Fill the form ─────────────────────────────────────────
     const fill = async (hints, value, label) => {
         const strategies = [
             ...hints.map(h => `tr:has(td:has-text("${h}")) input`),
-            ...hints.map(h => `input[placeholder*="${h}"]`),
+            ...hints.map(h => `input[placeholder*="${h}" i]`),
+            ...hints.map(h => `input[name*="${h}" i]`),
+            ...hints.map(h => `input[id*="${h}" i]`),
             ...hints.map(h => `label:has-text("${h}") + input`),
             'input[type="text"]:visible',
             'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="radio"]):not([type="checkbox"]):visible',
@@ -370,7 +471,6 @@ async function createPlayerOnMW(page, username, password) {
     await fill(['Login password', 'Password', 'Pass'],             password,  'Password');
     await fill(['Confirm password', 'Confirm Password', 'Re-enter'], password, 'Confirm Password');
 
-    // ── Submit ────────────────────────────────────────────────
     console.log('   📤 [MW Sync] Submitting Create Player form…');
     const submitSelectors = [
         'input[value="Create Player"]',
@@ -382,7 +482,6 @@ async function createPlayerOnMW(page, username, password) {
     ];
     let submitted = false;
     for (const sel of submitSelectors) {
-        // Only look inside createFrame — NOT listFrame — to avoid re-triggering the dialog button
         const el = createFrame.locator(sel).first();
         if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
             await el.click({ force: true });
@@ -396,7 +495,6 @@ async function createPlayerOnMW(page, username, password) {
         console.warn('   ⚠️  [MW Sync] Used form.submit() fallback');
     }
 
-    // Wait for the request to complete then close overlay
     try { await page.waitForLoadState('networkidle', { timeout: 10_000 }); } catch { /**/ }
     await page.evaluate(() => {
         if (typeof CloseDiaLog === 'function') CloseDiaLog();
@@ -409,13 +507,6 @@ async function createPlayerOnMW(page, username, password) {
 
 // ─── Public API ───────────────────────────────────────────────
 
-/**
- * Create a player on MilkyWay, re-logging in if the session expired.
- *
- * @param {string} username
- * @param {string} [password]  Defaults to "Players@123"
- * @returns {Promise<{ ok: boolean, error?: string }>}
- */
 export async function syncCreatePlayer(username, password = 'Players@123') {
     if (!MW_USER || !MW_PASS) {
         console.log('ℹ️  [MW Sync] Skipped — MW_USER / MW_PASS not configured.');
@@ -424,10 +515,8 @@ export async function syncCreatePlayer(username, password = 'Players@123') {
 
     try {
         const page = await getBrowser();
-
         if (!loggedIn) await login(page);
 
-        // Verify the session is still valid by checking current URL
         const currentUrl = page.url().toLowerCase();
         if (currentUrl.includes('default.aspx') || !currentUrl.startsWith('http')) {
             console.log('   🔄 [MW Sync] Session expired — re-logging in…');
@@ -440,22 +529,17 @@ export async function syncCreatePlayer(username, password = 'Players@123') {
 
     } catch (err) {
         console.error(`❌ [MW Sync] syncCreatePlayer("${username}") failed: ${err.message}`);
-        // Reset session so the next call retries login
         loggedIn = false;
         mwPage   = null;
         return { ok: false, error: err.message };
     }
 }
 
-/**
- * Pre-warm the MilkyWay session on server startup to avoid cold-start delays.
- */
 export async function warmMilkywaySession() {
     if (!MW_USER || !MW_PASS) return;
     try {
         const page = await getBrowser();
         await login(page);
-        // ✅ FIX: was `${MW_HOST}/Store.aspx` — broken when MW_HOST already had /Store.aspx
         await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
         console.log('🔥 [MW Sync] Session pre-warmed.');
     } catch (err) {
@@ -466,34 +550,20 @@ export async function warmMilkywaySession() {
 }
 
 /*
- ─── REQUIRED: Update your Render environment variables ──────────
+ ─── AFTER DEPLOYING: what to look for in Render logs ────────────
 
- Remove:   MW_HOST  (if set)
- Add/set:  MW_BASE=https://milkywayapp.xyz:8781   ← no trailing slash, no /Store.aspx
-           MW_USER=your_milkyway_username
-           MW_PASS=your_milkyway_password
+ Look for this block right after server starts:
 
- ─── DEBUGGING TIP ───────────────────────────────────────────────
+    🔍 [MW Sync] ALL INPUTS on page [login-page]:
+       id="txtUserName" name="ctl00$txtUserName" type="text" placeholder="(none)" visible=true
+       id="txtPassword" name="ctl00$txtPassword" type="password" placeholder="(none)" visible=true
+       id="txtCode"     name="ctl00$txtCode"     type="text"     placeholder="(none)" visible=true
 
- Set MW_HEADLESS=false in your .env and restart the server.
- When you create a player, a visible browser window will open
- and you can watch exactly where the automation gets stuck.
+ Copy and paste those lines here — we'll use the exact id/name
+ values to hard-code the selectors and make it 100% reliable.
 
- Debug screenshots are now saved automatically to mw-output/:
-   login-page-debug.png         ← what loads after goto /default.aspx
-   login-reload-attempt-N.png   ← what the page looks like after each reload
-   user-management-debug.png    ← what the AccountsList page looks like
-   debug-no-dialog.png          ← saved if Create Player dialog never appears
-
- ─── CALLER in index.js ──────────────────────────────────────────
-
- Your current caller swallows errors silently. Change to:
-
-    syncCreatePlayer(username.trim()).then(result => {
-      if (!result.ok) {
-        console.error(`⚠️  MilkyWay sync failed for "${username}": ${result.error}`);
-      }
-    }).catch(err => {
-      console.error(`❌ MilkyWay sync threw unexpectedly for "${username}":`, err);
-    });
+ ─── RENDER ENV VARS ─────────────────────────────────────────────
+   MW_BASE = https://milkywayapp.xyz:8781    ← no trailing slash
+   MW_USER = your_milkyway_username
+   MW_PASS = your_milkyway_password
 */
