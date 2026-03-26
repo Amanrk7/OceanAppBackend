@@ -1,10 +1,10 @@
 /**
  * milkyway-sync.js
  * ─────────────────────────────────────────────────────────────
- * Key fixes:
- *  1. MW_BASE is base URL only (no /Store.aspx suffix)
- *  2. Login uses many selector fallbacks — dumps page HTML + input list for debugging
- *  3. All page.goto() calls use MW_BASE + correct path
+ * ROOT CAUSE FIX: The MilkyWay login form lives inside an IFRAME,
+ * not in the main page frame. Previous versions only searched
+ * page.mainFrame() — inputs returned empty every time.
+ * This version searches ALL frames on the page.
  */
 
 import { chromium } from 'playwright';
@@ -32,7 +32,7 @@ let loggedIn = false;
 
 async function getBrowser() {
     if (!browser || !browser.isConnected()) {
-        browser  = await chromium.launch({
+        browser = await chromium.launch({
             headless: HEADLESS,
             args: ['--ignore-certificate-errors', '--disable-web-security', '--no-sandbox'],
         });
@@ -48,35 +48,42 @@ async function getBrowser() {
     return mwPage;
 }
 
-// ─── Save debug snapshot (screenshot + HTML + input list) ─────
+// ─── Deep debug snapshot — scans ALL frames ───────────────────
 async function saveDebugSnapshot(page, label) {
     try {
         await page.screenshot({ path: path.join(OUTPUT, `${label}.png`), fullPage: true });
-        const html = await page.content();
-        fs.writeFileSync(path.join(OUTPUT, `${label}.html`), html);
 
-        // Log every input on the page so we know the exact selectors to use
-        const inputs = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('input')).map(el => ({
-                id:          el.id          || '(none)',
-                name:        el.name        || '(none)',
-                type:        el.type        || '(none)',
-                placeholder: el.placeholder || '(none)',
-                className:   el.className   || '(none)',
-                visible:     el.offsetParent !== null,
-            }))
-        );
-        console.log(`   📸 [MW Sync] Snapshot → mw-output/${label}.png + .html`);
-        console.log(`   🔍 [MW Sync] ALL INPUTS on page [${label}]:\n` +
-            inputs.map(i =>
-                `      id="${i.id}" name="${i.name}" type="${i.type}" placeholder="${i.placeholder}" visible=${i.visible}`
-            ).join('\n')
-        );
+        // Wait a moment for any lazy-loaded frames/content
+        await page.waitForTimeout(1000);
 
-        const frameUrls = page.frames().map(f => f.url());
-        console.log(`   🖼️  [MW Sync] Frames [${label}]: ${frameUrls.join(', ')}`);
+        const allFrames = page.frames();
+        console.log(`   🖼️  [MW Sync] [${label}] Total frames: ${allFrames.length}`);
+
+        for (let i = 0; i < allFrames.length; i++) {
+            const frame = allFrames[i];
+            const frameUrl = frame.url();
+            let inputs = [];
+            try {
+                inputs = await frame.evaluate(() =>
+                    Array.from(document.querySelectorAll('input')).map(el => ({
+                        id:          el.id          || '(none)',
+                        name:        el.name        || '(none)',
+                        type:        el.type        || 'text',
+                        placeholder: el.placeholder || '(none)',
+                        visible:     el.offsetParent !== null,
+                    }))
+                );
+            } catch (_) { /* cross-origin frame — skip */ }
+
+            console.log(`   🔍 [MW Sync] [${label}] Frame[${i}] url="${frameUrl}" inputs=${inputs.length}`);
+            if (inputs.length > 0) {
+                inputs.forEach(inp =>
+                    console.log(`      → id="${inp.id}" name="${inp.name}" type="${inp.type}" placeholder="${inp.placeholder}" visible=${inp.visible}`)
+                );
+            }
+        }
     } catch (e) {
-        console.warn(`   ⚠️  [MW Sync] saveDebugSnapshot("${label}") failed: ${e.message}`);
+        console.warn(`   ⚠️  [MW Sync] saveDebugSnapshot("${label}") error: ${e.message}`);
     }
 }
 
@@ -86,29 +93,54 @@ async function waitForFrame(page, urlFragment, timeoutMs = 15_000) {
     while (Date.now() < deadline) {
         const frame = page.frames().find(f => f.url().includes(urlFragment));
         if (frame) return frame;
-        await page.waitForTimeout(400);
+        await page.waitForTimeout(300);
     }
-    const frameUrls = page.frames().map(f => f.url()).join('\n  ');
-    throw new Error(`Frame containing "${urlFragment}" not found within ${timeoutMs}ms.\nFrames:\n  ${frameUrls}`);
+    throw new Error(`Frame containing "${urlFragment}" not found within ${timeoutMs}ms`);
 }
 
-// ─── Find an input by trying many selectors ───────────────────
-async function findInput(frame, selectorList) {
-    for (const sel of selectorList) {
-        try {
-            const el = frame.locator(sel).first();
-            if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-                console.log(`   ✅ [MW Sync] Found input via selector: ${sel}`);
-                return el;
-            }
-        } catch { /* continue */ }
+// ─── Find input across ALL frames ────────────────────────────
+// This is the key fix — MilkyWay login form is in an iframe.
+async function findInputAcrossFrames(page, selectorList) {
+    const frames = page.frames();
+    for (const frame of frames) {
+        for (const sel of selectorList) {
+            try {
+                const el = frame.locator(sel).first();
+                if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+                    console.log(`   ✅ [MW Sync] Found input via selector "${sel}" in frame: ${frame.url()}`);
+                    return { el, frame };
+                }
+            } catch { /* try next */ }
+        }
+    }
+    return null;
+}
+
+// ─── Wait until ANY frame on the page has visible inputs ──────
+async function waitForLoginForm(page, timeoutMs = 20_000) {
+    const deadline = Date.now() + timeoutMs;
+    console.log('   ⏳ [MW Sync] Waiting for login form to appear in any frame…');
+    while (Date.now() < deadline) {
+        for (const frame of page.frames()) {
+            try {
+                const count = await frame.evaluate(() =>
+                    document.querySelectorAll('input[type="text"], input[type="password"]').length
+                );
+                if (count >= 2) {
+                    console.log(`   ✅ [MW Sync] Login form found in frame: ${frame.url()} (${count} inputs)`);
+                    return frame;
+                }
+            } catch { /* cross-origin or not ready yet */ }
+        }
+        await page.waitForTimeout(500);
     }
     return null;
 }
 
 // ─── CAPTCHA solver ───────────────────────────────────────────
-async function solveCaptcha(page) {
+async function solveCaptcha(page, loginFrame) {
     const captchaPath = path.join(OUTPUT, 'captcha-raw.png');
+    const frameToSearch = loginFrame || page;
 
     const selectors = [
         'img[src*="aptcha"]', 'img[id*="aptcha"]',
@@ -117,14 +149,30 @@ async function solveCaptcha(page) {
         'img[src*="Code"]',   'img[id*="imgCode"]',
         'img[id*="imgVerify"]',
     ];
-    let captchaEl = null;
-    for (const sel of selectors) {
-        const el = page.locator(sel).first();
-        if (await el.count() > 0) { captchaEl = el; break; }
-    }
-    if (!captchaEl) captchaEl = page.locator('img').last();
 
-    await captchaEl.waitFor({ state: 'visible', timeout: 10_000 });
+    let captchaEl = null;
+    // Search in the login frame first, then all frames
+    const searchFrames = loginFrame ? [loginFrame, ...page.frames()] : page.frames();
+    for (const frame of searchFrames) {
+        for (const sel of selectors) {
+            try {
+                const el = frame.locator(sel).first();
+                if (await el.count() > 0) {
+                    captchaEl = el;
+                    break;
+                }
+            } catch { /* continue */ }
+        }
+        if (captchaEl) break;
+    }
+
+    if (!captchaEl) {
+        // Last resort — last img anywhere
+        captchaEl = page.locator('img').last();
+    }
+
+    try { await captchaEl.waitFor({ state: 'visible', timeout: 8_000 }); }
+    catch { return ''; }
 
     let imageBuffer;
     try {
@@ -133,11 +181,13 @@ async function solveCaptcha(page) {
         imageBuffer  = await resp.body();
         fs.writeFileSync(captchaPath, imageBuffer);
     } catch {
-        await captchaEl.screenshot({ path: captchaPath });
-        imageBuffer = fs.readFileSync(captchaPath);
+        try {
+            await captchaEl.screenshot({ path: captchaPath });
+            imageBuffer = fs.readFileSync(captchaPath);
+        } catch { return ''; }
     }
 
-    if (imageBuffer.length < 500) return '';
+    if (!imageBuffer || imageBuffer.length < 500) return '';
 
     const pipelines = [
         { name: 'gs-maxc-4x',  fn: img => img.greyscale().contrast(1).scale(4) },
@@ -162,7 +212,7 @@ async function solveCaptcha(page) {
             if (conf > bestConf && code.length >= 3) { bestConf = conf; bestCode = code; }
         } catch { /* skip bad pipeline */ }
     }
-    console.log(`   🔡 [MW Sync] CAPTCHA solved: "${bestCode}" (confidence: ${bestConf.toFixed(0)})`);
+    console.log(`   🔡 [MW Sync] CAPTCHA: "${bestCode}" (confidence: ${bestConf.toFixed(0)})`);
     return bestCode;
 }
 
@@ -175,118 +225,134 @@ async function login(page) {
         await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
     }
 
-    // Always dump the page — this prints all input id/name/type/placeholder to logs
+    // Extra wait — ASP.NET pages often load frames after the initial load event
+    await page.waitForTimeout(3000);
+
+    // Dump ALL frames and ALL inputs (including inside iframes)
     await saveDebugSnapshot(page, 'login-page');
 
-    // Already logged in?
+    // Check if already logged in
     const url = page.url().toLowerCase();
     if (!url.includes('default.aspx') && !url.includes('login')) {
         loggedIn = true;
-        console.log('✅ [MW Sync] Session still active — skipping login.');
+        console.log('✅ [MW Sync] Already logged in — skipping.');
         return;
     }
 
-    // ── Selectors — wide net covering ASP.NET WebForms naming conventions ──
     const userSelectors = [
         // Placeholder-based
         'input[placeholder="Enter your username"]',
         'input[placeholder*="username" i]',
         'input[placeholder*="user" i]',
         'input[placeholder*="account" i]',
-        // Name-based (ASP.NET WebForms: ctl00$ContentPlaceHolder1$txtUserName etc.)
-        'input[name*="UserName" i]',
-        'input[name*="txtUser" i]',
-        'input[name*="Account" i]',
-        'input[name*="user" i]',
-        'input[name*="login" i]',
-        // ID-based
-        'input[id*="UserName" i]',
-        'input[id*="txtUser" i]',
-        'input[id*="Account" i]',
-        'input[id*="user" i]',
-        // Generic fallback — first visible text input
+        // Name/ID based — ASP.NET WebForms common patterns
+        'input[name*="UserName"]',
+        'input[name*="txtUser"]',
+        'input[name*="Account"]',
+        'input[name*="user"]',
+        'input[name*="login"]',
+        'input[id*="UserName"]',
+        'input[id*="txtUser"]',
+        'input[id*="Account"]',
+        'input[id*="user"]',
+        // Generic: first visible text input
         'input[type="text"]:visible',
+        'input[type="text"]',
     ];
 
     const passSelectors = [
         'input[placeholder="Enter your password"]',
         'input[placeholder*="password" i]',
-        'input[placeholder*="pass" i]',
         'input[type="password"]',
-        'input[name*="Password" i]',
-        'input[name*="txtPass" i]',
-        'input[name*="pass" i]',
-        'input[id*="Password" i]',
-        'input[id*="txtPass" i]',
+        'input[name*="Password"]',
+        'input[name*="txtPass"]',
+        'input[id*="Password"]',
+        'input[id*="txtPass"]',
     ];
 
-    const captchaSelectors = [
+    const captchaInputSelectors = [
         'input[placeholder="Code"]',
         'input[placeholder*="code" i]',
         'input[placeholder*="captcha" i]',
         'input[placeholder*="verify" i]',
-        'input[name*="Code" i]',
-        'input[name*="captcha" i]',
-        'input[name*="verify" i]',
-        'input[id*="Code" i]',
-        'input[id*="txtCode" i]',
-        'input[id*="captcha" i]',
-        'input[id*="verify" i]',
+        'input[name*="Code"]',
+        'input[name*="captcha"]',
+        'input[name*="verify"]',
+        'input[id*="Code"]',
+        'input[id*="txtCode"]',
+        'input[id*="captcha"]',
+        'input[id*="verify"]',
     ];
 
     const loginBtnSelectors = [
-        'button:has-text("Login in")',
         'input[value="Login in"]',
-        'button:has-text("Login")',
+        'button:has-text("Login in")',
         'input[value="Login"]',
-        'button:has-text("Sign in")',
+        'button:has-text("Login")',
         'input[value="Sign in"]',
-        'button[type="submit"]',
+        'button:has-text("Sign in")',
         'input[type="submit"]',
+        'button[type="submit"]',
     ];
 
     for (let attempt = 1; attempt <= 8; attempt++) {
         console.log(`   🔑 [MW Sync] Login attempt ${attempt}/8…`);
 
-        const userInput = await findInput(page.mainFrame(), userSelectors);
-        if (!userInput) {
-            console.warn('   ⚠️  [MW Sync] Username field not visible — saving snapshot & reloading…');
+        // ── KEY FIX: wait for login form to appear in any frame ──
+        const loginFrame = await waitForLoginForm(page, 15_000);
+        if (!loginFrame) {
+            console.warn('   ⚠️  [MW Sync] Login form not found in any frame — reloading…');
             await saveDebugSnapshot(page, `login-attempt-${attempt}-no-form`);
             await page.reload({ waitUntil: 'load' });
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(3000);
             continue;
         }
 
-        await userInput.fill(MW_USER);
-
-        const passInput = await findInput(page.mainFrame(), passSelectors);
-        if (!passInput) {
-            console.warn('   ⚠️  [MW Sync] Password field not found — reloading…');
+        // Fill username — search across all frames
+        const userResult = await findInputAcrossFrames(page, userSelectors);
+        if (!userResult) {
+            console.warn('   ⚠️  [MW Sync] Username input not found — reloading…');
             await page.reload({ waitUntil: 'load' });
+            await page.waitForTimeout(3000);
             continue;
         }
-        await passInput.fill(MW_PASS);
+        await userResult.el.fill(MW_USER);
 
-        const captchaCode = await solveCaptcha(page);
-        if (!captchaCode) {
-            console.warn('   ⚠️  [MW Sync] Could not solve CAPTCHA — retrying…');
+        // Fill password — search in the same frame first
+        const passResult = await findInputAcrossFrames(page, passSelectors);
+        if (!passResult) {
+            console.warn('   ⚠️  [MW Sync] Password input not found — reloading…');
             await page.reload({ waitUntil: 'load' });
+            await page.waitForTimeout(3000);
             continue;
         }
+        await passResult.el.fill(MW_PASS);
 
-        const captchaInput = await findInput(page.mainFrame(), captchaSelectors);
-        if (captchaInput) {
-            await captchaInput.fill(captchaCode);
+        // Solve CAPTCHA
+        const captchaCode = await solveCaptcha(page, loginFrame);
+        if (captchaCode) {
+            const capResult = await findInputAcrossFrames(page, captchaInputSelectors);
+            if (capResult) {
+                await capResult.el.fill(captchaCode);
+                console.log(`   ✅ [MW Sync] CAPTCHA filled: "${captchaCode}"`);
+            } else {
+                console.warn('   ⚠️  [MW Sync] CAPTCHA input not found — proceeding anyway…');
+            }
         } else {
-            console.warn('   ⚠️  [MW Sync] CAPTCHA input not found — proceeding anyway…');
+            console.warn('   ⚠️  [MW Sync] CAPTCHA solve failed — proceeding anyway…');
         }
 
-        const loginBtn = await findInput(page.mainFrame(), loginBtnSelectors);
-        if (loginBtn) {
-            await loginBtn.click();
+        // Click login button
+        const btnResult = await findInputAcrossFrames(page, loginBtnSelectors);
+        if (btnResult) {
+            await btnResult.el.click();
         } else {
-            console.warn('   ⚠️  [MW Sync] Login button not found — submitting form directly…');
-            await page.evaluate(() => { const f = document.querySelector('form'); if (f) f.submit(); });
+            // Try submitting the form inside the login frame directly
+            console.warn('   ⚠️  [MW Sync] Login button not found — submitting form…');
+            await loginFrame.evaluate(() => {
+                const form = document.querySelector('form');
+                if (form) form.submit();
+            });
         }
 
         try { await page.waitForLoadState('networkidle', { timeout: 20_000 }); }
@@ -304,7 +370,7 @@ async function login(page) {
         console.warn(`   ⚠️  [MW Sync] Still on login page after attempt ${attempt}`);
         await saveDebugSnapshot(page, `login-failed-attempt-${attempt}`);
         await page.reload({ waitUntil: 'load' });
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(2000);
     }
     throw new Error('[MW Sync] Login failed after 8 attempts');
 }
@@ -325,6 +391,7 @@ async function goToUserManagement(page) {
     }
 
     await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
+    await page.waitForTimeout(2000);
 
     let leftFrame;
     try {
@@ -341,12 +408,14 @@ async function goToUserManagement(page) {
     ];
     let clicked = false;
     for (const sel of navSelectors) {
-        const el = leftFrame.locator(sel).first();
-        if (await el.count() > 0) {
-            await el.click();
-            clicked = true;
-            break;
-        }
+        try {
+            const el = leftFrame.locator(sel).first();
+            if (await el.count() > 0) {
+                await el.click();
+                clicked = true;
+                break;
+            }
+        } catch { /* continue */ }
     }
     if (!clicked) throw new Error('[MW Sync] Could not find "User Management" link in sidebar');
 
@@ -359,6 +428,7 @@ async function goToUserManagement(page) {
 // ─── Create player once on the User Management page ───────────
 async function createPlayerOnMW(page, username, password) {
     await goToUserManagement(page);
+    await page.waitForTimeout(2000);
 
     let listFrame;
     try {
@@ -382,29 +452,20 @@ async function createPlayerOnMW(page, username, password) {
 
     let btnClicked = false;
 
-    for (const sel of createBtnSelectors) {
-        const el = listFrame.locator(sel).first();
-        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-            await el.click({ force: true });
-            btnClicked = true;
-            console.log(`   ✅ [MW Sync] Clicked Create Player button (${sel})`);
-            break;
-        }
-    }
-
-    if (!btnClicked) {
-        for (const frame of page.frames()) {
-            for (const sel of createBtnSelectors) {
+    // Search all frames
+    for (const frame of page.frames()) {
+        for (const sel of createBtnSelectors) {
+            try {
                 const el = frame.locator(sel).first();
                 if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
                     await el.click({ force: true });
                     btnClicked = true;
-                    console.log(`   ✅ [MW Sync] Clicked Create Player (frame fallback) (${sel})`);
+                    console.log(`   ✅ [MW Sync] Clicked Create Player (frame: ${frame.url()}) (${sel})`);
                     break;
                 }
-            }
-            if (btnClicked) break;
+            } catch { /* continue */ }
         }
+        if (btnClicked) break;
     }
 
     if (!btnClicked) {
@@ -417,12 +478,11 @@ async function createPlayerOnMW(page, username, password) {
             return false;
         });
         if (!triggered) throw new Error('[MW Sync] Could not open Create Player dialog');
-        btnClicked = true;
     }
 
     console.log('   ⏳ [MW Sync] Waiting for Create Account form…');
     let createFrame = null;
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < 30; i++) {
         await page.waitForTimeout(500);
         createFrame = page.frames().find(
             f => f.url().includes('CreateAccount') || f.url().includes('create')
@@ -482,13 +542,15 @@ async function createPlayerOnMW(page, username, password) {
     ];
     let submitted = false;
     for (const sel of submitSelectors) {
-        const el = createFrame.locator(sel).first();
-        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-            await el.click({ force: true });
-            submitted = true;
-            console.log(`   ✅ [MW Sync] Submitted via "${sel}"`);
-            break;
-        }
+        try {
+            const el = createFrame.locator(sel).first();
+            if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+                await el.click({ force: true });
+                submitted = true;
+                console.log(`   ✅ [MW Sync] Submitted via "${sel}"`);
+                break;
+            }
+        } catch { /* continue */ }
     }
     if (!submitted) {
         await createFrame.evaluate(() => { const f = document.querySelector('form'); if (f) f.submit(); });
@@ -550,20 +612,19 @@ export async function warmMilkywaySession() {
 }
 
 /*
- ─── AFTER DEPLOYING: what to look for in Render logs ────────────
-
- Look for this block right after server starts:
-
-    🔍 [MW Sync] ALL INPUTS on page [login-page]:
-       id="txtUserName" name="ctl00$txtUserName" type="text" placeholder="(none)" visible=true
-       id="txtPassword" name="ctl00$txtPassword" type="password" placeholder="(none)" visible=true
-       id="txtCode"     name="ctl00$txtCode"     type="text"     placeholder="(none)" visible=true
-
- Copy and paste those lines here — we'll use the exact id/name
- values to hard-code the selectors and make it 100% reliable.
-
  ─── RENDER ENV VARS ─────────────────────────────────────────────
-   MW_BASE = https://milkywayapp.xyz:8781    ← no trailing slash
+   MW_BASE = https://milkywayapp.xyz:8781
    MW_USER = your_milkyway_username
    MW_PASS = your_milkyway_password
+
+ ─── WHAT TO LOOK FOR IN LOGS AFTER DEPLOYING ────────────────────
+ The saveDebugSnapshot now scans EVERY frame. You should see:
+
+    Frame[0] url="https://milkywayapp.xyz:8781/default.aspx" inputs=0
+    Frame[1] url="https://milkywayapp.xyz:8781/Login.aspx"   inputs=3
+       → id="txtUserName" name="txtUserName" type="text" ...
+       → id="txtPassword" name="txtPassword" type="password" ...
+       → id="txtCode"     name="txtCode"     type="text" ...
+
+ If you still see 0 inputs in all frames, paste the logs here.
 */
