@@ -78,7 +78,6 @@ async function saveDebugSnapshot(page, label) {
 
         const allFrames = page.frames();
 
-        const allFrames = page.frames();
         console.log(`   🖼️  [MW Sync] [${label}] Total frames: ${allFrames.length}`);
 
         for (let i = 0; i < allFrames.length; i++) {
