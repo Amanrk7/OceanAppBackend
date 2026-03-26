@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "postinstall": "npx playwright install --with-deps chromium",
+    "postinstall": "npx playwright install chromium",
     "server": "node server/index.js",
     "dev": "nodemon server/index.js",
     "db:migrate": "prisma migrate dev",
