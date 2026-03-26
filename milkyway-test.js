@@ -34,16 +34,32 @@ async function getBrowser() {
     if (!browser || !browser.isConnected()) {
         browser = await chromium.launch({
             headless: HEADLESS,
-            args: ['--ignore-certificate-errors', '--disable-web-security', '--no-sandbox'],
+            args: [
+                '--ignore-certificate-errors',
+                '--disable-web-security',
+                '--no-sandbox',
+                '--disable-blink-features=AutomationControlled',
+            ],
         });
         mwPage   = null;
         loggedIn = false;
     }
+
     if (!mwPage || mwPage.isClosed()) {
-        const ctx = await browser.newContext({ ignoreHTTPSErrors: true });
-        mwPage    = await ctx.newPage();
-        await mwPage.setViewportSize({ width: 1280, height: 900 });
-        loggedIn  = false;
+        const ctx = await browser.newContext({
+            ignoreHTTPSErrors: true,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport: { width: 1280, height: 900 },
+            javaScriptEnabled: true,
+        });
+        mwPage = await ctx.newPage();
+
+        // ← THIS IS THE CRITICAL MISSING PIECE
+        await mwPage.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+
+        loggedIn = false;
     }
     return mwPage;
 }
@@ -220,13 +236,13 @@ async function solveCaptcha(page, loginFrame) {
 async function login(page) {
     console.log('🔐 [MW Sync] Navigating to login page…');
     try {
-        await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'load', timeout: 45_000 });
+        await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'networkidle', timeout: 45_000 });
     } catch {
         await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
     }
 
     // Extra wait — ASP.NET pages often load frames after the initial load event
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
     // Dump ALL frames and ALL inputs (including inside iframes)
     await saveDebugSnapshot(page, 'login-page');
