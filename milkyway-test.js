@@ -1,14 +1,15 @@
 /**
  * milkyway-sync.js  (fixed)
  * ─────────────────────────────────────────────────────────────
- * Changes vs original:
- *  1. goToUserManagement() navigates DIRECTLY to AccountsList.aspx
- *     instead of clicking sidebar links (fragile frame-click approach removed)
- *  2. waitForFrame() polls until the target iframe is actually loaded
- *  3. Create-Player button is clicked directly via the known selector
- *     from the live screenshot ("Create Player" top-right button)
- *  4. Better per-step logging so you can see exactly where it fails
- *  5. index.js caller should stop swallowing errors — see note at bottom
+ * Key fixes vs previous version:
+ *  1. MW_BASE is now the base URL only (no path suffix like /Store.aspx)
+ *     Previously MW_HOST included /Store.aspx which caused broken URLs like
+ *     https://milkywayapp.xyz:8781/Store.aspx/default.aspx  ← was causing all login failures
+ *  2. All page.goto() calls now use MW_BASE + correct path
+ *  3. goToUserManagement() navigates DIRECTLY to AccountsList.aspx
+ *  4. waitForFrame() polls until the target iframe is actually loaded
+ *  5. Create-Player button is clicked directly via the known selector
+ *  6. Better per-step logging so you can see exactly where it fails
  */
 
 import { chromium } from 'playwright';
@@ -18,7 +19,12 @@ import Jimp from 'jimp';
 import Tesseract from 'tesseract.js';
 
 // ─── Config ───────────────────────────────────────────────────
-const MW_HOST   = process.env.MW_HOST || 'https://milkywayapp.xyz:8781/Store.aspx';
+// ✅ FIX: MW_BASE is the base URL only — NO trailing path like /Store.aspx
+// Previously: MW_HOST = 'https://milkywayapp.xyz:8781/Store.aspx'
+//   → produced broken URLs: https://milkywayapp.xyz:8781/Store.aspx/default.aspx
+// Now: MW_BASE = 'https://milkywayapp.xyz:8781'
+//   → produces correct URLs: https://milkywayapp.xyz:8781/default.aspx
+const MW_BASE   = process.env.MW_BASE || 'https://milkywayapp.xyz:8781';
 const MW_USER   = process.env.MW_USER;
 const MW_PASS   = process.env.MW_PASS;
 const OUTPUT    = './mw-output';
@@ -60,7 +66,6 @@ async function waitForFrame(page, urlFragment, timeoutMs = 15_000) {
         if (frame) return frame;
         await page.waitForTimeout(400);
     }
-    // Dump all current frame URLs for debugging
     const frameUrls = page.frames().map(f => f.url()).join('\n  ');
     throw new Error(`Frame containing "${urlFragment}" not found within ${timeoutMs}ms.\nFrames available:\n  ${frameUrls}`);
 }
@@ -126,11 +131,18 @@ async function solveCaptcha(page) {
 // ─── Login ────────────────────────────────────────────────────
 async function login(page) {
     console.log('🔐 [MW Sync] Navigating to login page…');
+
+    // ✅ FIX: was `${MW_HOST}/default.aspx` which produced a broken URL
+    // when MW_HOST already contained /Store.aspx
     try {
-        await page.goto(`${MW_HOST}/default.aspx`, { waitUntil: 'load', timeout: 45_000 });
+        await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'load', timeout: 45_000 });
     } catch {
         await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
     }
+
+    // Save a debug screenshot so you can verify the login page loaded correctly
+    await page.screenshot({ path: path.join(OUTPUT, 'login-page-debug.png') });
+    console.log('   📸 [MW Sync] Login page screenshot saved → mw-output/login-page-debug.png');
 
     // Already logged in?
     if (!page.url().toLowerCase().includes('default.aspx')) {
@@ -148,6 +160,8 @@ async function login(page) {
         } catch {
             console.warn('   ⚠️  [MW Sync] Login form not visible — reloading…');
             await page.reload({ waitUntil: 'load' });
+            // Screenshot after reload to see what changed
+            await page.screenshot({ path: path.join(OUTPUT, `login-reload-attempt-${attempt}.png`) });
             continue;
         }
 
@@ -180,15 +194,13 @@ async function login(page) {
 }
 
 // ─── Navigate directly to User Management ─────────────────────
-// FIX: instead of clicking sidebar links (fragile), go directly
-// to the AccountsList URL which is the User Management main page.
 async function goToUserManagement(page) {
     console.log('   📂 [MW Sync] Navigating to User Management…');
 
-    // Try direct navigation first (most reliable)
-    // MilkyWay's main frame navigates to AccountsList.aspx for User Management
+    // ✅ FIX: was `${MW_HOST}/AccountsList.aspx` — now uses MW_BASE correctly
     try {
-        await page.goto(`${MW_HOST}/AccountsList.aspx`, { waitUntil: 'load', timeout: 20_000 });
+        await page.goto(`${MW_BASE}/AccountsList.aspx`, { waitUntil: 'load', timeout: 20_000 });
+
         // If redirected to login, session expired
         if (page.url().toLowerCase().includes('default.aspx')) {
             throw new Error('Redirected to login — session expired');
@@ -201,7 +213,8 @@ async function goToUserManagement(page) {
 
     // Fallback: navigate to the root Store.aspx which has the frameset,
     // then click the sidebar link
-    await page.goto(`${MW_HOST}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
+    // ✅ FIX: was `${MW_HOST}/Store.aspx` — MW_HOST already had /Store.aspx appended
+    await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
 
     // Find the left-nav frame
     let leftFrame;
@@ -248,9 +261,11 @@ async function createPlayerOnMW(page, username, password) {
         listFrame = page.mainFrame();
     }
 
+    // Screenshot of the user management page for debugging
+    await page.screenshot({ path: path.join(OUTPUT, 'user-management-debug.png') });
+    console.log('   📸 [MW Sync] User management screenshot saved → mw-output/user-management-debug.png');
+
     // ── Click the "Create Player" button ────────────────────────
-    // From the live screenshot the button is clearly in the top-right
-    // with text "Create Player". Try multiple selectors in priority order.
     console.log('   🖱️  [MW Sync] Looking for Create Player button…');
     const createBtnSelectors = [
         'input[value="Create Player"]',
@@ -287,7 +302,7 @@ async function createPlayerOnMW(page, username, password) {
         }
     }
 
-    // Last resort: trigger via JS showDialog (original approach)
+    // Last resort: trigger via JS showDialog
     if (!btnClicked) {
         console.warn('   ⚠️  [MW Sync] Button not found — trying JS showDialog…');
         const triggered = await listFrame.evaluate(() => {
@@ -322,7 +337,6 @@ async function createPlayerOnMW(page, username, password) {
     }
 
     if (!createFrame) {
-        // Screenshot for debugging
         await page.screenshot({ path: path.join(OUTPUT, 'debug-no-dialog.png') });
         throw new Error('[MW Sync] Create Player dialog did not appear (screenshot saved to mw-output/)');
     }
@@ -334,7 +348,6 @@ async function createPlayerOnMW(page, username, password) {
             ...hints.map(h => `tr:has(td:has-text("${h}")) input`),
             ...hints.map(h => `input[placeholder*="${h}"]`),
             ...hints.map(h => `label:has-text("${h}") + input`),
-            // Generic: first visible text inputs in order
             'input[type="text"]:visible',
             'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="radio"]):not([type="checkbox"]):visible',
         ];
@@ -415,7 +428,6 @@ export async function syncCreatePlayer(username, password = 'Players@123') {
         if (!loggedIn) await login(page);
 
         // Verify the session is still valid by checking current URL
-        // (getBrowser may return a page that drifted back to login)
         const currentUrl = page.url().toLowerCase();
         if (currentUrl.includes('default.aspx') || !currentUrl.startsWith('http')) {
             console.log('   🔄 [MW Sync] Session expired — re-logging in…');
@@ -443,8 +455,8 @@ export async function warmMilkywaySession() {
     try {
         const page = await getBrowser();
         await login(page);
-        // Navigate to User Management so the session is confirmed to work end-to-end
-        await page.goto(`${MW_HOST}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
+        // ✅ FIX: was `${MW_HOST}/Store.aspx` — broken when MW_HOST already had /Store.aspx
+        await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
         console.log('🔥 [MW Sync] Session pre-warmed.');
     } catch (err) {
         console.warn(`⚠️  [MW Sync] Warm-up failed (will retry on first use): ${err.message}`);
@@ -454,15 +466,28 @@ export async function warmMilkywaySession() {
 }
 
 /*
- ─── IMPORTANT: Fix in index.js ──────────────────────────────────
- 
- Your current caller in index.js swallows ALL errors silently:
+ ─── REQUIRED: Update your Render environment variables ──────────
 
-    syncCreatePlayer(username.trim()).then(result => {
-      if (!result.ok) console.error(...);
-    }).catch(() => {});    // ← this hides crashes
+ Remove:   MW_HOST  (if set)
+ Add/set:  MW_BASE=https://milkywayapp.xyz:8781   ← no trailing slash, no /Store.aspx
+           MW_USER=your_milkyway_username
+           MW_PASS=your_milkyway_password
 
- Change it to at least log the catch:
+ ─── DEBUGGING TIP ───────────────────────────────────────────────
+
+ Set MW_HEADLESS=false in your .env and restart the server.
+ When you create a player, a visible browser window will open
+ and you can watch exactly where the automation gets stuck.
+
+ Debug screenshots are now saved automatically to mw-output/:
+   login-page-debug.png         ← what loads after goto /default.aspx
+   login-reload-attempt-N.png   ← what the page looks like after each reload
+   user-management-debug.png    ← what the AccountsList page looks like
+   debug-no-dialog.png          ← saved if Create Player dialog never appears
+
+ ─── CALLER in index.js ──────────────────────────────────────────
+
+ Your current caller swallows errors silently. Change to:
 
     syncCreatePlayer(username.trim()).then(result => {
       if (!result.ok) {
@@ -471,10 +496,4 @@ export async function warmMilkywaySession() {
     }).catch(err => {
       console.error(`❌ MilkyWay sync threw unexpectedly for "${username}":`, err);
     });
-
- ─── QUICK DEBUGGING TIP ─────────────────────────────────────────
-
- Set MW_HEADLESS=false in your .env and restart the server.
- When you create a player, a visible browser window will open
- and you can watch exactly where the automation gets stuck.
 */
