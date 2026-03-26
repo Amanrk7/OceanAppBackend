@@ -9,7 +9,7 @@ import Jimp from 'jimp';
 import Tesseract from 'tesseract.js';
 
 // ─── Config ───────────────────────────────────────────────────
-const MW_HOST  = process.env.MW_HOST || 'https://milkywayapp.xyz:8781';
+const MW_HOST  = process.env.MW_HOST || 'https://milkywayapp.xyz:8781/Store.aspx';
 const MW_USER  = process.env.MW_USER;
 const MW_PASS  = process.env.MW_PASS;
 const OUTPUT   = './mw-output';
