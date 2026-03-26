@@ -68,9 +68,15 @@ async function getBrowser() {
 async function saveDebugSnapshot(page, label) {
     try {
         await page.screenshot({ path: path.join(OUTPUT, `${label}.png`), fullPage: true });
-
-        // Wait a moment for any lazy-loaded frames/content
         await page.waitForTimeout(1000);
+
+        // ← ADD THIS: dump the actual HTML so you can see what's being served
+        const html = await page.content();
+        fs.writeFileSync(path.join(OUTPUT, `${label}.html`), html);
+        console.log(`   📄 [MW Sync] [${label}] HTML length: ${html.length} chars`);
+        console.log(`   📄 [MW Sync] [${label}] HTML preview: ${html.slice(0, 300).replace(/\n/g, ' ')}`);
+
+        const allFrames = page.frames();
 
         const allFrames = page.frames();
         console.log(`   🖼️  [MW Sync] [${label}] Total frames: ${allFrames.length}`);
