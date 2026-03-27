@@ -306,10 +306,10 @@ function shapePlayer(user) {
     socials: {
       email: user.email, phone: user.phone || null,
       facebook: user.facebook || null, telegram: user.telegram || null,
-      instagram: user.instagram || null, x: user.twitterX || null, snapchat: user.snapchat || null, 
-      chimeTag:    user.chimeTag     || null,   // ← ADD
-      cashappTag:  user.cashappTag   || null,   // ← ADD
-      paypalEmail: user.paypalEmail  || null,
+      instagram: user.instagram || null, x: user.twitterX || null, snapchat: user.snapchat || null,
+      chimeTag: user.chimeTag || null,   // ← ADD
+      cashappTag: user.cashappTag || null,   // ← ADD
+      paypalEmail: user.paypalEmail || null,
     },
     referredBy: user.referrer
       ? { id: user.referrer.id, name: user.referrer.name, username: user.referrer.username }
@@ -413,9 +413,11 @@ app.get('/api/players', authMiddleware, async (req, res) => {
           streakBonus: p.currentStreak >= 7 ? 10.00 : p.currentStreak >= 3 ? 5.00 : 0,
         },
         tierProgress: { currentTier: p.tier, playTimeMinutes: p.playTimeMinutes || 0 },
-        socials: { email: p.email, phone: p.phone, facebook: p.facebook, telegram: p.telegram, instagram: p.instagram, x: p.twitterX, snapchat: p.snapchat, chimeTag:    p.chimeTag    || null,   // ← ADD
-  cashappTag:  p.cashappTag  || null,   // ← ADD
-  paypalEmail: p.paypalEmail || null, },
+        socials: {
+          email: p.email, phone: p.phone, facebook: p.facebook, telegram: p.telegram, instagram: p.instagram, x: p.twitterX, snapchat: p.snapchat, chimeTag: p.chimeTag || null,   // ← ADD
+          cashappTag: p.cashappTag || null,   // ← ADD
+          paypalEmail: p.paypalEmail || null,
+        },
         bonusTracker: { availableBonus: p.bonuses.reduce((sum, b) => sum + parseFloat(b.amount), 0) },
         referralsList: p.referrals.map(r => r.id),
         lastLoginAt: fmtTX(p.lastLoginAt), createdAt: fmtTXDate(p.createdAt),
@@ -533,53 +535,53 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     const updated = await prisma.user.update({ where: { id }, data: updateData });
 
     // ── NEW: adjust totalBonusEarned via a bonus record ──────────────────
-if (totalBonusEarned !== undefined) {
-  const currentTotal = await prisma.bonus.aggregate({
-    where: { userId: id, claimed: true },
-    _sum: { amount: true },
-  });
-  const currentSum = parseFloat(currentTotal._sum.amount || 0);
-  const newTotal   = parseFloat(totalBonusEarned);
-  const diff       = parseFloat((newTotal - currentSum).toFixed(2));
-
-  if (Math.abs(diff) >= 0.01) {
-    if (diff > 0) {
-      // Create a positive adjustment bonus
-      await prisma.bonus.create({
-        data: {
-          userId: id,
-          type: 'CUSTOM',
-          amount: diff,
-          description: 'Manual adjustment by admin',
-          claimed: true,
-          claimedAt: new Date(),
-        },
-      });
-    } else {
-      // Reduce by deleting smallest bonuses until the diff is absorbed
-      const bonuses = await prisma.bonus.findMany({
+    if (totalBonusEarned !== undefined) {
+      const currentTotal = await prisma.bonus.aggregate({
         where: { userId: id, claimed: true },
-        orderBy: { amount: 'asc' },
+        _sum: { amount: true },
       });
-      let toRemove = Math.abs(diff);
-      for (const b of bonuses) {
-        if (toRemove <= 0) break;
-        const bAmt = parseFloat(b.amount);
-        if (bAmt <= toRemove) {
-          await prisma.bonus.delete({ where: { id: b.id } });
-          toRemove = parseFloat((toRemove - bAmt).toFixed(2));
-        } else {
-          await prisma.bonus.update({
-            where: { id: b.id },
-            data: { amount: parseFloat((bAmt - toRemove).toFixed(2)) },
+      const currentSum = parseFloat(currentTotal._sum.amount || 0);
+      const newTotal = parseFloat(totalBonusEarned);
+      const diff = parseFloat((newTotal - currentSum).toFixed(2));
+
+      if (Math.abs(diff) >= 0.01) {
+        if (diff > 0) {
+          // Create a positive adjustment bonus
+          await prisma.bonus.create({
+            data: {
+              userId: id,
+              type: 'CUSTOM',
+              amount: diff,
+              description: 'Manual adjustment by admin',
+              claimed: true,
+              claimedAt: new Date(),
+            },
           });
-          toRemove = 0;
+        } else {
+          // Reduce by deleting smallest bonuses until the diff is absorbed
+          const bonuses = await prisma.bonus.findMany({
+            where: { userId: id, claimed: true },
+            orderBy: { amount: 'asc' },
+          });
+          let toRemove = Math.abs(diff);
+          for (const b of bonuses) {
+            if (toRemove <= 0) break;
+            const bAmt = parseFloat(b.amount);
+            if (bAmt <= toRemove) {
+              await prisma.bonus.delete({ where: { id: b.id } });
+              toRemove = parseFloat((toRemove - bAmt).toFixed(2));
+            } else {
+              await prisma.bonus.update({
+                where: { id: b.id },
+                data: { amount: parseFloat((bAmt - toRemove).toFixed(2)) },
+              });
+              toRemove = 0;
+            }
+          }
         }
       }
     }
-  }
-}
-// ── end adjustment ───────────────────────────────────────────────────
+    // ── end adjustment ───────────────────────────────────────────────────
 
     // ── Auto-sync MISSING_INFO task ────────────────────────────────────────────
     try {
@@ -695,8 +697,8 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
         facebook: facebook || null, telegram: telegram || null,
         instagram: instagram || null, twitterX: x || null, snapchat: snapchat || null,
         source: sourceList.length ? sourceList.join(', ') : null,
-        chimeTag:    chimeTag    || null,   // ← ADD
-        cashappTag:  cashappTag  || null,   // ← ADD
+        chimeTag: chimeTag || null,   // ← ADD
+        cashappTag: cashappTag || null,   // ← ADD
         paypalEmail: paypalEmail || null,
       },
     });
@@ -803,12 +805,12 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
     }
 
     // ── Sync to MilkyWay (fire-and-forget, non-blocking) ──
-syncCreatePlayer(username.trim()).then(result => {
-  if (!result.ok) {
-    console.error(`⚠️  MilkyWay sync failed for "${username}": ${result.error}`);
-  }
-}).catch(() => {});
-    
+    syncCreatePlayer(username.trim()).then(result => {
+      if (!result.ok) {
+        console.error(`⚠️  MilkyWay sync failed for "${username}": ${result.error}`);
+      }
+    }).catch(() => { });
+
     res.status(201).json({
       data: { ...fullPlayer, password: undefined },
       message: 'Player created successfully',
@@ -975,8 +977,8 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     if (source !== undefined) updateData.source = source || null;
     if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
     if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
-    if (chimeTag    !== undefined) updateData.chimeTag    = chimeTag    || null;
-    if (cashappTag  !== undefined) updateData.cashappTag  = cashappTag  || null;
+    if (chimeTag !== undefined) updateData.chimeTag = chimeTag || null;
+    if (cashappTag !== undefined) updateData.cashappTag = cashappTag || null;
     if (paypalEmail !== undefined) updateData.paypalEmail = paypalEmail || null;
 
     const updated = await prisma.user.update({ where: { id }, data: updateData });
@@ -1950,6 +1952,15 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
       }
 
       // For direct BONUS undo (via /api/bonuses) — use gameId field directly
+      // ── FIX: Restore the BASE deposit amount to game stock ────────────────
+      // Bonus amounts are collected above from the nearby bonus-txn scan.
+      // The main deposit's own deduction (depositAmt pts) was never included.
+      if (transaction.type === 'DEPOSIT' && transaction.gameId) {
+        const depositAmt = parseFloat(transaction.amount);
+        gameRestoreMap[transaction.gameId] =
+          (gameRestoreMap[transaction.gameId] || 0) + depositAmt;
+      }
+
       if (transaction.type === 'BONUS' && transaction.gameId && !gameRestoreMap[transaction.gameId]) {
         const game = await prisma.game.findUnique({ where: { id: transaction.gameId } });
         if (game) {
@@ -1998,6 +2009,24 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
         }));
       }
     }
+
+    // ── FIX: For COMPLETED cashouts, reverse the game stock increase ──────
+    // When a cashout is approved, game stock was incremented by the paid
+    // amount. Undoing must deduct it back. PENDING cashouts never touched
+    // game stock so they need no reversal.
+    if (transaction.type === 'WITHDRAWAL' && transaction.status === 'COMPLETED' && transaction.gameId) {
+      const cashoutAmt = parseFloat(transaction.amount);
+      const cashoutGame = await prisma.game.findUnique({ where: { id: transaction.gameId } });
+      if (cashoutGame) {
+        const newStock = parseFloat(cashoutGame.pointStock) - cashoutAmt;
+        const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+        ops.push(prisma.game.update({
+          where: { id: cashoutGame.id },
+          data: { pointStock: newStock, status: newStatus },
+        }));
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     await prisma.$transaction(ops);
 
@@ -2557,7 +2586,7 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
         shiftImprovements = parsed.improvements ?? null;
         netProfit = shiftEndSnapshot?.netProfit ?? null;
         isBalanced = shiftEndSnapshot?.isBalanced ?? null;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const shiftStats = {
