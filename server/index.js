@@ -1905,6 +1905,23 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
       });
 
       // Process player's bonus txns — game restore + cancel
+      // for (const bonusTx of bonusTxns) {
+      //   const idMatch = bonusTx.notes?.match(/^gameId:([^|]+)\|/);
+      //   if (idMatch) {
+      //     const gId = idMatch[1].trim();
+      //     gameRestoreMap[gId] = (gameRestoreMap[gId] || 0) + parseFloat(bonusTx.amount);
+      //   } else {
+      //     const nameMatch = bonusTx.notes?.match(/From game: (.+)$/);
+      //     if (nameMatch) {
+      //       const g = await prisma.game.findFirst({ where: { name: nameMatch[1].trim() } });
+      //       if (g) gameRestoreMap[g.id] = (gameRestoreMap[g.id] || 0) + parseFloat(bonusTx.amount);
+      //     }
+      //   }
+      //   ops.push(prisma.transaction.update({ where: { id: bonusTx.id }, data: { status: 'CANCELLED' } }));
+      // }
+
+
+      // Process player's bonus txns — game restore + cancel
       for (const bonusTx of bonusTxns) {
         const idMatch = bonusTx.notes?.match(/^gameId:([^|]+)\|/);
         if (idMatch) {
@@ -1918,6 +1935,23 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
           }
         }
         ops.push(prisma.transaction.update({ where: { id: bonusTx.id }, data: { status: 'CANCELLED' } }));
+
+        // ── FIX: Also delete the bonus record so player dashboard totals reset ──
+        const bonusRecords = await prisma.bonus.findMany({
+          where: {
+            userId: bonusTx.userId,
+            amount: parseFloat(bonusTx.amount),
+            claimed: true,
+            claimedAt: {
+              gte: new Date(bonusTx.createdAt.getTime() - 15000),
+              lte: new Date(bonusTx.createdAt.getTime() + 15000),
+            },
+          },
+        });
+        for (const br of bonusRecords) {
+          ops.push(prisma.bonus.delete({ where: { id: br.id } }));
+        }
+        // ────────────────────────────────────────────────────────────────────────
       }
 
       // Process referrer's bonus txns — reverse balance + cancel + game restore
@@ -1934,6 +1968,23 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
           data: { status: 'CANCELLED' },
         }));
 
+        // ── FIX: Delete referrer's bonus record too ──────────────────────────
+        const refBonusRecords = await prisma.bonus.findMany({
+          where: {
+            userId: refTx.userId,
+            amount: refAmt,
+            claimed: true,
+            claimedAt: {
+              gte: new Date(refTx.createdAt.getTime() - 15000),
+              lte: new Date(refTx.createdAt.getTime() + 15000),
+            },
+          },
+        });
+        for (const br of refBonusRecords) {
+          ops.push(prisma.bonus.delete({ where: { id: br.id } }));
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
         const refGameIdMatch = refTx.notes?.match(/^gameId:([^|]+)\|/);
         if (refGameIdMatch) {
           const gId = refGameIdMatch[1].trim();
@@ -1941,13 +1992,34 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
         }
       }
 
+      // Process referrer's bonus txns — reverse balance + cancel + game restore
+      // for (const refTx of referrerBonusTxns) {
+      //   const refAmt = parseFloat(refTx.amount);
+
+      //   ops.push(prisma.user.update({
+      //     where: { id: refTx.userId },
+      //     data: { balance: { decrement: refAmt } },
+      //   }));
+
+      //   ops.push(prisma.transaction.update({
+      //     where: { id: refTx.id },
+      //     data: { status: 'CANCELLED' },
+      //   }));
+
+      //   const refGameIdMatch = refTx.notes?.match(/^gameId:([^|]+)\|/);
+      //   if (refGameIdMatch) {
+      //     const gId = refGameIdMatch[1].trim();
+      //     gameRestoreMap[gId] = (gameRestoreMap[gId] || 0) + refAmt;
+      //   }
+      // }
+
 
       if (transaction.type === 'DEPOSIT' && transaction.gameId) {
         const depositAmt = parseFloat(transaction.amount);
         gameRestoreMap[transaction.gameId] =
           (gameRestoreMap[transaction.gameId] || 0) + depositAmt;
       }
-      
+
       // Restore game stock for all collected deductions
       for (const [gameId, restoreAmount] of Object.entries(gameRestoreMap)) {
         const game = await prisma.game.findUnique({ where: { id: gameId } });
@@ -1962,7 +2034,7 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
       // ── FIX: Restore the BASE deposit amount to game stock ────────────────
       // Bonus amounts are collected above from the nearby bonus-txn scan.
       // The main deposit's own deduction (depositAmt pts) was never included.
-      
+
 
       if (transaction.type === 'BONUS' && transaction.gameId && !gameRestoreMap[transaction.gameId]) {
         const game = await prisma.game.findUnique({ where: { id: transaction.gameId } });
