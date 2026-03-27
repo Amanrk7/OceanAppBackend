@@ -20,6 +20,11 @@ import {
   notify,
 } from './discord-notifications.js';
 import { syncCreatePlayer, warmMilkywaySession } from '../milkyway-test.js';
+import {
+  schedulePlayerStatusCheck,
+  scheduleTaskDeadlineCheck,
+  scheduleBonusEligibilityCheck,
+} from './scheduled-notifications.js';
 
 
 dotenv.config();
@@ -3819,12 +3824,26 @@ app.use((err, req, res, next) => {
 //   // Periodic scan every 60 minutes — queue-based, never floods Discord
 //   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
 // });
+// app.listen(PORT, () => {
+//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
+//   warmMilkywaySession(); // ← add this
+//   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
+//   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
+// });
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
-  warmMilkywaySession(); // ← add this
+  warmMilkywaySession();
+ 
+  // Existing startup checks (keep these)
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
+ 
+  // ── NEW: Scheduled notification jobs ──────────────────────
+  schedulePlayerStatusCheck(prisma);    // player status PDF → #alerts
+  scheduleTaskDeadlineCheck(prisma);    // task deadline alerts → #shifts
+  scheduleBonusEligibilityCheck(prisma); // bonus reminders → #alerts
 });
+
 process.on('SIGINT', async () => {
   console.log('\n👋 Shutting down gracefully...');
   await prisma.$disconnect();
