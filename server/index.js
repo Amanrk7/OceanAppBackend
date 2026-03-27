@@ -306,7 +306,10 @@ function shapePlayer(user) {
     socials: {
       email: user.email, phone: user.phone || null,
       facebook: user.facebook || null, telegram: user.telegram || null,
-      instagram: user.instagram || null, x: user.twitterX || null, snapchat: user.snapchat || null,
+      instagram: user.instagram || null, x: user.twitterX || null, snapchat: user.snapchat || null, 
+      chimeTag:    user.chimeTag     || null,   // ← ADD
+      cashappTag:  user.cashappTag   || null,   // ← ADD
+      paypalEmail: user.paypalEmail  || null,
     },
     referredBy: user.referrer
       ? { id: user.referrer.id, name: user.referrer.name, username: user.referrer.username }
@@ -358,7 +361,7 @@ app.get('/api/players', authMiddleware, async (req, res) => {
         source: true, facebook: true, telegram: true, instagram: true,
         twitterX: true, snapchat: true, createdAt: true, lastLoginAt: true,
         bonuses: { where: { claimed: false }, select: { amount: true } },
-        referrals: { select: { id: true } },
+        referrals: { select: { id: true } }, chimeTag: true, cashappTag: true, paypalEmail: true,
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -410,7 +413,9 @@ app.get('/api/players', authMiddleware, async (req, res) => {
           streakBonus: p.currentStreak >= 7 ? 10.00 : p.currentStreak >= 3 ? 5.00 : 0,
         },
         tierProgress: { currentTier: p.tier, playTimeMinutes: p.playTimeMinutes || 0 },
-        socials: { email: p.email, phone: p.phone, facebook: p.facebook, telegram: p.telegram, instagram: p.instagram, x: p.twitterX, snapchat: p.snapchat },
+        socials: { email: p.email, phone: p.phone, facebook: p.facebook, telegram: p.telegram, instagram: p.instagram, x: p.twitterX, snapchat: p.snapchat, chimeTag:    p.chimeTag    || null,   // ← ADD
+  cashappTag:  p.cashappTag  || null,   // ← ADD
+  paypalEmail: p.paypalEmail || null, },
         bonusTracker: { availableBonus: p.bonuses.reduce((sum, b) => sum + parseFloat(b.amount), 0) },
         referralsList: p.referrals.map(r => r.id),
         lastLoginAt: fmtTX(p.lastLoginAt), createdAt: fmtTXDate(p.createdAt),
@@ -645,7 +650,7 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
   try {
     const {
       username, password, email, name, phone, tier,
-      facebook, telegram, instagram, x, snapchat,
+      facebook, telegram, instagram, x, snapchat, chimeTag, cashappTag, paypalEmail,
       referrals, friends, sources, initialDeposit, gameId,
     } = req.body;
 
@@ -690,6 +695,9 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
         facebook: facebook || null, telegram: telegram || null,
         instagram: instagram || null, twitterX: x || null, snapchat: snapchat || null,
         source: sourceList.length ? sourceList.join(', ') : null,
+        chimeTag:    chimeTag    || null,   // ← ADD
+        cashappTag:  cashappTag  || null,   // ← ADD
+        paypalEmail: paypalEmail || null,
       },
     });
 
@@ -945,7 +953,7 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     const {
       name, email, phone, tier, status, balance, cashoutLimit,
       facebook, telegram, instagram, x, snapchat, source,
-      currentStreak, lastPlayedDate,
+      currentStreak, lastPlayedDate, chimeTag, cashappTag, paypalEmail,
     } = req.body;
 
     const updateData = {};
@@ -967,6 +975,9 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     if (source !== undefined) updateData.source = source || null;
     if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
     if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
+    if (chimeTag    !== undefined) updateData.chimeTag    = chimeTag    || null;
+    if (cashappTag  !== undefined) updateData.cashappTag  = cashappTag  || null;
+    if (paypalEmail !== undefined) updateData.paypalEmail = paypalEmail || null;
 
     const updated = await prisma.user.update({ where: { id }, data: updateData });
     res.json({ data: { ...updated, password: undefined }, message: 'Player updated successfully' });
