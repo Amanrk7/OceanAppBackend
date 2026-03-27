@@ -1941,6 +1941,13 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
         }
       }
 
+
+      if (transaction.type === 'DEPOSIT' && transaction.gameId) {
+        const depositAmt = parseFloat(transaction.amount);
+        gameRestoreMap[transaction.gameId] =
+          (gameRestoreMap[transaction.gameId] || 0) + depositAmt;
+      }
+      
       // Restore game stock for all collected deductions
       for (const [gameId, restoreAmount] of Object.entries(gameRestoreMap)) {
         const game = await prisma.game.findUnique({ where: { id: gameId } });
@@ -1955,11 +1962,7 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
       // ── FIX: Restore the BASE deposit amount to game stock ────────────────
       // Bonus amounts are collected above from the nearby bonus-txn scan.
       // The main deposit's own deduction (depositAmt pts) was never included.
-      if (transaction.type === 'DEPOSIT' && transaction.gameId) {
-        const depositAmt = parseFloat(transaction.amount);
-        gameRestoreMap[transaction.gameId] =
-          (gameRestoreMap[transaction.gameId] || 0) + depositAmt;
-      }
+      
 
       if (transaction.type === 'BONUS' && transaction.gameId && !gameRestoreMap[transaction.gameId]) {
         const game = await prisma.game.findUnique({ where: { id: transaction.gameId } });
