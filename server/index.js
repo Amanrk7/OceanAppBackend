@@ -234,6 +234,7 @@ function shapePlayer(user) {
 
   const transactionHistory = (user.transactions || [])
     .filter(t => new Date(t.createdAt) >= thirtyDaysAgo)
+    .filter(t => t.status !== 'CANCELLED')
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .map(t => {
       let type = 'other';
@@ -332,6 +333,16 @@ function shapePlayer(user) {
       pendingCount: unclaimed.length,
     },
     referralsList, friendsList, transactionHistory,
+    // Add this to the returned object in shapePlayer, alongside transactionHistory
+grantedBonuses: (user.transactions || [])
+    .filter(t => t.type === 'BONUS' && t.status === 'COMPLETED' && new Date(t.createdAt) >= thirtyDaysAgo)
+    .map(t => ({
+        id: t.id,
+        amount: parseFloat(t.amount),
+        description: t.description || '',
+        gameName: t.game?.name || null,
+        createdAt: fmtTXDate(t.createdAt),
+    })),
   };
 }
 
