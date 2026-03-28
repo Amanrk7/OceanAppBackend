@@ -3343,7 +3343,7 @@ app.get('/api/tasks/events', (req, res) => {
 
   let userId;
   try {
-    const token = req.cookies?.token || req.headers?.authorization?.replace('Bearer ', '');
+    const token = req.cookies?.token || req.headers?.authorization?.replace('Bearer ', '') || req.query?.token;
     if (!token) throw new Error('No token');
     const decoded = jwt.verify(token, JWT_SECRET);
     // userId = decoded.id || decoded.userId;
