@@ -25,6 +25,14 @@ import {
   scheduleTaskDeadlineCheck,
   scheduleBonusEligibilityCheck,
 } from './scheduled-notifications.js';
+import {
+  generatePlayerFollowupTasks,
+  generateBonusFollowupTasks,
+  schedulePlayerFollowupGeneration,
+  scheduleBonusFollowupGeneration,
+  setBroadcastFn,
+} from './auto-task-generator.js';
+
 
 
 dotenv.config();
@@ -3285,6 +3293,8 @@ function broadcastTaskUpdate(eventType, data) {
     }
   }
 }
+setBroadcastFn(broadcastTaskUpdate);
+
 
 // ── Shared helper: increment task progress ───────────────────────
 async function incrementTaskProgress(taskId, userId, value, action, metadata = {}) {
@@ -3734,6 +3744,190 @@ app.delete('/api/tasks/:id', authMiddleware, adminMiddleware, async (req, res) =
   }
 });
 
+// ── POST /api/tasks/generate-player-followup ─────────────────────
+// Admin manually triggers generation of player followup tasks.
+app.post('/api/tasks/generate-player-followup', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const result = await generatePlayerFollowupTasks(prisma, `admin:${req.userId}`);
+    res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/tasks/generate-bonus-followup ──────────────────────
+app.post('/api/tasks/generate-bonus-followup', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const result = await generateBonusFollowupTasks(prisma, `admin:${req.userId}`);
+    res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PATCH /api/tasks/:id/assign ───────────────────────────────────
+// Admin assigns (or reassigns) any task to a specific member.
+app.patch('/api/tasks/:id/assign', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
+
+    const { assignedToId } = req.body; // null = open to all; number = specific member
+
+    const task = await prisma.task.findUnique({ where: { id } });
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    const updated = await prisma.task.update({
+      where: { id },
+      data: {
+        assignedToId: assignedToId ? parseInt(assignedToId) : null,
+        assignToAll: !assignedToId,
+        status: task.status === 'PENDING' ? 'IN_PROGRESS' : task.status,
+      },
+      include: {
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+        progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 10 },
+      },
+    });
+
+    broadcastTaskUpdate('task_updated', updated);
+    res.json({ data: updated, message: assignedToId ? `Task assigned to ${updated.assignedTo?.name}` : 'Task opened to all members' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/tasks/:id/resolve-followup ─────────────────────────
+// Mark a PLAYER_FOLLOWUP or BONUS_FOLLOWUP task as resolved with an outcome note.
+app.post('/api/tasks/:id/resolve-followup', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
+
+    const { outcome, completedItems = [] } = req.body;
+
+    const task = await prisma.task.findUnique({ where: { id } });
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!['PLAYER_FOLLOWUP', 'BONUS_FOLLOWUP'].includes(task.taskType)) {
+      return res.status(400).json({ error: 'Not a followup task' });
+    }
+    if (task.assignedToId && task.assignedToId !== req.userId) {
+      return res.status(403).json({ error: 'Task is assigned to another member' });
+    }
+
+    // Mark specified checklist items as done
+    const checklistItems = (task.checklistItems || []).map(item => {
+      if (completedItems.includes(item.fieldKey || item.id)) {
+        return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
+      }
+      return item;
+    });
+
+    const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
+    const anyDone = checklistItems.some(i => i.done);
+
+    // Append outcome to notes
+    let noteMeta = {};
+    try { noteMeta = JSON.parse(task.notes || '{}'); } catch { }
+    noteMeta.outcome = outcome || null;
+    noteMeta.resolvedAt = new Date().toISOString();
+    noteMeta.resolvedBy = req.userId;
+
+    const updated = await prisma.task.update({
+      where: { id },
+      data: {
+        checklistItems,
+        notes: JSON.stringify(noteMeta),
+        status: allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
+        completedAt: allRequired ? new Date() : null,
+        assignedToId: task.assignedToId || req.userId,
+        assignToAll: false,
+      },
+      include: {
+        createdBy: { select: { id: true, name: true, role: true } },
+        assignedTo: { select: { id: true, name: true, role: true } },
+        subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+        progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
+      },
+    });
+
+    broadcastTaskUpdate('task_updated', updated);
+
+    // Discord notification when resolved
+    if (allRequired && (BOT_TOKEN || PROXY_URL)) {
+      const isBonusTask = task.taskType === 'BONUS_FOLLOWUP';
+      await discordSendJSON({
+        embeds: [{
+          title: isBonusTask ? '🎁 Bonus Followup Resolved' : '✅ Player Followup Resolved',
+          color: 0x22c55e,
+          description: `**${noteMeta.playerName || 'Player'}** (@${noteMeta.username || '—'}) — task completed.${outcome ? `\n\n**Outcome:** ${outcome}` : ''}`,
+          fields: [
+            { name: 'Task', value: task.title, inline: true },
+            { name: 'Resolved by', value: `Member #${req.userId}`, inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        }],
+      }, 'shifts');
+    }
+
+    res.json({
+      data: updated,
+      message: allRequired ? 'Task resolved successfully!' : `Updated ${checklistItems.filter(i => i.done).length} step(s).`,
+      allDone: allRequired,
+    });
+  } catch (err) {
+    console.error('resolve-followup error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/tasks/followup-summary ──────────────────────────────
+// Admin: summary of all open followup tasks grouped by type and assignee.
+app.get('/api/tasks/followup-summary', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const [playerTasks, bonusTasks] = await Promise.all([
+      prisma.task.findMany({
+        where: { taskType: 'PLAYER_FOLLOWUP', status: { in: ['PENDING', 'IN_PROGRESS'] } },
+        include: { assignedTo: { select: { id: true, name: true, role: true } } },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+      }),
+      prisma.task.findMany({
+        where: { taskType: 'BONUS_FOLLOWUP', status: { in: ['PENDING', 'IN_PROGRESS'] } },
+        include: { assignedTo: { select: { id: true, name: true, role: true } } },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+      }),
+    ]);
+
+    const parseMeta = t => { try { return JSON.parse(t.notes || '{}'); } catch { return {}; } };
+
+    res.json({
+      playerFollowup: {
+        total: playerTasks.length,
+        unclaimed: playerTasks.filter(t => !t.assignedToId).length,
+        claimed: playerTasks.filter(t => t.assignedToId).length,
+        hc: playerTasks.filter(t => parseMeta(t).category === 'HIGHLY_CRITICAL').length,
+        inactive: playerTasks.filter(t => parseMeta(t).category === 'INACTIVE').length,
+        tasks: playerTasks,
+      },
+      bonusFollowup: {
+        total: bonusTasks.length,
+        unclaimed: bonusTasks.filter(t => !t.assignedToId).length,
+        claimed: bonusTasks.filter(t => t.assignedToId).length,
+        streak: bonusTasks.filter(t => parseMeta(t).bonusType === 'streak').length,
+        referral: bonusTasks.filter(t => parseMeta(t).bonusType === 'referral').length,
+        match: bonusTasks.filter(t => parseMeta(t).bonusType === 'match').length,
+        tasks: bonusTasks,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
 // ── GET /api/team-members ────────────────────────────────────────
 app.get('/api/team-members', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -3805,6 +3999,8 @@ app.listen(PORT, () => {
   schedulePlayerStatusCheck(prisma);    // player status PDF → #alerts
   scheduleTaskDeadlineCheck(prisma);    // task deadline alerts → #shifts
   scheduleBonusEligibilityCheck(prisma); // bonus reminders → #alerts
+  schedulePlayerFollowupGeneration(prisma);
+  scheduleBonusFollowupGeneration(prisma);
 });
 
 process.on('SIGINT', async () => {
