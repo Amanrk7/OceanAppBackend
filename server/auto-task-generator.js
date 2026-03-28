@@ -126,7 +126,7 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
           taskType    : 'PLAYER_FOLLOWUP',
           priority,
           status      : 'PENDING',
-          createdById : 1, // system — use your system/admin user id
+          createdById : 2, // system — use your system/admin user id
           assignedToId: null,
           assignToAll : true,
           checklistItems,
