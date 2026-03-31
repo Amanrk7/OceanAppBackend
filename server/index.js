@@ -1743,13 +1743,26 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       let bonusType = null;
       if (t.type === 'DEPOSIT') type = 'Deposit';
       else if (t.type === 'WITHDRAWAL') type = 'Cashout';
+      // else if (t.type === 'BONUS') {
+      //   if (t.description?.includes('Match')) { type = 'Match Bonus'; bonusType = 'match'; }
+      //   else if (t.description?.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
+      //   else if (t.description?.includes('Streak')) { type = 'Streak Bonus'; bonusType = 'streak'; }
+      //   else if (t.description?.includes('Referral')) { type = 'Referral Bonus'; bonusType = 'referral'; }
+      //   else { type = 'Bonus'; }
+      // }
       else if (t.type === 'BONUS') {
-        if (t.description?.includes('Match')) { type = 'Match Bonus'; bonusType = 'match'; }
-        else if (t.description?.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
-        else if (t.description?.includes('Streak')) { type = 'Streak Bonus'; bonusType = 'streak'; }
-        else if (t.description?.includes('Referral')) { type = 'Referral Bonus'; bonusType = 'referral'; }
-        else { type = 'Bonus'; }
-      }
+    const desc = t.description || '';
+    if (desc.includes('Match'))    { type = 'Match Bonus';    bonusType = 'match'; }
+    else if (desc.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
+    else if (desc.includes('Streak'))  { type = 'Streak Bonus';  bonusType = 'streak'; }
+    else if (desc.includes('Referral')){ type = 'Referral Bonus';bonusType = 'referral'; }
+    else {
+        // Extract custom label: everything before " from GameName"
+        const fromIdx = desc.indexOf(' from ');
+        type = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
+        bonusType = 'custom';
+    }
+}
 
       let walletMethod = t.paymentMethod || 'Unknown';
       let walletName = 'Account';
@@ -2948,13 +2961,25 @@ async function enrichShift(shift) {
     let bonusType = null;
     if (t.type === 'DEPOSIT') displayType = 'Deposit';
     else if (t.type === 'WITHDRAWAL') displayType = 'Cashout';
+    // else if (t.type === 'BONUS') {
+    //   if (t.description?.includes('Match')) { displayType = 'Match Bonus'; bonusType = 'match'; }
+    //   else if (t.description?.includes('Special')) { displayType = 'Special Bonus'; bonusType = 'special'; }
+    //   else if (t.description?.includes('Streak')) { displayType = 'Streak Bonus'; bonusType = 'streak'; }
+    //   else if (t.description?.includes('Referral')) { displayType = 'Referral Bonus'; bonusType = 'referral'; }
+    //   else { displayType = 'Bonus'; bonusType = 'custom'; }
+    // }
     else if (t.type === 'BONUS') {
-      if (t.description?.includes('Match')) { displayType = 'Match Bonus'; bonusType = 'match'; }
-      else if (t.description?.includes('Special')) { displayType = 'Special Bonus'; bonusType = 'special'; }
-      else if (t.description?.includes('Streak')) { displayType = 'Streak Bonus'; bonusType = 'streak'; }
-      else if (t.description?.includes('Referral')) { displayType = 'Referral Bonus'; bonusType = 'referral'; }
-      else { displayType = 'Bonus'; bonusType = 'custom'; }
+    const desc = t.description || '';
+    if (desc.includes('Match'))    { displayType = 'Match Bonus';    bonusType = 'match'; }
+    else if (desc.includes('Special')) { displayType = 'Special Bonus'; bonusType = 'special'; }
+    else if (desc.includes('Streak'))  { displayType = 'Streak Bonus';  bonusType = 'streak'; }
+    else if (desc.includes('Referral')){ displayType = 'Referral Bonus';bonusType = 'referral'; }
+    else {
+        const fromIdx = desc.indexOf(' from ');
+        displayType = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
+        bonusType = 'custom';
     }
+}
 
     // Wallet: parse from description "via METHOD - NAME"
     let walletMethod = null;
