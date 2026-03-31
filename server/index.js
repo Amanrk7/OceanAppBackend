@@ -247,7 +247,7 @@ function shapePlayer(user) {
 
   const transactionHistory = (user.transactions || [])
     .filter(t => new Date(t.createdAt) >= thirtyDaysAgo)
-    .filter(t => t.status !== 'CANCELLED')
+    // .filter(t => t.status !== 'CANCELLED')
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .map(t => {
       let type = 'other';
@@ -255,14 +255,25 @@ function shapePlayer(user) {
       if (t.type === 'DEPOSIT') type = 'deposit';
       else if (t.type === 'WITHDRAWAL') type = 'cashout';
       else if (t.type === 'REFERRAL') type = 'Referral Bonus';
+      // else if (t.type === 'BONUS') {
+      //   if (desc.includes('Streak Bonus')) type = 'Streak Bonus';
+      //   else if (desc.includes('Referral Bonus')) type = 'Referral Bonus';
+      //   else if (desc.includes('Match Bonus')) type = 'Match Bonus';
+      //   else if (desc.includes('Special Bonus')) type = 'Special Bonus';
+      //   else if (desc.startsWith('Bonus from')) type = 'Bonus';
+      //   else type = 'bonus_credited';
+      // }
       else if (t.type === 'BONUS') {
-        if (desc.includes('Streak Bonus')) type = 'Streak Bonus';
-        else if (desc.includes('Referral Bonus')) type = 'Referral Bonus';
-        else if (desc.includes('Match Bonus')) type = 'Match Bonus';
-        else if (desc.includes('Special Bonus')) type = 'Special Bonus';
-        else if (desc.startsWith('Bonus from')) type = 'Bonus';
-        else type = 'bonus_credited';
-      }
+    if (desc.includes('Streak Bonus')) type = 'Streak Bonus';
+    else if (desc.includes('Referral Bonus')) type = 'Referral Bonus';
+    else if (desc.includes('Match Bonus')) type = 'Match Bonus';
+    else if (desc.includes('Special Bonus')) type = 'Special Bonus';
+    else {
+        // Extract custom label: everything before " from GameName"
+        const fromIdx = desc.indexOf(' from ');
+        type = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
+    }
+}
 
       const walletMatch = desc.match(/via ([^ ]+) - (.+)$/);
       const walletMethod = walletMatch?.[1] || null;
@@ -1236,6 +1247,7 @@ app.get('/api/bonuses', authMiddleware, async (req, res) => {
         id: t.id, playerId: t.userId, playerName: t.user?.name || '—', bonusType,
         description: desc, gameName, walletMethod: null,
         amount: parseFloat(t.amount),
+        status: t.status,
         balanceBefore: balBeforeMatch ? parseFloat(balBeforeMatch[1]) : null,
         balanceAfter: balAfterMatch ? parseFloat(balAfterMatch[1]) : null,
         createdAt: t.createdAt,
