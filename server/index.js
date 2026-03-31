@@ -264,16 +264,16 @@ function shapePlayer(user) {
       //   else type = 'bonus_credited';
       // }
       else if (t.type === 'BONUS') {
-    if (desc.includes('Streak Bonus')) type = 'Streak Bonus';
-    else if (desc.includes('Referral Bonus')) type = 'Referral Bonus';
-    else if (desc.includes('Match Bonus')) type = 'Match Bonus';
-    else if (desc.includes('Special Bonus')) type = 'Special Bonus';
-    else {
-        // Extract custom label: everything before " from GameName"
-        const fromIdx = desc.indexOf(' from ');
-        type = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
-    }
-}
+        if (desc.includes('Streak Bonus')) type = 'Streak Bonus';
+        else if (desc.includes('Referral Bonus')) type = 'Referral Bonus';
+        else if (desc.includes('Match Bonus')) type = 'Match Bonus';
+        else if (desc.includes('Special Bonus')) type = 'Special Bonus';
+        else {
+          // Extract custom label: everything before " from GameName"
+          const fromIdx = desc.indexOf(' from ');
+          type = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
+        }
+      }
 
       const walletMatch = desc.match(/via ([^ ]+) - (.+)$/);
       const walletMethod = walletMatch?.[1] || null;
@@ -848,7 +848,7 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     const {
       name, email, phone, tier, status, balance, cashoutLimit,
       facebook, telegram, instagram, x, snapchat, source,
-      currentStreak, lastPlayedDate, totalBonusEarned, chimeTag, cashappTag, paypalEmail,
+      currentStreak, lastPlayedDate, totalBonusEarned, chimeTag, cashappTag, paypalEmail, referredById, friendIds
     } = req.body;
 
     const updateData = {};
@@ -873,8 +873,49 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     if (chimeTag !== undefined) updateData.chimeTag = chimeTag || null;
     if (cashappTag !== undefined) updateData.cashappTag = cashappTag || null;
     if (paypalEmail !== undefined) updateData.paypalEmail = paypalEmail || null;
+    if (referredById !== undefined) {
+      updateData.referredBy = referredById ? parseInt(referredById) : null;
+    }
 
     const updated = await prisma.user.update({ where: { id }, data: updateData });
+
+    // ── NEW: replace friends list ─────────────────────────────────────────
+    if (friendIds !== undefined && Array.isArray(friendIds)) {
+      // Fetch current friends to find who to disconnect
+      const currentFriends = await prisma.user.findUnique({
+        where: { id },
+        select: { friends: { select: { id: true } }, friendOf: { select: { id: true } } },
+      });
+      const currentIds = [
+        ...(currentFriends?.friends || []).map(f => f.id),
+        ...(currentFriends?.friendOf || []).map(f => f.id),
+      ];
+
+      const toConnect = friendIds.filter(fid => !currentIds.includes(fid));
+      const toDisconnect = currentIds.filter(fid => !friendIds.includes(fid));
+
+      if (toDisconnect.length) {
+        await prisma.user.update({
+          where: { id },
+          data: { friends: { disconnect: toDisconnect.map(fid => ({ id: fid })) } },
+        });
+        // Also remove the reverse side
+        await Promise.all(toDisconnect.map(fid =>
+          prisma.user.update({ where: { id: fid }, data: { friends: { disconnect: [{ id }] } } })
+        ));
+      }
+
+      if (toConnect.length) {
+        await prisma.user.update({
+          where: { id },
+          data: { friends: { connect: toConnect.map(fid => ({ id: fid })) } },
+        });
+        await Promise.all(toConnect.map(fid =>
+          prisma.user.update({ where: { id: fid }, data: { friends: { connect: [{ id }] } } })
+        ));
+      }
+    }
+    // ── end friends update ────────────────────────────────────────────────
 
     // ── NEW: adjust totalBonusEarned via a bonus record ──────────────────
     if (totalBonusEarned !== undefined) {
@@ -1751,18 +1792,18 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       //   else { type = 'Bonus'; }
       // }
       else if (t.type === 'BONUS') {
-    const desc = t.description || '';
-    if (desc.includes('Match'))    { type = 'Match Bonus';    bonusType = 'match'; }
-    else if (desc.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
-    else if (desc.includes('Streak'))  { type = 'Streak Bonus';  bonusType = 'streak'; }
-    else if (desc.includes('Referral')){ type = 'Referral Bonus';bonusType = 'referral'; }
-    else {
-        // Extract custom label: everything before " from GameName"
-        const fromIdx = desc.indexOf(' from ');
-        type = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
-        bonusType = 'custom';
-    }
-}
+        const desc = t.description || '';
+        if (desc.includes('Match')) { type = 'Match Bonus'; bonusType = 'match'; }
+        else if (desc.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
+        else if (desc.includes('Streak')) { type = 'Streak Bonus'; bonusType = 'streak'; }
+        else if (desc.includes('Referral')) { type = 'Referral Bonus'; bonusType = 'referral'; }
+        else {
+          // Extract custom label: everything before " from GameName"
+          const fromIdx = desc.indexOf(' from ');
+          type = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
+          bonusType = 'custom';
+        }
+      }
 
       let walletMethod = t.paymentMethod || 'Unknown';
       let walletName = 'Account';
@@ -2969,17 +3010,17 @@ async function enrichShift(shift) {
     //   else { displayType = 'Bonus'; bonusType = 'custom'; }
     // }
     else if (t.type === 'BONUS') {
-    const desc = t.description || '';
-    if (desc.includes('Match'))    { displayType = 'Match Bonus';    bonusType = 'match'; }
-    else if (desc.includes('Special')) { displayType = 'Special Bonus'; bonusType = 'special'; }
-    else if (desc.includes('Streak'))  { displayType = 'Streak Bonus';  bonusType = 'streak'; }
-    else if (desc.includes('Referral')){ displayType = 'Referral Bonus';bonusType = 'referral'; }
-    else {
+      const desc = t.description || '';
+      if (desc.includes('Match')) { displayType = 'Match Bonus'; bonusType = 'match'; }
+      else if (desc.includes('Special')) { displayType = 'Special Bonus'; bonusType = 'special'; }
+      else if (desc.includes('Streak')) { displayType = 'Streak Bonus'; bonusType = 'streak'; }
+      else if (desc.includes('Referral')) { displayType = 'Referral Bonus'; bonusType = 'referral'; }
+      else {
         const fromIdx = desc.indexOf(' from ');
         displayType = fromIdx > 0 ? desc.slice(0, fromIdx).trim() : 'Bonus';
         bonusType = 'custom';
+      }
     }
-}
 
     // Wallet: parse from description "via METHOD - NAME"
     let walletMethod = null;
