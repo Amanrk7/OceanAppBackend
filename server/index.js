@@ -1629,22 +1629,21 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
 
     // ✅ FIXED:
-    const [updatedPlayer, tx] = await prisma.$transaction([
-      // prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: balanceAfter } }),
-      prisma.transaction.create({
-        data: {
-          userId: parseInt(playerId),
-          type: 'WITHDRAWAL',
-          amount: new Prisma.Decimal(cashoutAmt.toString()),
-          status: 'PENDING',
-          description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
-          notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
-          paymentMethod: null,
-          gameId: game.id,
-        }
-      }),
-      // ← NO game.update here — stock only moves when payment is made
-    ]);
+   // ✅ Only 1 item — destructure just one variable
+const [tx] = await prisma.$transaction([
+  prisma.transaction.create({
+    data: {
+      userId: parseInt(playerId),
+      type: 'WITHDRAWAL',
+      amount: new Prisma.Decimal(cashoutAmt.toString()),
+      status: 'PENDING',
+      description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+      notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
+      paymentMethod: null,
+      gameId: game.id,
+    }
+  }),
+]);
 
     res.status(201).json({
       success: true,
