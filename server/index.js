@@ -2539,10 +2539,10 @@ app.get('/api/wallets', authMiddleware, async (req, res) => {
 app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { balance, name, identifier } = req.body;
+    const { balance, name, identifier, isLive } = req.body;
     const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(id) } });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-    const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }) } });
+    const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), } });
     checkThresholdsAndNotify({ walletId: parseInt(id) }, prisma);
     res.json({ data: updated, message: 'Wallet updated' });
   } catch (err) {
@@ -2552,9 +2552,9 @@ app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) 
 
 app.post('/api/wallets', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { name, method, identifier, balance } = req.body;
+    const { name, method, identifier, balance, isLive  } = req.body;
     if (!name || !method) return res.status(400).json({ error: 'Name and method are required' });
-    const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0 } });
+    const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true,} });
     res.status(201).json({ data: wallet, message: 'Wallet created' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create wallet' });
