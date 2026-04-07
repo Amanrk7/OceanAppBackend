@@ -1474,25 +1474,40 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       if (existingMatchBonus) return res.status(400).json({ error: 'Match bonus already used today for this player.' });
     }
 
-    if (bonusReferral) {
-      const existingReferral = await prisma.transaction.findFirst({ where: { userId: parseInt(playerId), type: 'BONUS', status: 'COMPLETED', description: { contains: 'Referral Bonus' } } });
-      if (existingReferral) return res.status(400).json({ error: 'Referral bonus has already been used for this player.' });
-    }
+    // if (bonusReferral) {
+    //   const existingReferral = await prisma.transaction.findFirst({ where: { userId: parseInt(playerId), type: 'BONUS', status: 'COMPLETED', description: { contains: 'Referral Bonus' } } });
+    //   if (existingReferral) return res.status(400).json({ error: 'Referral bonus has already been used for this player.' });
+    // }
 
-    let referrer = null;
-    if (bonusReferral && player.referredBy) {
-      referrer = await prisma.user.findUnique({ where: { id: player.referredBy }, select: { id: true, name: true, balance: true } });
+    // let referrer = null;
+    // if (bonusReferral && player.referredBy) {
+    //   referrer = await prisma.user.findUnique({ where: { id: player.referredBy }, select: { id: true, name: true, balance: true } });
+    // }
+
+    if (bonusReferral) {
+      if (!player.referredBy)
+        return res.status(400).json({ error: 'Player has no referrer — referral bonus cannot be recorded.' });
+
+      // Prevent duplicate eligibility records for the same referral pair
+      const existingRecord = await prisma.referralBonus.findFirst({
+        where: { referrerId: player.referredBy, referredId: parseInt(playerId) }
+      });
+      if (existingRecord)
+        return res.status(400).json({
+          error: 'Referral bonus eligibility already recorded for this player.',
+          existingId: existingRecord.id
+        });
     }
 
     // const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
     // if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     // Replace the broken findUnique in both endpoints:
-const wallet = await prisma.wallet.findUnique({
-  where: { id: parseInt(walletId) },
-  select: { id: true, name: true, method: true, balance: true, isLive: true }
-});
-if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}" is currently offline and cannot be used for transactions.` });
+    const wallet = await prisma.wallet.findUnique({
+      where: { id: parseInt(walletId) },
+      select: { id: true, name: true, method: true, balance: true, isLive: true }
+    });
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}" is currently offline and cannot be used for transactions.` });
     const walletBalanceBefore = parseFloat(wallet.balance);
 
     const game = await prisma.game.findUnique({ where: { id: gameId }, select: { id: true, name: true, pointStock: true } });
@@ -1500,8 +1515,9 @@ if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}
 
     const matchAmt = bonusMatch ? depositAmt * 0.5 : 0;
     const specialAmt = bonusSpecial ? depositAmt * 0.2 : 0;
-    const referralAmt = bonusReferral && referrer ? depositAmt * 0.5 : 0;
-    const totalGameDeduction = depositAmt + matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
+    // const referralAmt = bonusReferral && referrer ? depositAmt * 0.5 : 0;
+    // const totalGameDeduction = depositAmt + matchAmt + specialAmt + (referralAmt * (referrer ? 2 : 1));
+    const totalGameDeduction = depositAmt + matchAmt + specialAmt;
 
     if (totalGameDeduction > game.pointStock) {
       return res.status(400).json({ error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${totalGameDeduction.toFixed(2)} pts` });
@@ -1533,6 +1549,8 @@ if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}
     }));
 
 
+
+
     ops.push(prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newStatus } }));
 
     if (bonusMatch) {
@@ -1545,17 +1563,31 @@ if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}
       ops.push(prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(specialAmt.toString()), status: 'COMPLETED', description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` } }));
     }
 
-    if (referralAmt > 0 && referrer) {
-      const playerBalBeforeRef = balanceBefore + matchAmt + specialAmt;
-      const playerBalAfterRef = playerBalBeforeRef + referralAmt;
-      ops.push(prisma.bonus.create({ data: { userId: parseInt(playerId), type: 'REFERRAL', amount: new Prisma.Decimal(referralAmt.toString()), description: `Referral Bonus from ${game.name} — referred by ${referrer.name}`, claimed: true, claimedAt: now } }));
-      ops.push(prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(referralAmt.toString()), status: 'COMPLETED', description: `Referral Bonus from ${game.name} — referred by ${referrer.name}`, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${playerBalBeforeRef.toFixed(2)}|balanceAfter:${playerBalAfterRef.toFixed(2)}` } }));
+    // if (referralAmt > 0 && referrer) {
+    //   const playerBalBeforeRef = balanceBefore + matchAmt + specialAmt;
+    //   const playerBalAfterRef = playerBalBeforeRef + referralAmt;
+    //   ops.push(prisma.bonus.create({ data: { userId: parseInt(playerId), type: 'REFERRAL', amount: new Prisma.Decimal(referralAmt.toString()), description: `Referral Bonus from ${game.name} — referred by ${referrer.name}`, claimed: true, claimedAt: now } }));
+    //   ops.push(prisma.transaction.create({ data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(referralAmt.toString()), status: 'COMPLETED', description: `Referral Bonus from ${game.name} — referred by ${referrer.name}`, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${playerBalBeforeRef.toFixed(2)}|balanceAfter:${playerBalAfterRef.toFixed(2)}` } }));
 
-      const referrerBalBefore = parseFloat(referrer.balance);
-      const referrerBalAfter = referrerBalBefore + referralAmt;
-      // ops.push(prisma.user.update({ where: { id: referrer.id }, data: { balance: { increment: referralAmt } } }));
-      ops.push(prisma.bonus.create({ data: { userId: referrer.id, type: 'REFERRAL', amount: new Prisma.Decimal(referralAmt.toString()), description: `Referral Bonus from ${game.name} — ${player.name}'s $${depositAmt.toFixed(2)} deposit`, claimed: true, claimedAt: now } }));
-      ops.push(prisma.transaction.create({ data: { userId: referrer.id, type: 'BONUS', amount: new Prisma.Decimal(referralAmt.toString()), status: 'COMPLETED', description: `Referral Bonus from ${game.name} — ${player.name}'s $${depositAmt.toFixed(2)} deposit`, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${referrerBalBefore.toFixed(2)}|balanceAfter:${referrerBalAfter.toFixed(2)}` } }));
+    //   const referrerBalBefore = parseFloat(referrer.balance);
+    //   const referrerBalAfter = referrerBalBefore + referralAmt;
+    //   // ops.push(prisma.user.update({ where: { id: referrer.id }, data: { balance: { increment: referralAmt } } }));
+    //   ops.push(prisma.bonus.create({ data: { userId: referrer.id, type: 'REFERRAL', amount: new Prisma.Decimal(referralAmt.toString()), description: `Referral Bonus from ${game.name} — ${player.name}'s $${depositAmt.toFixed(2)} deposit`, claimed: true, claimedAt: now } }));
+    //   ops.push(prisma.transaction.create({ data: { userId: referrer.id, type: 'BONUS', amount: new Prisma.Decimal(referralAmt.toString()), status: 'COMPLETED', description: `Referral Bonus from ${game.name} — ${player.name}'s $${depositAmt.toFixed(2)} deposit`, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${referrerBalBefore.toFixed(2)}|balanceAfter:${referrerBalAfter.toFixed(2)}` } }));
+    // }
+
+    if (bonusReferral && player.referredBy) {
+      const bonusAmt = parseFloat((depositAmt / 2).toFixed(2));
+      await prisma.referralBonus.create({
+        data: {
+          referrerId: player.referredBy,
+          referredId: parseInt(playerId),
+          depositAmount: depositAmt,
+          bonusAmount: bonusAmt,
+          triggerDepositId: depositTx.id,
+          notes: `Auto-created on deposit #${depositTx.id}`,
+        }
+      });
     }
 
     const results = await prisma.$transaction(ops);
@@ -1593,6 +1625,172 @@ if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}
   }
 });
 
+// GET /api/players/:id/eligible-bonuses
+app.get('/api/players/:id/eligible-bonuses', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+
+    // Records where this player is the REFERRED party (B) and their side is unclaimed
+    const asReferred = await prisma.referralBonus.findMany({
+      where: { referredId: id, referredClaimed: false },
+      include: {
+        referrer: { select: { id: true, name: true, username: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Records where this player is the REFERRER (A) and their side is unclaimed
+    const asReferrer = await prisma.referralBonus.findMany({
+      where: { referrerId: id, referrerClaimed: false },
+      include: {
+        referred: { select: { id: true, name: true, username: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const eligible = [
+      ...asReferred.map(r => ({
+        id:            r.id,
+        side:          'referred',          // B's bonus
+        depositAmount: parseFloat(r.depositAmount),
+        bonusAmount:   parseFloat(r.bonusAmount),
+        counterpartId:   r.referrerId,
+        counterpartName: r.referrer.name,
+        counterpartUsername: r.referrer.username,
+        claimed:       r.referredClaimed,
+        createdAt:     r.createdAt,
+      })),
+      ...asReferrer.map(r => ({
+        id:            r.id,
+        side:          'referrer',          // A's bonus
+        depositAmount: parseFloat(r.depositAmount),
+        bonusAmount:   parseFloat(r.bonusAmount),
+        counterpartId:   r.referredId,
+        counterpartName: r.referred.name,
+        counterpartUsername: r.referred.username,
+        claimed:       r.referrerClaimed,
+        createdAt:     r.createdAt,
+      })),
+    ];
+
+    res.json({ data: eligible, total: eligible.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/referral-bonuses/:id/claim
+// body: { side: 'referrer' | 'referred', gameId, notes }
+app.post('/api/referral-bonuses/:id/claim', authMiddleware, async (req, res) => {
+  try {
+    const rbId   = parseInt(req.params.id);
+    const { side, gameId, notes } = req.body;
+    if (!['referrer', 'referred'].includes(side))
+      return res.status(400).json({ error: 'side must be "referrer" or "referred"' });
+    if (!gameId) return res.status(400).json({ error: 'gameId is required' });
+
+    const rb = await prisma.referralBonus.findUnique({
+      where: { id: rbId },
+      include: {
+        referrer: { select: { id: true, name: true, balance: true } },
+        referred: { select: { id: true, name: true, balance: true } },
+      }
+    });
+    if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
+
+    const alreadyClaimed = side === 'referrer' ? rb.referrerClaimed : rb.referredClaimed;
+    if (alreadyClaimed) return res.status(400).json({ error: `${side} side already claimed` });
+
+    const game = await prisma.game.findUnique({ where: { id: gameId } });
+    if (!game) return res.status(404).json({ error: 'Game not found' });
+
+    const bonusAmt = parseFloat(rb.bonusAmount);
+    if (game.pointStock < bonusAmt)
+      return res.status(400).json({ error: `Insufficient game stock. Need ${bonusAmt} pts, ${game.name} has ${game.pointStock.toFixed(2)}.` });
+
+    const recipient    = side === 'referrer' ? rb.referrer : rb.referred;
+    const counterpart  = side === 'referrer' ? rb.referred : rb.referrer;
+    const newStock     = game.pointStock - bonusAmt;
+    const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+    const balBefore    = parseFloat(recipient.balance);
+    const balAfter     = balBefore + bonusAmt;
+    const desc         = `Referral Bonus from ${game.name} — ${side === 'referrer' ? `${counterpart.name} deposited $${parseFloat(rb.depositAmount).toFixed(2)}` : `referred by ${counterpart.name}`}`;
+
+    const [updatedGame, , tx] = await prisma.$transaction([
+      prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newGameStatus } }),
+      prisma.user.update({ where: { id: recipient.id }, data: { balance: { increment: bonusAmt } } }),
+      prisma.transaction.create({
+        data: {
+          userId:      recipient.id,
+          type:        'BONUS',
+          amount:      bonusAmt,
+          status:      'COMPLETED',
+          description: desc,
+          gameId,
+          notes:       `balanceBefore:${balBefore}|balanceAfter:${balAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
+        }
+      }),
+      prisma.bonus.create({
+        data: {
+          userId:      recipient.id,
+          type:        'REFERRAL',
+          amount:      bonusAmt,
+          description: desc,
+          claimed:     true,
+          claimedAt:   new Date(),
+        }
+      }),
+      prisma.referralBonus.update({
+        where: { id: rbId },
+        data: side === 'referrer'
+          ? { referrerClaimed: true, referrerClaimedAt: new Date(), gameId }
+          : { referredClaimed: true, referredClaimedAt: new Date(), gameId },
+      }),
+    ]);
+
+    checkThresholdsAndNotify({ gameId }, prisma).catch(() => {});
+    res.json({
+      success: true,
+      message: `$${bonusAmt.toFixed(2)} Referral Bonus granted to ${recipient.name} from ${game.name}.`,
+      data: { transactionId: tx.id, recipient: { id: recipient.id, name: recipient.name }, bonusAmount: bonusAmt },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to claim referral bonus: ' + err.message });
+  }
+});
+
+// GET /api/referral-bonuses — full ledger for admin
+app.get('/api/referral-bonuses', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const records = await prisma.referralBonus.findMany({
+      include: {
+        referrer: { select: { id: true, name: true, username: true } },
+        referred: { select: { id: true, name: true, username: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+    res.json({ data: records.map(r => ({
+      id:               r.id,
+      referrerId:       r.referrerId,
+      referrerName:     r.referrer.name,
+      referredId:       r.referredId,
+      referredName:     r.referred.name,
+      depositAmount:    parseFloat(r.depositAmount),
+      bonusAmount:      parseFloat(r.bonusAmount),
+      referrerClaimed:  r.referrerClaimed,
+      referredClaimed:  r.referredClaimed,
+      referrerClaimedAt: r.referrerClaimedAt,
+      referredClaimedAt: r.referredClaimedAt,
+      gameId:           r.gameId,
+      createdAt:        r.createdAt,
+    })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
   try {
     const { playerId, amount, fee = 0, gameId, walletId, walletMethod, walletName, notes } = req.body;
@@ -1613,12 +1811,12 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     // const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
     // if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     // Replace the broken findUnique in both endpoints:
-const wallet = await prisma.wallet.findUnique({
-  where: { id: parseInt(walletId) },
-  select: { id: true, name: true, method: true, balance: true, isLive: true }
-});
-if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}" is currently offline and cannot be used for transactions.` });
+    const wallet = await prisma.wallet.findUnique({
+      where: { id: parseInt(walletId) },
+      select: { id: true, name: true, method: true, balance: true, isLive: true }
+    });
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}" is currently offline and cannot be used for transactions.` });
     if (cashoutAmt > wallet.balance) return res.status(400).json({ error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, requested $${cashoutAmt.toFixed(2)}.` });
 
     const cashoutLimit = parseFloat(player.cashoutLimit ?? 250);
@@ -2552,9 +2750,9 @@ app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) 
 
 app.post('/api/wallets', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { name, method, identifier, balance, isLive  } = req.body;
+    const { name, method, identifier, balance, isLive } = req.body;
     if (!name || !method) return res.status(400).json({ error: 'Name and method are required' });
-    const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true,} });
+    const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, } });
     res.status(201).json({ data: wallet, message: 'Wallet created' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create wallet' });
