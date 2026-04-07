@@ -1484,7 +1484,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       referrer = await prisma.user.findUnique({ where: { id: player.referredBy }, select: { id: true, name: true, balance: true } });
     }
 
-    const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
+    const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     const walletBalanceBefore = parseFloat(wallet.balance);
 
@@ -1603,7 +1603,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     // const balanceBefore = parseFloat(player.balance);
     // if (cashoutAmt > balanceBefore) return res.status(400).json({ error: `Insufficient player balance. Has $${balanceBefore.toFixed(2)}, requested $${cashoutAmt.toFixed(2)}.` });
 
-    const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
+    const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     if (cashoutAmt > wallet.balance) return res.status(400).json({ error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, requested $${cashoutAmt.toFixed(2)}.` });
 
@@ -1629,21 +1629,21 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
 
     // ✅ FIXED:
-   // ✅ Only 1 item — destructure just one variable
-const [tx] = await prisma.$transaction([
-  prisma.transaction.create({
-    data: {
-      userId: parseInt(playerId),
-      type: 'WITHDRAWAL',
-      amount: new Prisma.Decimal(cashoutAmt.toString()),
-      status: 'PENDING',
-      description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
-      notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
-      paymentMethod: null,
-      gameId: game.id,
-    }
-  }),
-]);
+    // ✅ Only 1 item — destructure just one variable
+    const [tx] = await prisma.$transaction([
+      prisma.transaction.create({
+        data: {
+          userId: parseInt(playerId),
+          type: 'WITHDRAWAL',
+          amount: new Prisma.Decimal(cashoutAmt.toString()),
+          status: 'PENDING',
+          description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
+          notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
+          paymentMethod: null,
+          gameId: game.id,
+        }
+      }),
+    ]);
 
     res.status(201).json({
       success: true,
@@ -1872,14 +1872,14 @@ app.post('/api/transactions/:transactionId/undo', authMiddleware, adminMiddlewar
     // else if (transaction.type === 'BONUS') balanceAdjustment = -parseFloat(transaction.amount);
 
     let balanceAdjustment = 0;
-if (transaction.type === 'DEPOSIT') {
-  balanceAdjustment = -parseFloat(transaction.amount);  // reverse deposit
-} else if (transaction.type === 'WITHDRAWAL') {
-  // Only reverse if COMPLETED (balance was deducted at approval, not at creation)
-  balanceAdjustment = transaction.status === 'COMPLETED' ? parseFloat(transaction.amount) : 0;
-} else if (transaction.type === 'BONUS') {
-  balanceAdjustment = 0;  // bonuses never touched balancef
-}
+    if (transaction.type === 'DEPOSIT') {
+      balanceAdjustment = -parseFloat(transaction.amount);  // reverse deposit
+    } else if (transaction.type === 'WITHDRAWAL') {
+      // Only reverse if COMPLETED (balance was deducted at approval, not at creation)
+      balanceAdjustment = transaction.status === 'COMPLETED' ? parseFloat(transaction.amount) : 0;
+    } else if (transaction.type === 'BONUS') {
+      balanceAdjustment = 0;  // bonuses never touched balancef
+    }
 
     const playerBalance = parseFloat(transaction.user.balance) + balanceAdjustment;
 
@@ -2260,12 +2260,12 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req
         data: { pointStock: gameNewStock, status: gameNewStatus }
       }));
       // ADD player balance deduction to opsApprove:
-opsApprove.push(
-  prisma.user.update({
-    where: { id: tx.userId },
-    data: { balance: { decrement: remaining } }
-  })
-);
+      opsApprove.push(
+        prisma.user.update({
+          where: { id: tx.userId },
+          data: { balance: { decrement: remaining } }
+        })
+      );
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
@@ -2355,12 +2355,12 @@ app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, asy
         data: { pointStock: gameNewStock, status: gameNewStatus }
       }));
       // ADD to opsPartial:
-opsPartial.push(
-  prisma.user.update({
-    where: { id: tx.userId },
-    data: { balance: { decrement: partialAmt } }
-  })
-);
+      opsPartial.push(
+        prisma.user.update({
+          where: { id: tx.userId },
+          data: { balance: { decrement: partialAmt } }
+        })
+      );
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsPartial);
