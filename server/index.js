@@ -1484,8 +1484,15 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
       referrer = await prisma.user.findUnique({ where: { id: player.referredBy }, select: { id: true, name: true, balance: true } });
     }
 
-    const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
-    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    // const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
+    // if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    // Replace the broken findUnique in both endpoints:
+const wallet = await prisma.wallet.findUnique({
+  where: { id: parseInt(walletId) },
+  select: { id: true, name: true, method: true, balance: true, isLive: true }
+});
+if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}" is currently offline and cannot be used for transactions.` });
     const walletBalanceBefore = parseFloat(wallet.balance);
 
     const game = await prisma.game.findUnique({ where: { id: gameId }, select: { id: true, name: true, pointStock: true } });
@@ -1603,8 +1610,15 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     // const balanceBefore = parseFloat(player.balance);
     // if (cashoutAmt > balanceBefore) return res.status(400).json({ error: `Insufficient player balance. Has $${balanceBefore.toFixed(2)}, requested $${cashoutAmt.toFixed(2)}.` });
 
-    const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
-    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    // const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
+    // if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    // Replace the broken findUnique in both endpoints:
+const wallet = await prisma.wallet.findUnique({
+  where: { id: parseInt(walletId) },
+  select: { id: true, name: true, method: true, balance: true, isLive: true }
+});
+if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+if (!wallet.isLive) return res.status(400).json({ error: `Wallet "${wallet.name}" is currently offline and cannot be used for transactions.` });
     if (cashoutAmt > wallet.balance) return res.status(400).json({ error: `Insufficient wallet balance. Has $${wallet.balance.toFixed(2)}, requested $${cashoutAmt.toFixed(2)}.` });
 
     const cashoutLimit = parseFloat(player.cashoutLimit ?? 250);
