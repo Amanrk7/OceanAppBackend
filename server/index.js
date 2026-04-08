@@ -4495,8 +4495,10 @@ app.post('/api/tasks/:id/resolve-followup', authMiddleware, async (req, res) => 
     broadcastTaskUpdate('task_updated', updated);
 
     // Discord notification when resolved
-    if (allRequired && (BOT_TOKEN || PROXY_URL)) {
-      const isBonusTask = task.taskType === 'BONUS_FOLLOWUP';
+    // if (allRequired && (BOT_TOKEN || PROXY_URL)) {
+    //   const isBonusTask = task.taskType === 'BONUS_FOLLOWUP';
+      if (allRequired && (process.env.BOT_TOKEN || process.env.PROXY_URL)) {
+  const isBonusTask = task.taskType === 'BONUS_FOLLOWUP';
       await discordSendJSON({
         embeds: [{
           title: isBonusTask ? '🎁 Bonus Followup Resolved' : '✅ Player Followup Resolved',
