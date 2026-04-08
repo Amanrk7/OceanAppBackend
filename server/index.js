@@ -645,7 +645,7 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
       }
 
       const bonusOps = [
-        prisma.user.update({ where: { id: linkedReferrer.id }, data: { balance: { increment: bonusAmt } } }),
+        // prisma.user.update({ where: { id: linkedReferrer.id }, data: { balance: { increment: bonusAmt } } }),
         prisma.bonus.create({
           data: {
             userId: linkedReferrer.id, type: 'REFERRAL', amount: bonusAmt,
@@ -1341,7 +1341,7 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
 
     const ops = [
       prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newGameStatus } }),
-      prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: { increment: bonusAmount } } }),
+      // prisma.user.update({ where: { id: parseInt(playerId) }, data: { balance: { increment: bonusAmount } } }),
       // prisma.bonus.create({ data: { userId: parseInt(playerId), type: isReferral ? 'REFERRAL' : 'CUSTOM', amount: bonusAmount, description: playerDesc, claimed: false } }),
       prisma.bonus.create({
         data: {
@@ -1700,7 +1700,7 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     const game = await prisma.game.findUnique({ where: { id: gameId }, select: { id: true, name: true, pointStock: true } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
 
-    const matchAmt   = bonusMatch   ? depositAmt * 0.5 : 0;
+    const matchAmt = bonusMatch ? depositAmt * 0.5 : 0;
     const specialAmt = bonusSpecial ? depositAmt * 0.2 : 0;
     // NOTE: referral eligibility is just recorded — NO immediate game/balance deduction
     const totalGameDeduction = depositAmt + matchAmt + specialAmt;
@@ -1717,10 +1717,10 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     if (!lastPlayed) newStreak = 1;
     else if (!sameDay(lastPlayed, now)) newStreak = isYesterday(lastPlayed, now) ? newStreak + 1 : 1;
 
-    const balanceAfter  = balanceBefore + depositAmt;   // bonuses never touch balance
-    const walletCredit  = depositAmt - feeAmt;
-    const newStock      = game.pointStock - totalGameDeduction;
-    const newStatus     = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+    const balanceAfter = balanceBefore + depositAmt;   // bonuses never touch balance
+    const walletCredit = depositAmt - feeAmt;
+    const newStock = game.pointStock - totalGameDeduction;
+    const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
 
     const ops = [];
     ops.push(prisma.user.update({
@@ -1768,31 +1768,31 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     // IMPORTANT: Must be AFTER $transaction so depositTx (results[2]) exists.
     const updatedPlayer = results[0];
     const updatedWallet = results[1];
-    const depositTx     = results[2];   // ← available now
+    const depositTx = results[2];   // ← available now
     const walletBalanceAfter = parseFloat(updatedWallet.balance);
 
     if (bonusReferral && player.referredBy) {
       const bonusAmt = parseFloat((depositAmt / 2).toFixed(2));
       await prisma.referralBonus.create({
         data: {
-          referrerId:       player.referredBy,
-          referredId:       parseInt(playerId),
-          depositAmount:    depositAmt,
-          bonusAmount:      bonusAmt,
+          referrerId: player.referredBy,
+          referredId: parseInt(playerId),
+          depositAmount: depositAmt,
+          bonusAmount: bonusAmt,
           triggerDepositId: depositTx.id,
-          notes:            `Auto-created on deposit #${depositTx.id}`,
+          notes: `Auto-created on deposit #${depositTx.id}`,
         },
       });
     }
 
-    checkThresholdsAndNotify({ gameId }, prisma).catch(() => {});
+    checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
     if (prisma.streakFreeze) {
-      await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => {});
+      await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
     }
 
     const bonusesApplied = [];
-    if (bonusMatch)    bonusesApplied.push(`Match Bonus +$${matchAmt.toFixed(2)}`);
-    if (bonusSpecial)  bonusesApplied.push(`Special Bonus +$${specialAmt.toFixed(2)}`);
+    if (bonusMatch) bonusesApplied.push(`Match Bonus +$${matchAmt.toFixed(2)}`);
+    if (bonusSpecial) bonusesApplied.push(`Special Bonus +$${specialAmt.toFixed(2)}`);
     if (bonusReferral && player.referredBy) {
       const bonusAmt = parseFloat((depositAmt / 2).toFixed(2));
       bonusesApplied.push(`Referral eligibility recorded — $${bonusAmt.toFixed(2)} available for both parties (grant from Bonus page)`);
@@ -1847,26 +1847,26 @@ app.get('/api/players/:id/eligible-bonuses', authMiddleware, async (req, res) =>
 
     const eligible = [
       ...asReferred.map(r => ({
-        id:            r.id,
-        side:          'referred',          // B's bonus
+        id: r.id,
+        side: 'referred',          // B's bonus
         depositAmount: parseFloat(r.depositAmount),
-        bonusAmount:   parseFloat(r.bonusAmount),
-        counterpartId:   r.referrerId,
+        bonusAmount: parseFloat(r.bonusAmount),
+        counterpartId: r.referrerId,
         counterpartName: r.referrer.name,
         counterpartUsername: r.referrer.username,
-        claimed:       r.referredClaimed,
-        createdAt:     r.createdAt,
+        claimed: r.referredClaimed,
+        createdAt: r.createdAt,
       })),
       ...asReferrer.map(r => ({
-        id:            r.id,
-        side:          'referrer',          // A's bonus
+        id: r.id,
+        side: 'referrer',          // A's bonus
         depositAmount: parseFloat(r.depositAmount),
-        bonusAmount:   parseFloat(r.bonusAmount),
-        counterpartId:   r.referredId,
+        bonusAmount: parseFloat(r.bonusAmount),
+        counterpartId: r.referredId,
         counterpartName: r.referred.name,
         counterpartUsername: r.referred.username,
-        claimed:       r.referrerClaimed,
-        createdAt:     r.createdAt,
+        claimed: r.referrerClaimed,
+        createdAt: r.createdAt,
       })),
     ];
 
@@ -1880,7 +1880,7 @@ app.get('/api/players/:id/eligible-bonuses', authMiddleware, async (req, res) =>
 // body: { side: 'referrer' | 'referred', gameId, notes }
 app.post('/api/referral-bonuses/:id/claim', authMiddleware, async (req, res) => {
   try {
-    const rbId   = parseInt(req.params.id);
+    const rbId = parseInt(req.params.id);
     const { side, gameId, notes } = req.body;
     if (!['referrer', 'referred'].includes(side))
       return res.status(400).json({ error: 'side must be "referrer" or "referred"' });
@@ -1905,36 +1905,36 @@ app.post('/api/referral-bonuses/:id/claim', authMiddleware, async (req, res) => 
     if (game.pointStock < bonusAmt)
       return res.status(400).json({ error: `Insufficient game stock. Need ${bonusAmt} pts, ${game.name} has ${game.pointStock.toFixed(2)}.` });
 
-    const recipient    = side === 'referrer' ? rb.referrer : rb.referred;
-    const counterpart  = side === 'referrer' ? rb.referred : rb.referrer;
-    const newStock     = game.pointStock - bonusAmt;
+    const recipient = side === 'referrer' ? rb.referrer : rb.referred;
+    const counterpart = side === 'referrer' ? rb.referred : rb.referrer;
+    const newStock = game.pointStock - bonusAmt;
     const newGameStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
-    const balBefore    = parseFloat(recipient.balance);
-    const balAfter     = balBefore + bonusAmt;
-    const desc         = `Referral Bonus from ${game.name} — ${side === 'referrer' ? `${counterpart.name} deposited $${parseFloat(rb.depositAmount).toFixed(2)}` : `referred by ${counterpart.name}`}`;
+    const balBefore = parseFloat(recipient.balance);
+    const balAfter = balBefore + bonusAmt;
+    const desc = `Referral Bonus from ${game.name} — ${side === 'referrer' ? `${counterpart.name} deposited $${parseFloat(rb.depositAmount).toFixed(2)}` : `referred by ${counterpart.name}`}`;
 
     const [updatedGame, , tx] = await prisma.$transaction([
       prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newGameStatus } }),
-      prisma.user.update({ where: { id: recipient.id }, data: { balance: { increment: bonusAmt } } }),
+      // prisma.user.update({ where: { id: recipient.id }, data: { balance: { increment: bonusAmt } } }),
       prisma.transaction.create({
         data: {
-          userId:      recipient.id,
-          type:        'BONUS',
-          amount:      bonusAmt,
-          status:      'COMPLETED',
+          userId: recipient.id,
+          type: 'BONUS',
+          amount: bonusAmt,
+          status: 'COMPLETED',
           description: desc,
           gameId,
-          notes:       `balanceBefore:${balBefore}|balanceAfter:${balAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
+          notes: `balanceBefore:${balBefore}|balanceAfter:${balAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
         }
       }),
       prisma.bonus.create({
         data: {
-          userId:      recipient.id,
-          type:        'REFERRAL',
-          amount:      bonusAmt,
+          userId: recipient.id,
+          type: 'REFERRAL',
+          amount: bonusAmt,
           description: desc,
-          claimed:     true,
-          claimedAt:   new Date(),
+          claimed: true,
+          claimedAt: new Date(),
         }
       }),
       prisma.referralBonus.update({
@@ -1945,7 +1945,7 @@ app.post('/api/referral-bonuses/:id/claim', authMiddleware, async (req, res) => 
       }),
     ]);
 
-    checkThresholdsAndNotify({ gameId }, prisma).catch(() => {});
+    checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
     res.json({
       success: true,
       message: `$${bonusAmt.toFixed(2)} Referral Bonus granted to ${recipient.name} from ${game.name}.`,
@@ -1967,21 +1967,23 @@ app.get('/api/referral-bonuses', authMiddleware, adminMiddleware, async (req, re
       orderBy: { createdAt: 'desc' },
       take: 200,
     });
-    res.json({ data: records.map(r => ({
-      id:               r.id,
-      referrerId:       r.referrerId,
-      referrerName:     r.referrer.name,
-      referredId:       r.referredId,
-      referredName:     r.referred.name,
-      depositAmount:    parseFloat(r.depositAmount),
-      bonusAmount:      parseFloat(r.bonusAmount),
-      referrerClaimed:  r.referrerClaimed,
-      referredClaimed:  r.referredClaimed,
-      referrerClaimedAt: r.referrerClaimedAt,
-      referredClaimedAt: r.referredClaimedAt,
-      gameId:           r.gameId,
-      createdAt:        r.createdAt,
-    })) });
+    res.json({
+      data: records.map(r => ({
+        id: r.id,
+        referrerId: r.referrerId,
+        referrerName: r.referrer.name,
+        referredId: r.referredId,
+        referredName: r.referred.name,
+        depositAmount: parseFloat(r.depositAmount),
+        bonusAmount: parseFloat(r.bonusAmount),
+        referrerClaimed: r.referrerClaimed,
+        referredClaimed: r.referredClaimed,
+        referrerClaimedAt: r.referrerClaimedAt,
+        referredClaimedAt: r.referredClaimedAt,
+        gameId: r.gameId,
+        createdAt: r.createdAt,
+      }))
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
