@@ -32,6 +32,7 @@ import {
   scheduleBonusFollowupGeneration,
   setBroadcastFn,
 } from './auto-task-generator.js';
+import { checkMilestoneBonuses, checkReferralWeeklyBonus } from './bonus-engine.js';
 
 
 
@@ -1764,6 +1765,10 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     // ── Execute main transaction ──────────────────────────────────────────────
     const results = await prisma.$transaction(ops);
 
+    //   // Auto-check milestone + referral weekly bonuses (non-blocking)
+    checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
+    checkReferralWeeklyBonus(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
+
     // ── NOW create the ReferralBonus eligibility record ───────────────────────
     // IMPORTANT: Must be AFTER $transaction so depositTx (results[2]) exists.
     const updatedPlayer = results[0];
@@ -3068,6 +3073,270 @@ app.post('/api/issues/:issueId/resolve', authMiddleware, async (req, res) => {
   }
 });
 
+// ── GET /api/players/:id/pending-bonuses ─────────────────────────
+// Returns all unclaimed milestone + referral weekly bonuses for dashboard display.
+app.get('/api/players/:id/pending-bonuses', authMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+
+    const [milestones, referralWeekly] = await Promise.all([
+      // This player's own unclaimed milestone bonuses
+      prisma.depositMilestoneBonus.findMany({
+        where: { playerId: id, claimed: false },
+        orderBy: { createdAt: 'desc' },
+      }),
+      // Unclaimed weekly referral bonuses WHERE this player is the referrer
+      prisma.referralWeeklyBonus.findMany({
+        where: { referrerId: id, claimed: false },
+        include: { referred: { select: { id: true, name: true, username: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    const totalAmount =
+      milestones.reduce((s, m) => s + parseFloat(m.bonusAmount), 0) +
+      referralWeekly.reduce((s, r) => s + parseFloat(r.bonusAmount), 0);
+
+    res.json({
+      data: {
+        milestones: milestones.map(m => ({
+          id: m.id,
+          type: 'milestone',
+          date: m.date,
+          milestone: m.milestone,
+          bonusAmount: parseFloat(m.bonusAmount),
+          claimed: m.claimed,
+          createdAt: m.createdAt,
+        })),
+        referralWeekly: referralWeekly.map(r => ({
+          id: r.id,
+          type: 'referral_weekly',
+          weekOf: r.weekOf,
+          totalDeposits: parseFloat(r.totalDeposits),
+          bonusAmount: parseFloat(r.bonusAmount),
+          referredPlayer: r.referred,
+          claimed: r.claimed,
+          createdAt: r.createdAt,
+        })),
+        totalPending: milestones.length + referralWeekly.length,
+        totalAmount: parseFloat(totalAmount.toFixed(2)),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/milestone-bonuses/:id/claim ─────────────────────────
+// Staff claims a milestone bonus for the player. Deducts from game stock,
+// creates a BONUS transaction, and increments player balance.
+app.post('/api/milestone-bonuses/:id/claim', authMiddleware, async (req, res) => {
+  try {
+    const bonusId = parseInt(req.params.id);
+    const { gameId, notes } = req.body;
+    if (!gameId) return res.status(400).json({ error: 'gameId is required' });
+
+    const bonus = await prisma.depositMilestoneBonus.findUnique({
+      where: { id: bonusId },
+      include: { player: { select: { id: true, name: true, balance: true } } },
+    });
+    if (!bonus) return res.status(404).json({ error: 'Milestone bonus not found' });
+    if (bonus.claimed) return res.status(400).json({ error: 'Bonus already claimed' });
+
+    const game = await prisma.game.findUnique({ where: { id: gameId } });
+    if (!game) return res.status(404).json({ error: 'Game not found' });
+
+    const bonusAmt = parseFloat(bonus.bonusAmount);
+    if (game.pointStock < bonusAmt) {
+      return res.status(400).json({
+        error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${bonusAmt}.`,
+      });
+    }
+
+    const newStock = game.pointStock - bonusAmt;
+    const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+    const balBefore = parseFloat(bonus.player.balance);
+    const balAfter = balBefore + bonusAmt;
+    const desc = `Milestone Bonus from ${game.name} — $${bonus.milestone} daily deposit milestone (${bonus.date})`;
+
+    const [, , tx] = await prisma.$transaction([
+      prisma.depositMilestoneBonus.update({
+        where: { id: bonusId },
+        data: { claimed: true, claimedAt: new Date(), gameId },
+      }),
+      prisma.game.update({
+        where: { id: gameId },
+        data: { pointStock: newStock, status: newStatus },
+      }),
+      prisma.transaction.create({
+        data: {
+          userId: bonus.playerId,
+          type: 'BONUS',
+          amount: bonusAmt,
+          status: 'COMPLETED',
+          description: desc,
+          gameId,
+          notes: `balanceBefore:${balBefore}|balanceAfter:${balAfter}|` +
+            `gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|` +
+            `milestoneId:${bonusId}|${notes || ''}`,
+        },
+      }),
+      prisma.bonus.create({
+        data: {
+          userId: bonus.playerId,
+          type: 'CUSTOM',
+          amount: bonusAmt,
+          description: desc,
+          claimed: true,
+          claimedAt: new Date(),
+        },
+      }),
+      // Balance = deposit - cashout; bonuses only add when explicitly redeemed here
+      prisma.user.update({
+        where: { id: bonus.playerId },
+        data: { balance: { increment: bonusAmt } },
+      }),
+    ]);
+
+    checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
+
+    res.json({
+      success: true,
+      message: `$${bonusAmt.toFixed(2)} Milestone Bonus granted to ${bonus.player.name} from ${game.name}!`,
+      data: { transactionId: tx.id, bonusAmount: bonusAmt, newBalance: balAfter },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to claim milestone bonus: ' + err.message });
+  }
+});
+
+// ── POST /api/referral-weekly-bonuses/:id/claim ───────────────────
+// Staff claims a weekly referral bonus for the referrer.
+app.post('/api/referral-weekly-bonuses/:id/claim', authMiddleware, async (req, res) => {
+  try {
+    const bonusId = parseInt(req.params.id);
+    const { gameId, notes } = req.body;
+    if (!gameId) return res.status(400).json({ error: 'gameId is required' });
+
+    const bonus = await prisma.referralWeeklyBonus.findUnique({
+      where: { id: bonusId },
+      include: {
+        referrer: { select: { id: true, name: true, balance: true } },
+        referred: { select: { id: true, name: true } },
+      },
+    });
+    if (!bonus) return res.status(404).json({ error: 'Referral weekly bonus not found' });
+    if (bonus.claimed) return res.status(400).json({ error: 'Bonus already claimed' });
+
+    const game = await prisma.game.findUnique({ where: { id: gameId } });
+    if (!game) return res.status(404).json({ error: 'Game not found' });
+
+    const bonusAmt = parseFloat(bonus.bonusAmount);
+    if (game.pointStock < bonusAmt) {
+      return res.status(400).json({
+        error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${bonusAmt}.`,
+      });
+    }
+
+    const newStock = game.pointStock - bonusAmt;
+    const newStatus = newStock <= 0 ? 'DEFICIT' : newStock <= 500 ? 'LOW_STOCK' : 'HEALTHY';
+    const balBefore = parseFloat(bonus.referrer.balance);
+    const balAfter = balBefore + bonusAmt;
+    const desc =
+      `Referral Weekly Bonus from ${game.name} — ` +
+      `10% of ${bonus.referred.name}'s $${parseFloat(bonus.totalDeposits).toFixed(2)} deposits (week of ${bonus.weekOf})`;
+
+    const [, , tx] = await prisma.$transaction([
+      prisma.referralWeeklyBonus.update({
+        where: { id: bonusId },
+        data: { claimed: true, claimedAt: new Date(), gameId },
+      }),
+      prisma.game.update({
+        where: { id: gameId },
+        data: { pointStock: newStock, status: newStatus },
+      }),
+      prisma.transaction.create({
+        data: {
+          userId: bonus.referrerId,
+          type: 'BONUS',
+          amount: bonusAmt,
+          status: 'COMPLETED',
+          description: desc,
+          gameId,
+          notes: `balanceBefore:${balBefore}|balanceAfter:${balAfter}|` +
+            `gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|` +
+            `weeklyBonusId:${bonusId}|${notes || ''}`,
+        },
+      }),
+      prisma.bonus.create({
+        data: {
+          userId: bonus.referrerId,
+          type: 'REFERRAL',
+          amount: bonusAmt,
+          description: desc,
+          claimed: true,
+          claimedAt: new Date(),
+        },
+      }),
+      prisma.user.update({
+        where: { id: bonus.referrerId },
+        data: { balance: { increment: bonusAmt } },
+      }),
+    ]);
+
+    checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
+
+    res.json({
+      success: true,
+      message: `$${bonusAmt.toFixed(2)} Referral Weekly Bonus granted to ${bonus.referrer.name} from ${game.name}!`,
+      data: { transactionId: tx.id, bonusAmount: bonusAmt },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to claim referral weekly bonus: ' + err.message });
+  }
+});
+
+// ── GET /api/pending-bonuses/all ─────────────────────────────────
+// Admin view: all unclaimed pending bonuses across all players.
+app.get('/api/pending-bonuses/all', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const [milestones, referralWeekly] = await Promise.all([
+      prisma.depositMilestoneBonus.findMany({
+        where: { claimed: false },
+        include: { player: { select: { id: true, name: true, username: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+      prisma.referralWeeklyBonus.findMany({
+        where: { claimed: false },
+        include: {
+          referrer: { select: { id: true, name: true, username: true } },
+          referred: { select: { id: true, name: true, username: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+    ]);
+
+    res.json({
+      data: {
+        milestones: milestones.map(m => ({ ...m, bonusAmount: parseFloat(m.bonusAmount) })),
+        referralWeekly: referralWeekly.map(r => ({
+          ...r,
+          totalDeposits: parseFloat(r.totalDeposits),
+          bonusAmount: parseFloat(r.bonusAmount),
+        })),
+        totalUnclaimedAmount:
+          milestones.reduce((s, m) => s + parseFloat(m.bonusAmount), 0) +
+          referralWeekly.reduce((s, r) => s + parseFloat(r.bonusAmount), 0),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // SHIFTS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
@@ -3077,17 +3346,6 @@ async function getOrCreateTeam(teamRole) {
   if (!team) team = await prisma.team.create({ data: { teamName: teamRole, isShiftActive: false } });
   return team;
 }
-
-// app.get('/api/shifts/:role', authMiddleware, async (req, res) => {
-//   try {
-//     const { role } = req.params;
-//     const teamShifts = await prisma.shift.findMany({ where: { teamRole: role }, orderBy: { createdAt: 'desc' } });
-//     if (!teamShifts.length) return res.status(404).json({ error: 'No shifts found for this team' });
-//     res.json({ data: teamShifts, message: 'Successfully retrieved shift records' });
-//   } catch (err) {
-//     res.status(500).json({ error: 'Failed to show shift record' });
-//   }
-// });
 
 app.get('/api/shifts/:role', authMiddleware, async (req, res) => {
   try {
@@ -3186,21 +3444,6 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
   }
 });
 
-// app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
-//   try {
-//     const shiftId = parseInt(req.params.id);
-//     const { confirmedBalance, balanceNote } = req.body;
-//     const checkin = await prisma.shiftCheckin.upsert({
-//       where: { shiftId },
-//       create: { shiftId, userId: req.userId, confirmedBalance: parseFloat(confirmedBalance), balanceNote, balanceConfirmedAt: new Date(), status: 'BALANCE_CONFIRMED' },
-//       update: { confirmedBalance: parseFloat(confirmedBalance), balanceNote, balanceConfirmedAt: new Date(), status: 'BALANCE_CONFIRMED' }
-//     });
-//     broadcastTaskUpdate('shift_checkin', { shiftId, checkin });
-//     res.json({ data: checkin, message: 'Balance confirmed. Shift started!' });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
 app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   try {
     const shiftId = parseInt(req.params.id);
@@ -3239,33 +3482,11 @@ app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   }
 });
 
-// app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
-//   try {
-//     const shiftId = parseInt(req.params.id);
-//     const { effortRating, workSummary, issuesEncountered, shoutouts, additionalNotes } = req.body;
-//     if (!effortRating || effortRating < 1 || effortRating > 5) return res.status(400).json({ error: 'Effort rating must be 1-5' });
-//     const checkin = await prisma.shiftCheckin.upsert({
-//       where: { shiftId },
-//       create: { shiftId, userId: req.userId, effortRating: parseInt(effortRating), workSummary, issuesEncountered, shoutouts, additionalNotes, endFormSubmittedAt: new Date(), status: 'COMPLETED' },
-//       update: { effortRating: parseInt(effortRating), workSummary, issuesEncountered, shoutouts, additionalNotes, endFormSubmittedAt: new Date(), status: 'COMPLETED' }
-//     });
-//     broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
-//     res.json({ data: checkin, message: 'Shift summary submitted!' });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+
 
 app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
   try {
     const shiftId = parseInt(req.params.id);
-
-    // The frontend sends:
-    //   effortRating       — 1–10 integer
-    //   workSummary        — text
-    //   issuesEncountered  — text
-    //   shoutouts          — text (optional)
-    //   additionalNotes    — JSON string: { effortReason, improvements, endSnapshot }
     const {
       effortRating,
       workSummary,
@@ -3313,15 +3534,7 @@ app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
   }
 });
 
-// app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
-//   try {
-//     const shiftId = parseInt(req.params.id);
-//     const checkin = await prisma.shiftCheckin.findUnique({ where: { shiftId }, include: { user: { select: { id: true, name: true, role: true } } } });
-//     res.json({ data: checkin });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
+
 app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   try {
     const shiftId = parseInt(req.params.id);
@@ -3342,52 +3555,6 @@ function sumField(arr, field) { return arr.reduce((s, r) => s + parseFloat(r[fie
 function f2(n) { return parseFloat(n.toFixed(2)); }
 const BONUS_TYPES = ['BONUS', 'MATCH_BONUS', 'SPECIAL'];
 
-// async function enrichShift(shift) {
-//   const shiftEnd = shift.endTime || new Date();
-//   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
-
-//   const [transactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
-//     prisma.transaction.findMany({ where: { createdAt: timeWindow, status: 'COMPLETED' }, include: { user: { select: { id: true, name: true } }, game: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } }),
-//     prisma.task.findMany({ where: { completedAt: timeWindow, status: 'COMPLETED' }, include: { assignedTo: { select: { id: true, name: true, role: true } }, subTasks: true, progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' } } } }).catch(() => []),
-//     prisma.user.findMany({ where: { role: 'PLAYER', createdAt: timeWindow }, select: { id: true, name: true, username: true, tier: true, createdAt: true } }).catch(() => []),
-//     prisma.transaction.findMany({ where: { type: { in: ['BONUS', 'MATCH_BONUS', 'SPECIAL'] }, status: 'COMPLETED', createdAt: timeWindow }, include: { user: { select: { id: true, name: true } }, game: { select: { id: true, name: true } } } }).catch(() => []),
-//     prisma.issue.findMany({ where: { OR: [{ createdAt: timeWindow }, { updatedAt: timeWindow, status: 'RESOLVED' }] } }).catch(() => []),
-//     prisma.shiftCheckin.findUnique({ where: { shiftId: shift.id }, include: { user: { select: { id: true, name: true } } } }).catch(() => null),
-//   ]);
-
-//   const deposits = transactions.filter(t => t.type === 'DEPOSIT');
-//   const cashouts = transactions.filter(t => t.type === 'WITHDRAWAL');
-//   const bonusTxns = transactions.filter(t => ['BONUS', 'MATCH_BONUS', 'SPECIAL'].includes(t.type));
-//   const sum = (arr, field) => arr.reduce((s, r) => s + parseFloat(r[field] || 0), 0);
-
-//   const totalDeposits = sum(deposits, 'amount');
-//   const totalCashouts = sum(cashouts, 'amount');
-//   const totalBonuses = sum(bonusTxns, 'amount');
-
-//   const playerMap = {};
-//   deposits.forEach(t => {
-//     if (!playerMap[t.userId]) playerMap[t.userId] = { name: t.user?.name || `Player #${t.userId}`, total: 0, count: 0 };
-//     playerMap[t.userId].total += parseFloat(t.amount || 0);
-//     playerMap[t.userId].count += 1;
-//   });
-
-//   return {
-//     ...shift, checkin,
-//     stats: {
-//       tasksCompleted: tasks.length, playersAdded: playersAdded.length,
-//       bonusesGranted: bonusesGranted.length, totalBonusAmount: f2(sum(bonusesGranted, 'amount')),
-//       depositCount: deposits.length, cashoutCount: cashouts.length,
-//       totalDeposits: f2(totalDeposits), totalCashouts: f2(totalCashouts), totalBonuses: f2(totalBonuses),
-//       netProfit: f2(totalDeposits - totalCashouts - totalBonuses),
-//       transactionCount: transactions.length,
-//       issuesCreated: issueActivity.filter(i => new Date(i.createdAt) >= new Date(shift.startTime)).length,
-//       issuesResolved: issueActivity.filter(i => i.status === 'RESOLVED' && new Date(i.updatedAt) >= new Date(shift.startTime)).length,
-//       effortRating: checkin?.effortRating || null, confirmedBalance: checkin?.confirmedBalance || null,
-//     },
-//     tasks, transactions, playersAdded, bonusesGranted, issueActivity,
-//     playerDepositBreakdown: Object.values(playerMap).sort((a, b) => b.total - a.total),
-//   };
-// }
 async function enrichShift(shift) {
   const shiftEnd = shift.endTime || new Date();
   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
@@ -3437,13 +3604,7 @@ async function enrichShift(shift) {
     let bonusType = null;
     if (t.type === 'DEPOSIT') displayType = 'Deposit';
     else if (t.type === 'WITHDRAWAL') displayType = 'Cashout';
-    // else if (t.type === 'BONUS') {
-    //   if (t.description?.includes('Match')) { displayType = 'Match Bonus'; bonusType = 'match'; }
-    //   else if (t.description?.includes('Special')) { displayType = 'Special Bonus'; bonusType = 'special'; }
-    //   else if (t.description?.includes('Streak')) { displayType = 'Streak Bonus'; bonusType = 'streak'; }
-    //   else if (t.description?.includes('Referral')) { displayType = 'Referral Bonus'; bonusType = 'referral'; }
-    //   else { displayType = 'Bonus'; bonusType = 'custom'; }
-    // }
+
     else if (t.type === 'BONUS') {
       const desc = t.description || '';
       if (desc.includes('Match')) { displayType = 'Match Bonus'; bonusType = 'match'; }
@@ -3578,42 +3739,7 @@ async function enrichShift(shift) {
     playerDepositBreakdown: Object.values(playerMap).sort((a, b) => b.total - a.total),
   };
 }
-// app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) => {
-//   try {
-//     const { date, teamRole } = req.query;
-//     const target = date ? new Date(date) : new Date();
-//     const dayStart = new Date(target); dayStart.setUTCHours(0, 0, 0, 0);
-//     const dayEnd = new Date(target); dayEnd.setUTCHours(23, 59, 59, 999);
 
-//     const shiftWhere = { startTime: { gte: dayStart, lte: dayEnd } };
-//     if (teamRole) shiftWhere.teamRole = teamRole;
-
-//     const shifts = await prisma.shift.findMany({ where: shiftWhere, orderBy: { startTime: 'asc' } });
-//     const enrichedShifts = await Promise.all(shifts.map(enrichShift));
-
-//     const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
-//     const teamUsers = await prisma.user.findMany({ where: { role: { in: roles } }, select: { id: true, name: true, username: true, role: true } });
-
-//     const teams = roles.map(role => ({ role, member: teamUsers.find(u => u.role === role) || null, shifts: enrichedShifts.filter(s => s.teamRole === role) }));
-
-//     const allDayTxns = await prisma.transaction.findMany({ where: { createdAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' } });
-//     const dayDeposits = sumField(allDayTxns.filter(t => t.type === 'DEPOSIT'), 'amount');
-//     const dayCashouts = sumField(allDayTxns.filter(t => t.type === 'WITHDRAWAL'), 'amount');
-//     const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES.includes(t.type)), 'amount');
-
-//     const dayTasks = await prisma.task.findMany({ where: { completedAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' }, include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true } } } }).catch(() => []);
-//     const wallets = await prisma.wallet.findMany({ orderBy: [{ method: 'asc' }, { name: 'asc' }] });
-
-//     res.json({
-//       date: dayStart.toISOString().split('T')[0], teams,
-//       wallets: wallets.map(w => ({ id: w.id, name: w.name, method: w.method, balance: parseFloat(w.balance) })),
-//       dayTasks,
-//       summary: { totalDeposits: f2(dayDeposits), totalCashouts: f2(dayCashouts), totalBonuses: f2(dayBonuses), netProfit: f2(dayDeposits - dayCashouts - dayBonuses), totalShifts: enrichedShifts.length, activeShifts: enrichedShifts.filter(s => s.isActive).length, tasksCompleted: dayTasks.length, transactionCount: allDayTxns.length },
-//     });
-//   } catch (err) {
-//     res.status(500).json({ error: 'Failed to generate report: ' + err.message });
-//   }
-// });
 app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { date, teamRole } = req.query;
@@ -4485,21 +4611,6 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ═══════════════════════════════════════════════════════════════
 
-// app.listen(PORT, () => {
-//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
-
-//   // Startup check fires once, 10s after boot (gives DB time to warm up)
-//   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
-
-//   // Periodic scan every 60 minutes — queue-based, never floods Discord
-//   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
-// });
-// app.listen(PORT, () => {
-//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
-//   warmMilkywaySession(); // ← add this
-//   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
-//   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
-// });
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
   warmMilkywaySession();
