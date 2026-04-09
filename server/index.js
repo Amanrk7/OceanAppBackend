@@ -3484,55 +3484,55 @@ app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
 
 
 
-app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
-  try {
-    const shiftId = parseInt(req.params.id);
-    const {
-      effortRating,
-      workSummary,
-      issuesEncountered,
-      shoutouts,
-      additionalNotes,
-    } = req.body;
+// app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
+//   try {
+//     const shiftId = parseInt(req.params.id);
+//     const {
+//       effortRating,
+//       workSummary,
+//       issuesEncountered,
+//       shoutouts,
+//       additionalNotes,
+//     } = req.body;
 
-    if (!effortRating || effortRating < 1 || effortRating > 10) {
-      return res.status(400).json({ error: 'Effort rating must be 1–10' });
-    }
+//     if (!effortRating || effortRating < 1 || effortRating > 10) {
+//       return res.status(400).json({ error: 'Effort rating must be 1–10' });
+//     }
 
-    const checkin = await prisma.shiftCheckin.upsert({
-      where: { shiftId },
-      create: {
-        shiftId,
-        userId: req.userId,
-        effortRating: parseInt(effortRating),
-        workSummary: workSummary || null,
-        issuesEncountered: issuesEncountered || null,
-        shoutouts: shoutouts || null,
-        additionalNotes: typeof additionalNotes === 'string'
-          ? additionalNotes
-          : JSON.stringify(additionalNotes),   // ← stores endSnapshot + feedback
-        endFormSubmittedAt: new Date(),
-        status: 'COMPLETED',
-      },
-      update: {
-        effortRating: parseInt(effortRating),
-        workSummary: workSummary || null,
-        issuesEncountered: issuesEncountered || null,
-        shoutouts: shoutouts || null,
-        additionalNotes: typeof additionalNotes === 'string'
-          ? additionalNotes
-          : JSON.stringify(additionalNotes),
-        endFormSubmittedAt: new Date(),
-        status: 'COMPLETED',
-      },
-    });
+//     const checkin = await prisma.shiftCheckin.upsert({
+//       where: { shiftId },
+//       create: {
+//         shiftId,
+//         userId: req.userId,
+//         effortRating: parseInt(effortRating),
+//         workSummary: workSummary || null,
+//         issuesEncountered: issuesEncountered || null,
+//         shoutouts: shoutouts || null,
+//         additionalNotes: typeof additionalNotes === 'string'
+//           ? additionalNotes
+//           : JSON.stringify(additionalNotes),   // ← stores endSnapshot + feedback
+//         endFormSubmittedAt: new Date(),
+//         status: 'COMPLETED',
+//       },
+//       update: {
+//         effortRating: parseInt(effortRating),
+//         workSummary: workSummary || null,
+//         issuesEncountered: issuesEncountered || null,
+//         shoutouts: shoutouts || null,
+//         additionalNotes: typeof additionalNotes === 'string'
+//           ? additionalNotes
+//           : JSON.stringify(additionalNotes),
+//         endFormSubmittedAt: new Date(),
+//         status: 'COMPLETED',
+//       },
+//     });
 
-    broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
-    res.json({ data: checkin, message: 'Shift summary submitted!' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+//     broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
+//     res.json({ data: checkin, message: 'Shift summary submitted!' });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 
 app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
@@ -3543,6 +3543,83 @@ app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
       include: { user: { select: { id: true, name: true, role: true } } },
     });
     res.json({ data: checkin });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
+  try {
+    const shiftId = parseInt(req.params.id);
+    const { effortRating, workSummary, issuesEncountered, shoutouts, additionalNotes } = req.body;
+
+    if (!effortRating || effortRating < 1 || effortRating > 10) {
+      return res.status(400).json({ error: 'Effort rating must be 1–10' });
+    }
+
+    const checkin = await prisma.shiftCheckin.upsert({
+      where: { shiftId },
+      create: {
+        shiftId, userId: req.userId,
+        effortRating: parseInt(effortRating),
+        workSummary: workSummary || null,
+        issuesEncountered: issuesEncountered || null,
+        shoutouts: shoutouts || null,
+        additionalNotes: typeof additionalNotes === 'string' ? additionalNotes : JSON.stringify(additionalNotes),
+        endFormSubmittedAt: new Date(),
+        status: 'COMPLETED',
+      },
+      update: {
+        effortRating: parseInt(effortRating),
+        workSummary: workSummary || null,
+        issuesEncountered: issuesEncountered || null,
+        shoutouts: shoutouts || null,
+        additionalNotes: typeof additionalNotes === 'string' ? additionalNotes : JSON.stringify(additionalNotes),
+        endFormSubmittedAt: new Date(),
+        status: 'COMPLETED',
+      },
+    });
+
+    broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
+
+    // ── NEW: Funds ↔ Game Points Balance check ─────────────────
+    try {
+      let endSnapshot = null;
+      const rawNotes = typeof additionalNotes === 'string' ? additionalNotes : JSON.stringify(additionalNotes ?? {});
+      try { const parsed = JSON.parse(rawNotes); endSnapshot = parsed?.endSnapshot ?? null; } catch (_) {}
+
+      if (endSnapshot) {
+        const { deposits = 0, cashouts = 0, bonuses = 0, gameChange = 0 } = endSnapshot;
+        const expectedGameDeduction = deposits + bonuses - cashouts;
+        const actualGameDeduction = Math.abs(gameChange);
+        const fundsPointsDiscrepancy = Math.round(actualGameDeduction - expectedGameDeduction);
+
+        if (Math.abs(fundsPointsDiscrepancy) >= 2) {
+          // Find the team member name for the notification
+          const member = await prisma.user.findUnique({
+            where: { id: req.userId },
+            select: { name: true, role: true },
+          });
+          const shift = await prisma.shift.findUnique({ where: { id: shiftId } });
+
+          notify('GAME_BALANCE_ALERT', {
+            shiftId,
+            memberName: member?.name ?? 'Unknown',
+            teamRole: shift?.teamRole ?? '—',
+            deposits, cashouts, bonuses,
+            expectedGameDeduction,
+            actualGameDeduction,
+            discrepancy: fundsPointsDiscrepancy,
+            message: `Funds↔Points mismatch: Expected ${expectedGameDeduction.toFixed(0)} pts deducted, Actual ${actualGameDeduction.toFixed(0)} pts. Off by ${Math.abs(fundsPointsDiscrepancy)} pts.`,
+          });
+        }
+      }
+    } catch (balanceCheckErr) {
+      console.error('Balance check error (non-fatal):', balanceCheckErr);
+    }
+    // ── End balance check ────────────────────────────────────────
+
+    res.json({ data: checkin, message: 'Shift summary submitted!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
