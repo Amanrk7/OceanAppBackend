@@ -49,16 +49,16 @@ export function fmtTX(date) {
 }
 
 // ── Config ────────────────────────────────────────────────────────
-const BOT_TOKEN      = process.env.DISCORD_BOT_TOKEN;
+const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const CHANNEL_SHIFTS = process.env.DISCORD_CHANNEL_SHIFTS;
 const CHANNEL_ALERTS = process.env.DISCORD_CHANNEL_ALERTS;
-const PROXY_URL      = process.env.DISCORD_PROXY_URL;
-const PROXY_SECRET   = process.env.DISCORD_PROXY_SECRET;
+const PROXY_URL = process.env.DISCORD_PROXY_URL;
+const PROXY_SECRET = process.env.DISCORD_PROXY_SECRET;
 
-if (!BOT_TOKEN)      console.warn('⚠️  DISCORD_BOT_TOKEN not set — notifications disabled');
+if (!BOT_TOKEN) console.warn('⚠️  DISCORD_BOT_TOKEN not set — notifications disabled');
 if (!CHANNEL_SHIFTS) console.warn('⚠️  DISCORD_CHANNEL_SHIFTS not set');
 if (!CHANNEL_ALERTS) console.warn('⚠️  DISCORD_CHANNEL_ALERTS not set');
-if (!PROXY_URL)      console.warn('⚠️  DISCORD_PROXY_URL not set — set up the Cloudflare Worker proxy');
+if (!PROXY_URL) console.warn('⚠️  DISCORD_PROXY_URL not set — set up the Cloudflare Worker proxy');
 
 // ═══════════════════════════════════════════════════════════════
 // PER-CHANNEL QUEUE
@@ -71,7 +71,7 @@ if (!PROXY_URL)      console.warn('⚠️  DISCORD_PROXY_URL not set — set up 
 
 const SEND_GAP_MS = 1_100;
 const MAX_RETRIES = 3;
-const DEDUP_MS    = 30_000;
+const DEDUP_MS = 30_000;
 
 const chanState = new Map();
 
@@ -105,7 +105,7 @@ async function drainQueue(channelId) {
                     { channelId, botToken: BOT_TOKEN, payload },
                     {
                         headers: {
-                            'Content-Type':   'application/json',
+                            'Content-Type': 'application/json',
                             'X-Proxy-Secret': PROXY_SECRET,
                         },
                         timeout: 15_000,
@@ -191,7 +191,7 @@ export function discordSend(payload, tag = null, channel = 'shifts') {
 // THRESHOLD ALERTS  →  #alerts channel
 // ═══════════════════════════════════════════════════════════════
 
-const LOW_THRESHOLD  = 500;
+const LOW_THRESHOLD = 500;
 const ALERT_COOLDOWN = 60 * 60 * 1_000;
 const alerted = { games: new Set(), wallets: new Set() };
 
@@ -212,9 +212,9 @@ export async function checkThresholdsAndNotify({ gameId, walletId } = {}, prisma
                     title: isDeficit ? '🔴 Game Points DEFICIT' : '🟡 Game Points Low',
                     color: isDeficit ? 0xdc2626 : 0xf59e0b,
                     fields: [
-                        { name: 'Game',      value: game.name,                                       inline: true },
-                        { name: 'Stock',     value: `${parseFloat(game.pointStock).toFixed(0)} pts`, inline: true },
-                        { name: 'Threshold', value: `${LOW_THRESHOLD} pts`,                          inline: true },
+                        { name: 'Game', value: game.name, inline: true },
+                        { name: 'Stock', value: `${parseFloat(game.pointStock).toFixed(0)} pts`, inline: true },
+                        { name: 'Threshold', value: `${LOW_THRESHOLD} pts`, inline: true },
                     ],
                     footer: { text: 'OceanBets • Top up soon to avoid service disruption' },
                     timestamp: new Date().toISOString(),
@@ -236,10 +236,10 @@ export async function checkThresholdsAndNotify({ gameId, walletId } = {}, prisma
                     title: '🔴 Wallet Balance Low',
                     color: 0xef4444,
                     fields: [
-                        { name: 'Wallet',    value: wallet.name,                                   inline: true },
-                        { name: 'Method',    value: wallet.method,                                 inline: true },
-                        { name: 'Balance',   value: `$${parseFloat(wallet.balance).toFixed(2)}`,   inline: true },
-                        { name: 'Threshold', value: `$${LOW_THRESHOLD}`,                           inline: true },
+                        { name: 'Wallet', value: wallet.name, inline: true },
+                        { name: 'Method', value: wallet.method, inline: true },
+                        { name: 'Balance', value: `$${parseFloat(wallet.balance).toFixed(2)}`, inline: true },
+                        { name: 'Threshold', value: `$${LOW_THRESHOLD}`, inline: true },
                     ],
                     footer: { text: 'OceanBets • Top up to continue processing cashouts' },
                     timestamp: new Date().toISOString(),
@@ -255,7 +255,7 @@ export async function runStartupThresholdCheck(prisma) {
     try {
         const [lowGames, lowWallets] = await Promise.all([
             prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
-            prisma.wallet.findMany({ where: { balance:   { lt: LOW_THRESHOLD } } }),
+            prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
         ]);
 
         if (!lowGames.length && !lowWallets.length) {
@@ -289,9 +289,9 @@ export async function runPeriodicThresholdCheck(prisma) {
     try {
         const [lowGames, lowWallets] = await Promise.all([
             prisma.game.findMany({ where: { pointStock: { lt: LOW_THRESHOLD } } }),
-            prisma.wallet.findMany({ where: { balance:   { lt: LOW_THRESHOLD } } }),
+            prisma.wallet.findMany({ where: { balance: { lt: LOW_THRESHOLD } } }),
         ]);
-        for (const g of lowGames)   await checkThresholdsAndNotify({ gameId: g.id },    prisma);
+        for (const g of lowGames) await checkThresholdsAndNotify({ gameId: g.id }, prisma);
         for (const w of lowWallets) await checkThresholdsAndNotify({ walletId: w.id }, prisma);
     } catch (err) {
         console.error('Periodic threshold check failed:', err.message);
@@ -321,9 +321,9 @@ async function sendShiftStart({ memberName, teamRole, shiftId }) {
             title: '🌅 Shift Started',
             color: 0x22c55e,
             fields: [
-                { name: '👤 Who',  value: memberName || '—',   inline: true },
+                { name: '👤 Who', value: memberName || '—', inline: true },
                 { name: '🏷️ Team', value: roleLabel(teamRole), inline: true },
-                { name: '🕐 Time', value: nowStr(),             inline: true },
+                { name: '🕐 Time', value: nowStr(), inline: true },
             ],
             footer: { text: `Shift #${shiftId} • OceanBets` },
             timestamp: new Date().toISOString(),
@@ -337,29 +337,29 @@ async function sendShiftEnd({ memberName, teamRole, shiftId, duration, stats, en
     const f2 = n => (n ?? 0).toFixed(2);
 
     const financialFields = [
-        { name: '💰 Deposits',   value: `$${f2(st.totalDeposits)}`, inline: true },
-        { name: '💸 Cashouts',   value: `$${f2(st.totalCashouts)}`, inline: true },
-        { name: '📈 Net Profit', value: `$${f2(st.netProfit)}`,     inline: true },
+        { name: '💰 Deposits', value: `$${f2(st.totalDeposits)}`, inline: true },
+        { name: '💸 Cashouts', value: `$${f2(st.totalCashouts)}`, inline: true },
+        { name: '📈 Net Profit', value: `$${f2(st.netProfit)}`, inline: true },
     ];
 
     const activityFields = [
-        { name: '🎮 Transactions',  value: String(st.transactionCount ?? 0), inline: true },
-        { name: '🎁 Bonuses',       value: `${st.bonusesGranted ?? 0} ($${f2(st.totalBonusAmount)})`, inline: true },
-        { name: '👤 Players Added', value: String(st.playersAdded ?? 0),     inline: true },
-        { name: '✅ Tasks Done',    value: String(st.tasksCompleted ?? 0),   inline: true },
-        { name: '🐛 Issues',        value: `${st.issuesCreated ?? 0} created / ${st.issuesResolved ?? 0} resolved`, inline: true },
+        { name: '🎮 Transactions', value: String(st.transactionCount ?? 0), inline: true },
+        { name: '🎁 Bonuses', value: `${st.bonusesGranted ?? 0} ($${f2(st.totalBonusAmount)})`, inline: true },
+        { name: '👤 Players Added', value: String(st.playersAdded ?? 0), inline: true },
+        { name: '✅ Tasks Done', value: String(st.tasksCompleted ?? 0), inline: true },
+        { name: '🐛 Issues', value: `${st.issuesCreated ?? 0} created / ${st.issuesResolved ?? 0} resolved`, inline: true },
     ];
 
     const reconFields = [];
     if (es.walletChange != null || es.gameChange != null) {
         reconFields.push(
             { name: '\u200b', value: '**── Reconciliation ──**', inline: false },
-            { name: '🏦 Wallet Δ', value: `$${f2(es.walletChange)}`,   inline: true },
-            { name: '🎲 Game Δ',   value: `${f2(es.gameChange)} pts`,  inline: true },
+            { name: '🏦 Wallet Δ', value: `$${f2(es.walletChange)}`, inline: true },
+            { name: '🎲 Game Δ', value: `${f2(es.gameChange)} pts`, inline: true },
             { name: '⚖️ Balanced', value: es.isBalanced === true ? '✅ Yes' : es.isBalanced === false ? '❌ No' : '—', inline: true },
         );
         if (es.walletDiscrepancy) reconFields.push({ name: '⚠️ Wallet Gap', value: `$${Math.abs(es.walletDiscrepancy).toFixed(2)}`, inline: true });
-        if (es.gameDiscrepancy)   reconFields.push({ name: '⚠️ Game Gap',   value: `${Math.abs(es.gameDiscrepancy).toFixed(2)} pts`, inline: true });
+        if (es.gameDiscrepancy) reconFields.push({ name: '⚠️ Game Gap', value: `${Math.abs(es.gameDiscrepancy).toFixed(2)} pts`, inline: true });
     }
 
     const feedbackFields = [];
@@ -373,8 +373,8 @@ async function sendShiftEnd({ memberName, teamRole, shiftId, duration, stats, en
             title: '🌙 Shift Ended — Report',
             color: netProfit > 0 ? 0x22c55e : netProfit < 0 ? 0xef4444 : 0x64748b,
             fields: [
-                { name: '👤 Member',   value: memberName || '—',   inline: true },
-                { name: '🏷️ Team',     value: roleLabel(teamRole), inline: true },
+                { name: '👤 Member', value: memberName || '—', inline: true },
+                { name: '🏷️ Team', value: roleLabel(teamRole), inline: true },
                 { name: '⏱️ Duration', value: duration != null ? `${duration} min` : '—', inline: true },
                 { name: '\u200b', value: '**── Financial Summary ──**', inline: false },
                 ...financialFields,
@@ -390,7 +390,7 @@ async function sendShiftEnd({ memberName, teamRole, shiftId, duration, stats, en
 }
 
 async function sendTaskAssigned({ taskTitle, assigneeName, priority, taskType, dueDate, createdByName }) {
-    const due   = dueDate
+    const due = dueDate
         ? new Date(dueDate).toLocaleDateString('en-US', { timeZone: TX_TZ, month: 'short', day: 'numeric' })
         : 'No due date';
     const color = priority === 'HIGH' ? 0xdc2626 : priority === 'MEDIUM' ? 0xd97706 : 0x64748b;
@@ -400,12 +400,12 @@ async function sendTaskAssigned({ taskTitle, assigneeName, priority, taskType, d
             title: '📋 New Task Assigned',
             color,
             fields: [
-                { name: 'Task',        value: taskTitle,                           inline: false },
-                { name: 'Assigned To', value: assigneeName || 'All Members',       inline: true },
-                { name: 'Priority',    value: priority,                            inline: true },
-                { name: 'Type',        value: (taskType || '').replace(/_/g, ' '), inline: true },
-                { name: 'Due',         value: due,                                 inline: true },
-                { name: 'Created By',  value: createdByName || '—',               inline: true },
+                { name: 'Task', value: taskTitle, inline: false },
+                { name: 'Assigned To', value: assigneeName || 'All Members', inline: true },
+                { name: 'Priority', value: priority, inline: true },
+                { name: 'Type', value: (taskType || '').replace(/_/g, ' '), inline: true },
+                { name: 'Due', value: due, inline: true },
+                { name: 'Created By', value: createdByName || '—', inline: true },
             ],
             timestamp: new Date().toISOString(),
         }],
@@ -418,9 +418,15 @@ async function sendTaskAssigned({ taskTitle, assigneeName, priority, taskType, d
 
 export async function notify(type, data) {
     try {
-        if (type === 'SHIFT_START')   return await sendShiftStart(data);
-        if (type === 'SHIFT_END')     return await sendShiftEnd(data);
+        if (type === 'SHIFT_START') return await sendShiftStart(data);
+        if (type === 'SHIFT_END') return await sendShiftEnd(data);
         if (type === 'TASK_ASSIGNED') return await sendTaskAssigned(data);
+        if (type === 'GAME_BALANCE_ALERT') {
+            return discordSend(`⚠️ **Game Balance Mismatch** — Shift #${payload.shiftId} (${payload.memberName} / ${payload.teamRole})\n` +
+                `Deposits $${payload.deposits.toFixed(2)} + Bonuses $${payload.bonuses.toFixed(2)} − Cashouts $${payload.cashouts.toFixed(2)} = **${payload.expectedGameDeduction.toFixed(0)} pts expected**\n` +
+                `Actual game deduction: **${payload.actualGameDeduction.toFixed(0)} pts**\n` +
+                `Discrepancy: **${Math.abs(payload.discrepancy)} pts**`, 'alerts');
+        }
         console.warn(`notify(): unknown type "${type}"`);
     } catch (err) {
         console.error(`notify(${type}) error:`, err.message);
