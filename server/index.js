@@ -1766,7 +1766,12 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     const results = await prisma.$transaction(ops);
 
     //   // Auto-check milestone + referral weekly bonuses (non-blocking)
-    checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
+    // checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
+    // checkReferralWeeklyBonus(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
+
+    checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate)
+      .then(() => ensureMilestoneTasks(parseInt(playerId)))   // ← create tasks for new milestones
+      .catch(() => { });
     checkReferralWeeklyBonus(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
 
     // ── NOW create the ReferralBonus eligibility record ───────────────────────
@@ -3199,6 +3204,42 @@ app.post('/api/milestone-bonuses/:id/claim', authMiddleware, async (req, res) =>
       }),
     ]);
 
+    // ── Auto-complete any related BONUS_FOLLOWUP task ─────────────────────
+    try {
+      const relatedTask = await prisma.task.findFirst({
+        where: {
+          status: { in: ['PENDING', 'IN_PROGRESS'] },
+          notes: { contains: `"milestoneId":${bonusId}` },
+        },
+        include: {
+          createdBy: { select: { id: true, name: true, role: true } },
+          assignedTo: { select: { id: true, name: true, role: true } },
+        },
+      });
+      if (relatedTask) {
+        const completedTask = await prisma.task.update({
+          where: { id: relatedTask.id },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            // mark the single checklist item done if present
+            checklistItems: (relatedTask.checklistItems || []).map(item => ({
+              ...item,
+              done: true,
+              completedBy: req.userId,
+              completedAt: new Date().toISOString(),
+            })),
+          },
+          include: {
+            createdBy: { select: { id: true, name: true, role: true } },
+            assignedTo: { select: { id: true, name: true, role: true } },
+          },
+        });
+        broadcastTaskUpdate('task_updated', completedTask);
+      }
+    } catch (taskErr) {
+      console.error('Milestone task completion error (non-fatal):', taskErr);
+    }
     checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
 
     res.json({
@@ -4136,6 +4177,70 @@ function broadcastTaskUpdate(eventType, data) {
 }
 setBroadcastFn(broadcastTaskUpdate);
 
+/**
+ * For every unclaimed DepositMilestoneBonus belonging to `playerId`,
+ * ensure a BONUS_FOLLOWUP task exists so staff can track and grant it.
+ * Called non-blocking after each deposit (via .then chain).
+ */
+async function ensureMilestoneTasks(playerId) {
+  try {
+    const unclaimed = await prisma.depositMilestoneBonus.findMany({
+      where: { playerId, claimed: false },
+      include: { player: { select: { id: true, name: true, username: true } } },
+    });
+    if (!unclaimed.length) return;
+
+    // Use the first ADMIN / SUPER_ADMIN as the system task creator
+    const systemAdmin = await prisma.user.findFirst({
+      where: { role: { in: ['SUPER_ADMIN', 'ADMIN'] } },
+      select: { id: true },
+    });
+    if (!systemAdmin) return;
+
+    for (const m of unclaimed) {
+      // Check whether an open task already exists for this exact milestone record
+      const alreadyExists = await prisma.task.findFirst({
+        where: {
+          status: { in: ['PENDING', 'IN_PROGRESS'] },
+          notes: { contains: `"milestoneId":${m.id}` },
+        },
+      });
+      if (alreadyExists) continue;
+
+      const task = await prisma.task.create({
+        data: {
+          title: `🏆 Grant $${parseFloat(m.bonusAmount).toFixed(0)} Milestone Bonus — ${m.player.name}`,
+          description:
+            `${m.player.name} (@${m.player.username}) deposited $${m.milestone}+ today (${m.date}). ` +
+            `Grant their $${parseFloat(m.bonusAmount).toFixed(2)} milestone bonus from the player dashboard.`,
+          taskType: 'BONUS_FOLLOWUP',
+          priority: 'HIGH',
+          status: 'PENDING',
+          createdById: systemAdmin.id,
+          assignToAll: true,
+          notes: JSON.stringify({
+            milestoneId: m.id,
+            playerId: m.playerId,
+            playerName: m.player.name,
+            username: m.player.username,
+            milestone: m.milestone,
+            bonusAmount: parseFloat(m.bonusAmount),
+            date: m.date,
+            bonusType: 'milestone',
+          }),
+        },
+        include: {
+          createdBy: { select: { id: true, name: true, role: true } },
+          assignedTo: { select: { id: true, name: true, role: true } },
+        },
+      });
+
+      broadcastTaskUpdate('task_created', task);
+    }
+  } catch (err) {
+    console.error('ensureMilestoneTasks error (non-fatal):', err);
+  }
+}
 
 // ── Shared helper: increment task progress ───────────────────────
 async function incrementTaskProgress(taskId, userId, value, action, metadata = {}) {
