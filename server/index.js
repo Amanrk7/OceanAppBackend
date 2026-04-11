@@ -3766,7 +3766,9 @@ async function enrichShift(shift) {
   const shiftEnd = shift.endTime || new Date();
   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
 
-  const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
+  // const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
+  const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, rating, checkin] = await Promise.all([
+
     prisma.transaction.findMany({
       where: {
         createdAt: timeWindow,
