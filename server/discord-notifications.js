@@ -33,13 +33,19 @@ import axios from 'axios';
 const TX_TZ = 'America/Chicago';
 
 // ── Formatting helpers (exported — used by index.js) ─────────────
+// export function fmtTXDate(date) {
+//     if (!date) return '—';
+//     return new Date(date).toLocaleDateString('en-US', {
+//         timeZone: TX_TZ, month: 'short', day: 'numeric', year: 'numeric',
+//     });
+// }
 export function fmtTXDate(date) {
-    if (!date) return '—';
-    return new Date(date).toLocaleDateString('en-US', {
-        timeZone: TX_TZ, month: 'short', day: 'numeric', year: 'numeric',
-    });
+  if (!date) return null;
+  return new Date(date).toLocaleDateString('en-US', {
+    timeZone: 'America/Chicago',   // ← force Texas time
+    month: 'short', day: 'numeric', year: 'numeric'
+  });
 }
-
 export function fmtTX(date) {
     if (!date) return '—';
     return new Date(date).toLocaleString('en-US', {
