@@ -3482,59 +3482,6 @@ app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   }
 });
 
-
-
-// app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
-//   try {
-//     const shiftId = parseInt(req.params.id);
-//     const {
-//       effortRating,
-//       workSummary,
-//       issuesEncountered,
-//       shoutouts,
-//       additionalNotes,
-//     } = req.body;
-
-//     if (!effortRating || effortRating < 1 || effortRating > 10) {
-//       return res.status(400).json({ error: 'Effort rating must be 1–10' });
-//     }
-
-//     const checkin = await prisma.shiftCheckin.upsert({
-//       where: { shiftId },
-//       create: {
-//         shiftId,
-//         userId: req.userId,
-//         effortRating: parseInt(effortRating),
-//         workSummary: workSummary || null,
-//         issuesEncountered: issuesEncountered || null,
-//         shoutouts: shoutouts || null,
-//         additionalNotes: typeof additionalNotes === 'string'
-//           ? additionalNotes
-//           : JSON.stringify(additionalNotes),   // ← stores endSnapshot + feedback
-//         endFormSubmittedAt: new Date(),
-//         status: 'COMPLETED',
-//       },
-//       update: {
-//         effortRating: parseInt(effortRating),
-//         workSummary: workSummary || null,
-//         issuesEncountered: issuesEncountered || null,
-//         shoutouts: shoutouts || null,
-//         additionalNotes: typeof additionalNotes === 'string'
-//           ? additionalNotes
-//           : JSON.stringify(additionalNotes),
-//         endFormSubmittedAt: new Date(),
-//         status: 'COMPLETED',
-//       },
-//     });
-
-//     broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
-//     res.json({ data: checkin, message: 'Shift summary submitted!' });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
-
-
 app.get('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
   try {
     const shiftId = parseInt(req.params.id);
@@ -3586,7 +3533,7 @@ app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
     try {
       let endSnapshot = null;
       const rawNotes = typeof additionalNotes === 'string' ? additionalNotes : JSON.stringify(additionalNotes ?? {});
-      try { const parsed = JSON.parse(rawNotes); endSnapshot = parsed?.endSnapshot ?? null; } catch (_) {}
+      try { const parsed = JSON.parse(rawNotes); endSnapshot = parsed?.endSnapshot ?? null; } catch (_) { }
 
       if (endSnapshot) {
         const { deposits = 0, cashouts = 0, bonuses = 0, gameChange = 0 } = endSnapshot;
@@ -3624,6 +3571,189 @@ app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── POST / api / shifts /: id / rate ─────────────────────────────────
+// Admin submits a performance rating for a completed shift.
+
+app.post('/api/shifts/:id/rate', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const shiftId = parseInt(req.params.id);
+    if (isNaN(shiftId)) return res.status(400).json({ error: 'Invalid shift ID' });
+
+    const shift = await prisma.shift.findUnique({
+      where: { id: shiftId },
+      include: { checkin: { include: { user: { select: { id: true, name: true, role: true } } } } },
+    });
+    if (!shift) return res.status(404).json({ error: 'Shift not found' });
+    if (shift.isActive) return res.status(400).json({ error: 'Cannot rate an active shift — end the shift first.' });
+
+    const memberId = shift.checkin?.userId;
+    if (!memberId) return res.status(400).json({ error: 'No member checkin found for this shift.' });
+
+    const {
+      communicationWithPlayer = 0,
+      loadReloadSmoothness = 0,
+      liveReportingToPlayers = 0,
+      playtimeBonus = 0,
+      referralBonus = 0,
+      matchAndRandomBonus = 0,
+      playerEngagementOverall = 0,
+      reachingOutInShifts = 0,
+      reachingOutFromOwnList = 0,
+      cashoutTiming = 0,
+      recommendations = '',
+    } = req.body;
+
+    const cats = [
+      communicationWithPlayer, loadReloadSmoothness, liveReportingToPlayers,
+      playtimeBonus, referralBonus, matchAndRandomBonus,
+      playerEngagementOverall, reachingOutInShifts, reachingOutFromOwnList, cashoutTiming,
+    ];
+    const overallRating = parseFloat((cats.reduce((a, b) => a + parseFloat(b), 0) / 10).toFixed(2));
+
+    const rating = await prisma.shiftRating.upsert({
+      where: { shiftId },
+      create: {
+        shiftId, ratedById: req.userId, memberId,
+        teamRole: shift.teamRole,
+        communicationWithPlayer: parseFloat(communicationWithPlayer),
+        loadReloadSmoothness: parseFloat(loadReloadSmoothness),
+        liveReportingToPlayers: parseFloat(liveReportingToPlayers),
+        playtimeBonus: parseFloat(playtimeBonus),
+        referralBonus: parseFloat(referralBonus),
+        matchAndRandomBonus: parseFloat(matchAndRandomBonus),
+        playerEngagementOverall: parseFloat(playerEngagementOverall),
+        reachingOutInShifts: parseFloat(reachingOutInShifts),
+        reachingOutFromOwnList: parseFloat(reachingOutFromOwnList),
+        cashoutTiming: parseFloat(cashoutTiming),
+        overallRating, recommendations,
+      },
+      update: {
+        communicationWithPlayer: parseFloat(communicationWithPlayer),
+        loadReloadSmoothness: parseFloat(loadReloadSmoothness),
+        liveReportingToPlayers: parseFloat(liveReportingToPlayers),
+        playtimeBonus: parseFloat(playtimeBonus),
+        referralBonus: parseFloat(referralBonus),
+        matchAndRandomBonus: parseFloat(matchAndRandomBonus),
+        playerEngagementOverall: parseFloat(playerEngagementOverall),
+        reachingOutInShifts: parseFloat(reachingOutInShifts),
+        reachingOutFromOwnList: parseFloat(reachingOutFromOwnList),
+        cashoutTiming: parseFloat(cashoutTiming),
+        overallRating, recommendations, ratedById: req.userId,
+      },
+    });
+
+    broadcastTaskUpdate('shift_rated', { shiftId, memberId, overallRating });
+    res.json({ data: rating, message: `Shift rated: ${overallRating.toFixed(1)}/5` });
+  } catch (err) {
+    console.error('Rate shift error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET / api / shifts /: id / rating ────────────────────────────────
+// Get an existing rating for a shift.
+
+app.get('/api/shifts/:id/rating', authMiddleware, async (req, res) => {
+  try {
+    const shiftId = parseInt(req.params.id);
+    const rating = await prisma.shiftRating.findUnique({ where: { shiftId } });
+    res.json({ data: rating ?? null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET / api / members /: userId / ratings ──────────────────────────
+// Returns aggregated rating data for a specific member.
+// Used by MemberTasksSection to show the rating panel.
+
+app.get('/api/members/:userId/ratings', authMiddleware, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    if (isNaN(userId)) return res.status(400).json({ error: 'Invalid user ID' });
+
+    const CATEGORY_KEYS = [
+      'communicationWithPlayer', 'loadReloadSmoothness', 'liveReportingToPlayers',
+      'playtimeBonus', 'referralBonus', 'matchAndRandomBonus',
+      'playerEngagementOverall', 'reachingOutInShifts', 'reachingOutFromOwnList', 'cashoutTiming',
+    ];
+
+    // All ratings for this member, newest first
+    const allRatings = await prisma.shiftRating.findMany({
+      where: { memberId: userId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!allRatings.length) return res.json({ data: null });
+
+    // Last shift rating
+    const lastShift = allRatings[0];
+
+    // This month's ratings
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthlyRatings = allRatings.filter(r => new Date(r.createdAt) >= monthStart);
+    const monthlyAvg = monthlyRatings.length
+      ? parseFloat((monthlyRatings.reduce((s, r) => s + r.overallRating, 0) / monthlyRatings.length).toFixed(2))
+      : null;
+    const monthlyStars = monthlyRatings.reduce((s, r) => s + Math.round(r.overallRating), 0);
+
+    // Total stars(sum of all rounded overallRatings)
+    const totalStars = allRatings.reduce((s, r) => s + Math.round(r.overallRating), 0);
+
+    // Category averages across all shifts
+    const categoryAverages = {};
+    CATEGORY_KEYS.forEach(k => {
+      const vals = allRatings.map(r => r[k]).filter(v => v > 0);
+      categoryAverages[k] = vals.length ? parseFloat((vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2)) : 0;
+    });
+
+    res.json({
+      data: {
+        lastShift,
+        monthly: { avgRating: monthlyAvg, totalStars: monthlyStars, count: monthlyRatings.length },
+        total: { totalStars, shiftCount: allRatings.length, avgRating: parseFloat((allRatings.reduce((s, r) => s + r.overallRating, 0) / allRatings.length).toFixed(2)) },
+        categoryAverages,
+        history: allRatings.slice(0, 10),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET / api / members / all - ratings ──────────────────────────────
+// Admin: summary of all team members' ratings.
+// Used by AdminRatingOverview in MemberTasksSection.
+
+app.get('/api/members/all-ratings', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const teamRoles = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    const members = await prisma.user.findMany({
+      where: { role: { in: teamRoles } },
+      select: { id: true, name: true, username: true, role: true },
+    });
+
+    const result = await Promise.all(members.map(async (m) => {
+      const ratings = await prisma.shiftRating.findMany({
+        where: { memberId: m.id },
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+      });
+      const avgRating = ratings.length
+        ? parseFloat((ratings.reduce((s, r) => s + r.overallRating, 0) / ratings.length).toFixed(2))
+        : 0;
+      const totalStars = ratings.reduce((s, r) => s + Math.round(r.overallRating), 0);
+      return { ...m, avgRating, totalStars, shiftCount: ratings.length, lastRated: ratings[0]?.createdAt ?? null };
+    }));
+
+    res.json({ data: result.sort((a, b) => b.avgRating - a.avgRating) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // REPORTS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
@@ -3637,27 +3767,17 @@ async function enrichShift(shift) {
   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
 
   const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
-    // prisma.transaction.findMany({
-    //   // where: { createdAt: timeWindow, status: 'COMPLETED' },
-    //   createdAt: timeWindow,
-    //     status: { in: ['COMPLETED', 'PENDING'] },
-    //   include: {
-    //     user: { select: { id: true, name: true } },
-    //     game: { select: { id: true, name: true } },
-    //   },
-    //   orderBy: { createdAt: 'desc' },
-    // }),
     prisma.transaction.findMany({
-    where: {
+      where: {
         createdAt: timeWindow,
         status: { in: ['COMPLETED', 'PENDING'] },
-    },
-    include: {
+      },
+      include: {
         user: { select: { id: true, name: true } },
         game: { select: { id: true, name: true } },
-    },
-    orderBy: { createdAt: 'desc' },
-}),
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
     prisma.task.findMany({
       where: { completedAt: timeWindow, status: 'COMPLETED' },
       include: {
@@ -3683,6 +3803,7 @@ async function enrichShift(shift) {
     prisma.issue.findMany({
       where: { OR: [{ createdAt: timeWindow }, { updatedAt: timeWindow, status: 'RESOLVED' }] },
     }).catch(() => []),
+    prisma.shiftRating.findUnique({ where: { shiftId: shift.id } }),
     prisma.shiftCheckin.findUnique({
       where: { shiftId: shift.id },
       include: { user: { select: { id: true, name: true } } },
@@ -3791,6 +3912,7 @@ async function enrichShift(shift) {
     endSnapshot,     // ← NEW
     effortReason,    // ← NEW
     improvements,    // ← NEW
+    rating,
     stats: {
       tasksCompleted: tasks.length,
       playersAdded: playersAdded.length,
@@ -3914,18 +4036,6 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     res.status(500).json({ error: 'Failed to generate report: ' + err.message });
   }
 });
-// app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
-//   try {
-//     const role = req.query.role || req.userRole;
-//     const limit = parseInt(req.query.limit) || 30;
-//     const shifts = await prisma.shift.findMany({ where: { teamRole: role }, orderBy: { startTime: 'desc' }, take: limit });
-//     const enriched = await Promise.all(shifts.map(enrichShift));
-//     res.json({ data: enriched });
-//   } catch (err) {
-//     res.status(500).json({ error: 'Failed to fetch shift reports' });
-//   }
-// });
-
 
 app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
   try {
@@ -4587,8 +4697,8 @@ app.post('/api/tasks/:id/resolve-followup', authMiddleware, async (req, res) => 
     // Discord notification when resolved
     // if (allRequired && (BOT_TOKEN || PROXY_URL)) {
     //   const isBonusTask = task.taskType === 'BONUS_FOLLOWUP';
-      if (allRequired && (process.env.BOT_TOKEN || process.env.PROXY_URL)) {
-  const isBonusTask = task.taskType === 'BONUS_FOLLOWUP';
+    if (allRequired && (process.env.BOT_TOKEN || process.env.PROXY_URL)) {
+      const isBonusTask = task.taskType === 'BONUS_FOLLOWUP';
       await discordSendJSON({
         embeds: [{
           title: isBonusTask ? '🎁 Bonus Followup Resolved' : '✅ Player Followup Resolved',
