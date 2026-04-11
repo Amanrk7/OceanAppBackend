@@ -3637,16 +3637,27 @@ async function enrichShift(shift) {
   const timeWindow = { gte: new Date(shift.startTime), lte: new Date(shiftEnd) };
 
   const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
+    // prisma.transaction.findMany({
+    //   // where: { createdAt: timeWindow, status: 'COMPLETED' },
+    //   createdAt: timeWindow,
+    //     status: { in: ['COMPLETED', 'PENDING'] },
+    //   include: {
+    //     user: { select: { id: true, name: true } },
+    //     game: { select: { id: true, name: true } },
+    //   },
+    //   orderBy: { createdAt: 'desc' },
+    // }),
     prisma.transaction.findMany({
-      // where: { createdAt: timeWindow, status: 'COMPLETED' },
-      createdAt: timeWindow,
+    where: {
+        createdAt: timeWindow,
         status: { in: ['COMPLETED', 'PENDING'] },
-      include: {
+    },
+    include: {
         user: { select: { id: true, name: true } },
         game: { select: { id: true, name: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    }),
+    },
+    orderBy: { createdAt: 'desc' },
+}),
     prisma.task.findMany({
       where: { completedAt: timeWindow, status: 'COMPLETED' },
       include: {
