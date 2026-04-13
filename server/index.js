@@ -4901,6 +4901,66 @@ app.get('/api/test-discord', async (req, res) => {
   }
 });
 
+app.get('/api/profit-takeouts', authMiddleware, async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [records, total] = await Promise.all([
+      prisma.profitTakeout.findMany({ orderBy: { takenAt: 'desc' }, skip, take: parseInt(limit) }),
+      prisma.profitTakeout.count(),
+    ]);
+    res.json({ data: records, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/profit-takeouts', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { amount, takenBy, method = 'Cash', walletId, notes, takenAt } = req.body;
+    if (!amount || !takenBy) return res.status(400).json({ error: 'amount and takenBy are required' });
+    const record = await prisma.profitTakeout.create({
+      data: {
+        amount: parseFloat(amount),
+        takenBy: takenBy.trim(),
+        method,
+        walletId: walletId ? parseInt(walletId) : null,
+        notes: notes || null,
+        takenAt: takenAt ? new Date(takenAt) : new Date(),
+        recordedById: req.userId,
+      },
+    });
+    if (walletId) {
+      await prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { decrement: parseFloat(amount) } } });
+    }
+    res.status(201).json({ data: record, message: `Takeout of $${parseFloat(amount).toFixed(2)} recorded for ${takenBy}.` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/profit-takeouts/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { amount, takenBy, method, notes, takenAt } = req.body;
+    const updated = await prisma.profitTakeout.update({
+      where: { id },
+      data: {
+        ...(amount !== undefined && { amount: parseFloat(amount) }),
+        ...(takenBy && { takenBy: takenBy.trim() }),
+        ...(method && { method }),
+        ...(notes !== undefined && { notes: notes || null }),
+        ...(takenAt && { takenAt: new Date(takenAt) }),
+      },
+    });
+    res.json({ data: updated, message: 'Record updated.' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/profit-takeouts/:id', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    await prisma.profitTakeout.delete({ where: { id: parseInt(req.params.id) } });
+    res.json({ message: 'Record deleted.' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 // ═══════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════
