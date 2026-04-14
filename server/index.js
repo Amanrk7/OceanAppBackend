@@ -1258,6 +1258,54 @@ app.get('/api/profit/stats', authMiddleware, adminMiddleware, async (req, res) =
   }
 });
 
+app.get('/api/analytics/top-games-deposits', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const getTop = async (days) => {
+      const sinceDate = new Date();
+      sinceDate.setDate(sinceDate.getDate() - days);
+      const top = await prisma.transaction.groupBy({
+        by: ['gameId'],
+        where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: sinceDate }, gameId: { not: null } },
+        _sum: { amount: true },
+        orderBy: { _sum: { amount: 'desc' } },
+        take: 10,
+      });
+      return Promise.all(top.map(async (d) => {
+        const game = await prisma.game.findUnique({ where: { id: d.gameId }, select: { id: true, name: true } });
+        return { ...game, totalDeposited: parseFloat(d._sum.amount) };
+      }));
+    };
+    const [period_1day, period_7days, period_30days] = await Promise.all([getTop(1), getTop(7), getTop(30)]);
+    res.json({ period_1day, period_7days, period_30days });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch top games by deposits' });
+  }
+});
+
+app.get('/api/analytics/top-games-cashouts', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const getTop = async (days) => {
+      const sinceDate = new Date();
+      sinceDate.setDate(sinceDate.getDate() - days);
+      const top = await prisma.transaction.groupBy({
+        by: ['gameId'],
+        where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: sinceDate }, gameId: { not: null } },
+        _sum: { amount: true },
+        orderBy: { _sum: { amount: 'desc' } },
+        take: 10,
+      });
+      return Promise.all(top.map(async (d) => {
+        const game = await prisma.game.findUnique({ where: { id: d.gameId }, select: { id: true, name: true } });
+        return { ...game, totalCashedOut: parseFloat(d._sum.amount) };
+      }));
+    };
+    const [period_1day, period_7days, period_30days] = await Promise.all([getTop(1), getTop(7), getTop(30)]);
+    res.json({ period_1day, period_7days, period_30days });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch top games by cashouts' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // BONUSES ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
