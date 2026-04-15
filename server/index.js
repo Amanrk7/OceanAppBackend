@@ -79,6 +79,13 @@ app.get('/api/time', (req, res) => {
 // AUTH MIDDLEWARE
 // ═══════════════════════════════════════════════════════════════
 
+// middleware/storeMiddleware.js
+const storeMiddleware = (req, res, next) => {
+  req.storeId = parseInt(req.headers['x-store-id'] || '1');
+  next();
+};
+
+
 const authMiddleware = (req, res, next) => {
   try {
     const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
@@ -378,7 +385,7 @@ app.get('/api/players', authMiddleware, async (req, res) => {
     const pageNum = parseInt(page, 10);
     const limitNum = parseInt(limit, 10);
 
-    const where = { role: 'PLAYER' };
+    const where = { role: 'PLAYER', storeId: req.storeId };
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
@@ -480,6 +487,7 @@ app.get('/api/players/search', authMiddleware, async (req, res) => {
     const players = await prisma.user.findMany({
       where: {
         role: 'PLAYER',
+        storeId: req.storeId,
         OR: [
           { name: { contains: q.trim(), mode: 'insensitive' } },
           { username: { contains: q.trim(), mode: 'insensitive' } },
@@ -501,7 +509,7 @@ app.get('/api/players/search', authMiddleware, async (req, res) => {
 app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
   try {
     const players = await prisma.user.findMany({
-      where: { role: 'PLAYER' },
+      where: { role: 'PLAYER', storeId: req.storeId },
       select: {
         id: true, name: true, username: true, email: true, phone: true,
         tier: true, createdAt: true, snapchat: true, instagram: true, telegram: true,
@@ -536,10 +544,6 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-
-
-
 
 // POST /api/create-new-player
 app.post('/api/create-new-player', authMiddleware, async (req, res) => {
@@ -808,7 +812,7 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
 
     const user = await prisma.user.findUnique({
-      where: { id },
+      where: { id, storeId: req.storeId },
       include: {
         transactions: {
           orderBy: { createdAt: 'desc' }, take: 200,
@@ -3035,7 +3039,7 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
     const limitNum = parseInt(limit, 10);
 
     const allPlayers = await prisma.user.findMany({
-      where: { role: 'PLAYER' },
+      where: { role: 'PLAYER', storeId: req.storeId },
       select: { id: true, name: true, username: true, email: true, balance: true, tier: true, status: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -3820,7 +3824,7 @@ app.get('/api/members/all-ratings', authMiddleware, adminMiddleware, async (req,
   try {
     const teamRoles = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
     const members = await prisma.user.findMany({
-      where: { role: { in: teamRoles } },
+      where: { role: { in: teamRoles }, storeId: req.storeId, },
       select: { id: true, name: true, username: true, role: true },
     });
 
@@ -4058,7 +4062,7 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
 
     const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
     const teamUsers = await prisma.user.findMany({
-      where: { role: { in: roles } },
+      where: { role: { in: roles }, storeId: req.storeId, },
       select: { id: true, name: true, username: true, role: true },
     });
 
@@ -4928,7 +4932,7 @@ app.get('/api/tasks/followup-summary', authMiddleware, adminMiddleware, async (r
 app.get('/api/team-members', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const members = await prisma.user.findMany({
-      where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] } },
+      where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] }, storeId: req.storeId },
       select: { id: true, name: true, username: true, role: true, email: true },
       orderBy: { name: 'asc' },
     });
