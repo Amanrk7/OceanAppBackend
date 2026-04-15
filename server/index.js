@@ -595,6 +595,7 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
         username: username.trim(), password: hashedPassword, email: email?.trim() || null,
         name: name.trim(), phone: phone?.trim() || null, tier: resolvedTier,
         role: 'PLAYER', status: 'ACTIVE', cashoutLimit: TIER_CASHOUT[resolvedTier] ?? 250,
+        storeId: req.storeId, 
         facebook: facebook || null, telegram: telegram || null,
         instagram: instagram || null, twitterX: x || null, snapchat: snapchat || null,
         source: sourceList.length ? sourceList.join(', ') : null,
