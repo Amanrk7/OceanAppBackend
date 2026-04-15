@@ -63,6 +63,12 @@ app.use(cors({
   optionsSuccessStatus: 200
 }));
 
+// middleware/storeMiddleware.js
+const storeMiddleware = (req, res, next) => {
+  req.storeId = parseInt(req.headers['x-store-id'] || '1');
+  next();
+};
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -80,11 +86,7 @@ app.get('/api/time', (req, res) => {
 // AUTH MIDDLEWARE
 // ═══════════════════════════════════════════════════════════════
 
-// middleware/storeMiddleware.js
-const storeMiddleware = (req, res, next) => {
-  req.storeId = parseInt(req.headers['x-store-id'] || '1');
-  next();
-};
+
 
 
 const authMiddleware = (req, res, next) => {
@@ -681,7 +683,7 @@ app.post('/api/create-new-player', authMiddleware, async (req, res) => {
     }
 
     const fullPlayer = await prisma.user.findUnique({
-      where: { id: newPlayer.id, storeId: req.storeId},
+      where: { id: newPlayer.id, storeId: req.storeId },
       include: {
         referrer: { select: { id: true, name: true, username: true } },
         referrals: { select: { id: true, name: true, username: true } },
@@ -883,7 +885,7 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       updateData.referredBy = referredById ? parseInt(referredById) : null;
     }
 
-    const updated = await prisma.user.update({ where: { id, storeId: req.storeId}, data: updateData });
+    const updated = await prisma.user.update({ where: { id, storeId: req.storeId }, data: updateData });
 
     // ── NEW: replace friends list ─────────────────────────────────────────
     if (friendIds !== undefined && Array.isArray(friendIds)) {
