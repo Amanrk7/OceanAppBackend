@@ -1159,17 +1159,19 @@ app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) =>
 // ═══════════════════════════════════════════════════════════════
 
 app.get('/api/dashboard/stats', authMiddleware, adminMiddleware, async (req, res) => {
-  try {
-    const [
-      totalUsers, activeUsers, totalTransactions, pendingTransactions,
-      totalDeposits, totalWithdrawals, totalPlayers, newPlayersWeek,
-      unresolvedIssues, resolvedIssues, highPriorityIssues,
-    ] = await Promise.all([
-      prisma.user.count({ where: { role: 'PLAYER' } }),
-      prisma.user.count({ where: { role: 'PLAYER', status: 'ACTIVE' } }),
-      prisma.transaction.count(),
-      prisma.transaction.count({ where: { status: 'PENDING' } }),
-      prisma.transaction.aggregate({ where: { type: 'DEPOSIT', status: 'COMPLETED' }, _sum: { amount: true } }),
+  const storeWhere = { storeId: req.storeId };
+  const storeUserIds = await prisma.user
+    .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
+    .then(users => users.map(u => u.id));
+
+  const txWhere = { userId: { in: storeUserIds } };
+
+  const [totalUsers, activeUsers, ...] = await Promise.all([
+    prisma.user.count({ where: { role: 'PLAYER', ...storeWhere } }),
+    prisma.user.count({ where: { role: 'PLAYER', status: 'ACTIVE', ...storeWhere } }),
+    prisma.transaction.count({ where: txWhere }),
+    prisma.transaction.count({ where: { ...txWhere, status: 'PENDING' } }),
+    prisma.transaction.aggregate({ where: { ...txWhere, type: 'DEPOSIT', status: 'COMPLETED' }, _sum: { amount: true } }),
       prisma.transaction.aggregate({ where: { type: 'WITHDRAWAL', status: 'COMPLETED' }, _sum: { amount: true } }),
       prisma.user.count({ where: { role: 'PLAYER' } }),
       prisma.user.count({ where: { role: 'PLAYER', createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } } }),
@@ -2227,11 +2229,19 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
       fromDate = '', toDate = '',           // ← NEW
     } = req.query;
 
+    // Get user IDs for this store
+  const storeUserIds = await prisma.user
+    .findMany({ where: { storeId: req.storeId }, select: { id: true } })
+    .then(us => us.map(u => u.id));
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const where = {};
-    if (type) where.type = type;
-    if (status) where.status = status;
+    const where = { userId: { in: storeUserIds } };
+  if (type) where.type = type;
+  if (status) where.status = status;
+    
+    // const where = {};
+    // if (type) where.type = type;
+    // if (status) where.status = status;
 
     // ── NEW: date range filter ──────────────────────────────────
     if (fromDate || toDate) {
