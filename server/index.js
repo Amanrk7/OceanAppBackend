@@ -1166,6 +1166,7 @@ app.get('/api/dashboard/stats', authMiddleware, adminMiddleware, async (req, res
       .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
       .then(users => users.map(u => u.id));
 
+
     const txWhere = { userId: { in: storeUserIds } };
 
     const [
@@ -1179,9 +1180,9 @@ app.get('/api/dashboard/stats', authMiddleware, adminMiddleware, async (req, res
       prisma.transaction.count({ where: { ...txWhere, status: 'PENDING' } }),
       prisma.transaction.aggregate({ where: { ...txWhere, type: 'DEPOSIT', status: 'COMPLETED' }, _sum: { amount: true } }),
 
-      prisma.transaction.aggregate({ where: { type: 'WITHDRAWAL', status: 'COMPLETED' }, _sum: { amount: true } }),
-      prisma.user.count({ where: { role: 'PLAYER' } }),
-      prisma.user.count({ where: { role: 'PLAYER', createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } } }),
+      prisma.transaction.aggregate({ where: { ...txWhere, type: 'WITHDRAWAL', status: 'COMPLETED' }, _sum: { amount: true } }),
+      prisma.user.count({ where: { role: 'PLAYER', storeId: req.storeId } }),
+      prisma.user.count({ where: { role: 'PLAYER', storeId: req.storeId, createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } } }),
       prisma.issue.count({ where: { status: 'UNRESOLVED' } }),
       prisma.issue.count({ where: { status: 'RESOLVED' } }),
       prisma.issue.count({ where: { status: 'UNRESOLVED', priority: 'HIGH' } }),
@@ -1191,8 +1192,9 @@ app.get('/api/dashboard/stats', authMiddleware, adminMiddleware, async (req, res
     const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
     const [todayDeposits, todayCashouts] = await Promise.all([
-      prisma.transaction.aggregate({ where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: today, lt: tomorrow } }, _sum: { amount: true } }),
-      prisma.transaction.aggregate({ where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: today, lt: tomorrow } }, _sum: { amount: true } }),
+      prisma.transaction.aggregate({ where: { ...txWhere, type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: today, lt: tomorrow } }, _sum: { amount: true } }),
+      prisma.transaction.aggregate({ where: { ...txWhere, type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: today, lt: tomorrow } }, _sum: { amount: true } }),
+
     ]);
 
     const deposits = parseFloat(totalDeposits._sum.amount || 0);
@@ -1217,9 +1219,12 @@ app.get('/api/analytics/top-depositors', authMiddleware, adminMiddleware, async 
   try {
     const getTop = async (days) => {
       const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+      const storeUserIds = await prisma.user
+        .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
+        .then(us => us.map(u => u.id));
       const top = await prisma.transaction.groupBy({
         by: ['userId'],
-        where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: sinceDate } },
+        where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: sinceDate }, userId: { in: storeUserIds } },
         _sum: { amount: true }, orderBy: { _sum: { amount: 'desc' } }, take: 10,
       });
       return Promise.all(top.map(async (d) => {
@@ -1238,9 +1243,12 @@ app.get('/api/analytics/top-cashouts', authMiddleware, adminMiddleware, async (r
   try {
     const getTopCashouts = async (days) => {
       const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
+      const storeUserIds = await prisma.user
+        .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
+        .then(us => us.map(u => u.id));
       const top = await prisma.transaction.groupBy({
         by: ['userId'],
-        where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: sinceDate } },
+        where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: sinceDate }, userId: { in: storeUserIds } },
         _sum: { amount: true }, orderBy: { _sum: { amount: 'desc' } }, take: 10,
       });
       return Promise.all(top.map(async (d) => {
@@ -1260,7 +1268,8 @@ app.get('/api/profit/stats', authMiddleware, adminMiddleware, async (req, res) =
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const thirtyDaysAgo = new Date(today); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const profitData = await prisma.profitStat.findMany({ where: { date: { gte: thirtyDaysAgo, lte: today } }, orderBy: { date: 'asc' } });
+    const profitData = await prisma.profitStat.findMany({ where: { storeId: req.storeId, date: { gte: thirtyDaysAgo, lte: today } }, orderBy: { date: 'asc' } });
+
     const totalProfit = profitData.reduce((sum, p) => sum + parseFloat(p.profit.toString()), 0);
     const avgProfit = profitData.length > 0 ? totalProfit / profitData.length : 0;
     const maxProfit = profitData.length > 0 ? Math.max(...profitData.map(p => parseFloat(p.profit.toString()))) : 0;
@@ -1277,12 +1286,15 @@ app.get('/api/profit/stats', authMiddleware, adminMiddleware, async (req, res) =
 
 app.get('/api/analytics/top-games-deposits', authMiddleware, adminMiddleware, async (req, res) => {
   try {
+    const storeUserIds = await prisma.user
+      .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
+      .then(us => us.map(u => u.id));
     const getTop = async (days) => {
       const sinceDate = new Date();
       sinceDate.setDate(sinceDate.getDate() - days);
       const top = await prisma.transaction.groupBy({
         by: ['gameId'],
-        where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: sinceDate }, gameId: { not: null } },
+        where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: sinceDate }, gameId: { not: null }, userId: { in: storeUserIds } },
         _sum: { amount: true },
         orderBy: { _sum: { amount: 'desc' } },
         take: 10,
@@ -1301,12 +1313,15 @@ app.get('/api/analytics/top-games-deposits', authMiddleware, adminMiddleware, as
 
 app.get('/api/analytics/top-games-cashouts', authMiddleware, adminMiddleware, async (req, res) => {
   try {
+    const storeUserIds = await prisma.user
+      .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
+      .then(us => us.map(u => u.id));
     const getTop = async (days) => {
       const sinceDate = new Date();
       sinceDate.setDate(sinceDate.getDate() - days);
       const top = await prisma.transaction.groupBy({
         by: ['gameId'],
-        where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: sinceDate }, gameId: { not: null } },
+        where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: sinceDate }, gameId: { not: null }, userId: { in: storeUserIds } },
         _sum: { amount: true },
         orderBy: { _sum: { amount: 'desc' } },
         take: 10,
@@ -1329,12 +1344,23 @@ app.get('/api/analytics/top-games-cashouts', authMiddleware, adminMiddleware, as
 
 app.get('/api/bonuses', authMiddleware, async (req, res) => {
   try {
+    // const bonusTxns = await prisma.transaction.findMany({
+    //   where: { type: 'BONUS' },
+    //   orderBy: { createdAt: 'desc' },
+    //   take: 200,
+    //   include: { user: { select: { id: true, name: true } } },
+    // });
+
+    const storeUserIds = await prisma.user
+      .findMany({ where: { storeId: req.storeId }, select: { id: true } })
+      .then(us => us.map(u => u.id));
     const bonusTxns = await prisma.transaction.findMany({
-      where: { type: 'BONUS' },
+      where: { type: 'BONUS', userId: { in: storeUserIds } },
       orderBy: { createdAt: 'desc' },
       take: 200,
       include: { user: { select: { id: true, name: true } } },
     });
+
 
     const ledger = bonusTxns.map(t => {
       const desc = t.description || '';
@@ -1830,12 +1856,10 @@ app.post('/api/transactions/deposit', authMiddleware, async (req, res) => {
     // ── Execute main transaction ──────────────────────────────────────────────
     const results = await prisma.$transaction(ops);
 
-    //   // Auto-check milestone + referral weekly bonuses (non-blocking)
-    // checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
-    // checkReferralWeeklyBonus(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
+
 
     checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate)
-      .then(() => ensureMilestoneTasks(parseInt(playerId)))   // ← create tasks for new milestones
+      .then(() => ensureMilestoneTasks(parseInt(playerId), req.storeId))
       .catch(() => { });
     checkReferralWeeklyBonus(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
 
@@ -2885,7 +2909,7 @@ app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, asy
 app.get('/api/games', authMiddleware, async (req, res) => {
   try {
     const { status, search } = req.query;
-    const where = {};
+    const where = { storeId: req.storeId };
     if (status) where.status = status.toUpperCase();
     if (search) where.name = { contains: search, mode: 'insensitive' };
     const games = await prisma.game.findMany({ where, orderBy: { name: 'asc' } });
@@ -2899,9 +2923,10 @@ app.post('/api/games', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { name, slug, pointStock, status } = req.body;
     if (!name || !slug) return res.status(400).json({ error: 'Name and slug are required' });
-    const existing = await prisma.game.findFirst({ where: { OR: [{ name }, { slug }] } });
+    const existing = await prisma.game.findFirst({ where: { storeId: req.storeId, OR: [{ name }, { slug }] } });
     if (existing) return res.status(409).json({ error: 'A game with that name or slug already exists' });
-    const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY' } });
+    const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId } });
+
     res.status(201).json({ data: game, message: 'Game created successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create game' });
@@ -2947,7 +2972,8 @@ app.delete('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) =
 app.get('/api/expenses', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { category, search } = req.query;
-    const where = {};
+
+    const where = { storeId: req.storeId };
     if (category) where.category = category.toUpperCase().replace(' ', '_');
     if (search) where.details = { contains: search, mode: 'insensitive' };
     const expenses = await prisma.expense.findMany({ where, include: { game: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } });
@@ -2961,7 +2987,8 @@ app.post('/api/expenses', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { gameId, details, category, amount, pointsAdded, notes } = req.body;
     if (!details || !amount) return res.status(400).json({ error: 'Details and amount are required' });
-    const expense = await prisma.expense.create({ data: { gameId: gameId || null, details, category: category?.toUpperCase().replace(' ', '_') || 'POINT_RELOAD', amount: parseFloat(amount), pointsAdded: pointsAdded || 0, notes: notes || null }, include: { game: { select: { id: true, name: true } } } });
+    const expense = await prisma.expense.create({ data: { gameId: gameId || null, details, category: category?.toUpperCase().replace(' ', '_') || 'POINT_RELOAD', amount: parseFloat(amount), pointsAdded: pointsAdded || 0, notes: notes || null, storeId: req.storeId }, include: { game: { select: { id: true, name: true } } } });
+
     res.status(201).json({ data: expense, message: 'Expense recorded successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create expense' });
@@ -3002,7 +3029,7 @@ app.patch('/api/expenses/:id', authMiddleware, adminMiddleware, async (req, res)
 
 app.get('/api/wallets', authMiddleware, async (req, res) => {
   try {
-    const wallets = await prisma.wallet.findMany({ orderBy: [{ method: 'asc' }, { name: 'asc' }] });
+    const wallets = await prisma.wallet.findMany({ where: { storeId: req.storeId }, orderBy: [{ method: 'asc' }, { name: 'asc' }] });
     const grouped = wallets.reduce((acc, wallet) => {
       if (!acc[wallet.method]) acc[wallet.method] = { method: wallet.method, totalBalance: 0, subAccounts: [] };
       acc[wallet.method].subAccounts.push(wallet);
@@ -3033,7 +3060,8 @@ app.post('/api/wallets', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { name, method, identifier, balance, isLive } = req.body;
     if (!name || !method) return res.status(400).json({ error: 'Name and method are required' });
-    const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, } });
+    const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, storeId: req.storeId } });
+
     res.status(201).json({ data: wallet, message: 'Wallet created' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create wallet' });
@@ -3119,7 +3147,7 @@ app.get('/api/issues', authMiddleware, async (req, res) => {
     const where = {};
     if (status) where.status = status.toUpperCase();
     if (priority) where.priority = priority.toUpperCase();
-    const issues = await prisma.issue.findMany({ where: Object.keys(where).length > 0 ? where : undefined, orderBy: { createdAt: 'desc' } });
+    const issues = await prisma.issue.findMany({ where: { ...where, storeId: req.storeId }, orderBy: { createdAt: 'desc' } });
     res.json({ data: issues });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch issues' });
@@ -3132,7 +3160,8 @@ app.post('/api/issues', authMiddleware, async (req, res) => {
     if (!title || !description) return res.status(400).json({ error: 'Title and description are required' });
     const issuePriority = priority?.toUpperCase() || 'MEDIUM';
     if (!['LOW', 'MEDIUM', 'HIGH'].includes(issuePriority)) return res.status(400).json({ error: 'Priority must be LOW, MEDIUM, or HIGH' });
-    const newIssue = await prisma.issue.create({ data: { title: title.trim(), description: description.trim(), playerName: playerName?.trim() || null, priority: issuePriority, status: 'UNRESOLVED', createdAt: new Date() } });
+    const newIssue = await prisma.issue.create({ data: { title: title.trim(), description: description.trim(), playerName: playerName?.trim() || null, priority: issuePriority, status: 'UNRESOLVED', storeId: req.storeId, createdAt: new Date() } });
+
     res.status(201).json({ data: newIssue, message: 'Issue submitted successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create issue' });
@@ -3455,16 +3484,18 @@ app.get('/api/pending-bonuses/all', authMiddleware, adminMiddleware, async (req,
 // SHIFTS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
-async function getOrCreateTeam(teamRole) {
-  let team = await prisma.team.findFirst({ where: { teamName: teamRole } });
-  if (!team) team = await prisma.team.create({ data: { teamName: teamRole, isShiftActive: false } });
+
+async function getOrCreateTeam(teamRole, storeId) {
+  let team = await prisma.team.findFirst({ where: { teamName: teamRole, storeId } });
+  if (!team) team = await prisma.team.create({ data: { teamName: teamRole, isShiftActive: false, storeId } });
   return team;
 }
 
 app.get('/api/shifts/:role', authMiddleware, async (req, res) => {
   try {
     const { role } = req.params;
-    const teamShifts = await prisma.shift.findMany({ where: { teamRole: role }, orderBy: { createdAt: 'desc' } });
+    const teamShifts = await prisma.shift.findMany({ where: { teamRole: role, team: { storeId: req.storeId } }, orderBy: { createdAt: 'desc' } });
+
     res.json({ data: teamShifts });  // ← just return empty array, no 404
   } catch (err) {
     res.status(500).json({ error: 'Failed to show shift record' });
@@ -3474,7 +3505,9 @@ app.get('/api/shifts/:role', authMiddleware, async (req, res) => {
 // ✅ IMPORTANT: /api/shifts/active/:role and /api/shifts/start must be before /api/shifts/:id/...
 app.get('/api/shifts/active/:role', authMiddleware, async (req, res) => {
   try {
-    const shift = await prisma.shift.findFirst({ where: { teamRole: req.params.role, isActive: true }, orderBy: { startTime: 'desc' } });
+
+    const shift = await prisma.shift.findFirst({ where: { teamRole: req.params.role, isActive: true, team: { storeId: req.storeId } }, orderBy: { startTime: 'desc' } });
+
     res.json({ data: shift || null });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get active shift' });
@@ -3486,7 +3519,8 @@ app.post('/api/shifts/start', authMiddleware, async (req, res) => {
     const { teamRole } = req.body;
     if (!teamRole) return res.status(400).json({ error: 'teamRole is required' });
     await prisma.shift.updateMany({ where: { teamRole, isActive: true }, data: { isActive: false, endTime: new Date() } });
-    const team = await getOrCreateTeam(teamRole);
+    const team = await getOrCreateTeam(teamRole, req.storeId);
+
     await prisma.team.update({ where: { id: team.id }, data: { isShiftActive: true } });
     const shift = await prisma.shift.create({ data: { teamId: team.id, teamRole, startTime: new Date(), isActive: true } });
     const member = await prisma.user.findFirst({ where: { role: teamRole }, select: { name: true } });
@@ -4075,7 +4109,7 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     const dayStart = new Date(target); dayStart.setUTCHours(0, 0, 0, 0);
     const dayEnd = new Date(target); dayEnd.setUTCHours(23, 59, 59, 999);
 
-    const shiftWhere = { startTime: { gte: dayStart, lte: dayEnd } };
+    const shiftWhere = { startTime: { gte: dayStart, lte: dayEnd }, team: { storeId: req.storeId } };
     if (teamRole) shiftWhere.teamRole = teamRole;
 
     const shifts = await prisma.shift.findMany({ where: shiftWhere, orderBy: { startTime: 'asc' } });
@@ -4093,10 +4127,12 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
       shifts: enrichedShifts.filter(s => s.teamRole === role),
     }));
 
+    const storeUserIds = await prisma.user
+      .findMany({ where: { storeId: req.storeId }, select: { id: true } })
+      .then(us => us.map(u => u.id));
     const allDayTxns = await prisma.transaction.findMany({
-      where: { createdAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' },
+      where: { userId: { in: storeUserIds }, createdAt: { gte: dayStart, lte: dayEnd }, status: 'COMPLETED' },
     });
-
     const dayDeposits = sumField(allDayTxns.filter(t => t.type === 'DEPOSIT'), 'amount');
     const dayCashouts = sumField(allDayTxns.filter(t => t.type === 'WITHDRAWAL'), 'amount');
     // const dayBonuses = sumField(allDayTxns.filter(t => BONUS_TYPES_DB.includes(t.type)), 'amount');
@@ -4159,7 +4195,7 @@ app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
     const limit = parseInt(req.query.limit) || 30;
 
     const shifts = await prisma.shift.findMany({
-      where: { teamRole: role },
+      where: { teamRole: role, team: { storeId: req.storeId } },
       orderBy: { startTime: 'desc' },
       take: limit,
     });
@@ -4176,13 +4212,19 @@ app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
 
 app.get('/api/chart/daily-profit', authMiddleware, adminMiddleware, async (req, res) => {
   try {
+    // ADD at the start of each chart handler body:
+    const storeUserIds = await prisma.user
+      .findMany({ where: { storeId: req.storeId }, select: { id: true } })
+      .then(us => us.map(u => u.id));
     const chartData = [];
     for (let i = 6; i >= 0; i--) {
       const date = new Date(); date.setDate(date.getDate() - i); date.setHours(0, 0, 0, 0);
       const nextDate = new Date(date); nextDate.setDate(nextDate.getDate() + 1);
       const [deposits, withdrawals] = await Promise.all([
-        prisma.transaction.aggregate({ where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
-        prisma.transaction.aggregate({ where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
+        prisma.transaction.aggregate({ where: { userId: { in: storeUserIds }, type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
+
+        prisma.transaction.aggregate({ where: { userId: { in: storeUserIds }, type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
+
       ]);
       const profit = parseFloat(deposits._sum.amount || 0) - parseFloat(withdrawals._sum.amount || 0);
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -4196,11 +4238,14 @@ app.get('/api/chart/daily-profit', authMiddleware, adminMiddleware, async (req, 
 
 app.get('/api/chart/player-activity', authMiddleware, adminMiddleware, async (req, res) => {
   try {
+    const storeUserIds = await prisma.user
+      .findMany({ where: { storeId: req.storeId }, select: { id: true } })
+      .then(us => us.map(u => u.id));
     const chartData = [];
     for (let i = 6; i >= 0; i--) {
       const date = new Date(); date.setDate(date.getDate() - i); date.setHours(0, 0, 0, 0);
       const nextDate = new Date(date); nextDate.setDate(nextDate.getDate() + 1);
-      const deposits = await prisma.transaction.aggregate({ where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } });
+      const deposits = await prisma.transaction.aggregate({ where: { userId: { in: storeUserIds }, type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } });
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       chartData.push({ name: dayNames[date.getDay()], deposits: Math.round(parseFloat(deposits._sum.amount || 0)) });
     }
@@ -4213,13 +4258,18 @@ app.get('/api/chart/player-activity', authMiddleware, adminMiddleware, async (re
 app.get('/api/chart/player-deposit-withdrawal', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const getChartData = async (days) => {
+
+      // ADD at the start of each chart handler body:
+      const storeUserIds = await prisma.user
+        .findMany({ where: { storeId: req.storeId }, select: { id: true } })
+        .then(us => us.map(u => u.id));
       const chartData = [];
       for (let i = days - 1; i >= 0; i--) {
         const date = new Date(); date.setDate(date.getDate() - i); date.setHours(0, 0, 0, 0);
         const nextDate = new Date(date); nextDate.setDate(nextDate.getDate() + 1);
         const [deposits, withdrawals] = await Promise.all([
-          prisma.transaction.aggregate({ where: { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
-          prisma.transaction.aggregate({ where: { type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
+          prisma.transaction.aggregate({ where: { userId: { in: storeUserIds }, type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
+          prisma.transaction.aggregate({ where: { userId: { in: storeUserIds }, type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: date, lt: nextDate } }, _sum: { amount: true } }),
         ]);
         chartData.push({ date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), deposits: parseFloat(deposits._sum.amount || 0), withdrawals: parseFloat(withdrawals._sum.amount || 0) });
       }
@@ -4255,7 +4305,7 @@ setBroadcastFn(broadcastTaskUpdate);
  * ensure a BONUS_FOLLOWUP task exists so staff can track and grant it.
  * Called non-blocking after each deposit (via .then chain).
  */
-async function ensureMilestoneTasks(playerId) {
+async function ensureMilestoneTasks(playerId, storeId = 1) {
   try {
     const unclaimed = await prisma.depositMilestoneBonus.findMany({
       where: { playerId, claimed: false },
@@ -4283,6 +4333,7 @@ async function ensureMilestoneTasks(playerId) {
       const task = await prisma.task.create({
         data: {
           title: `🏆 Grant $${parseFloat(m.bonusAmount).toFixed(0)} Milestone Bonus — ${m.player.name}`,
+          storeId,
           description:
             `${m.player.name} (@${m.player.username}) deposited $${m.milestone}+ today (${m.date}). ` +
             `Grant their $${parseFloat(m.bonusAmount).toFixed(2)} milestone bonus from the player dashboard.`,
@@ -4425,7 +4476,7 @@ app.post('/api/tasks/daily-reset', authMiddleware, adminMiddleware, async (req, 
 app.get('/api/tasks', authMiddleware, async (req, res) => {
   try {
     const { assignedToId, taskType, status, myTasks } = req.query;
-    const where = {};
+    const where = { storeId: req.storeId };
     if (taskType) where.taskType = taskType;
     if (status) where.status = status;
     if (myTasks === 'true') {
@@ -4469,7 +4520,7 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
       checklistItems: checklistItems?.length
         ? checklistItems.map((item, i) => ({ id: `item_${Date.now()}_${i}`, label: item.label, required: !!item.required, done: false, completedBy: null, completedAt: null }))
         : null,
-      isDaily: !!isDaily,
+      isDaily: !!isDaily, storeId: req.storeId,
     };
     if (true) { // <- wrapper so this file is valid JS; remove when copying
       if (assignToAll) {
@@ -4526,7 +4577,8 @@ app.patch('/api/tasks/:id/checklist', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const { itemId, done } = req.body;
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findFirst({ where: { id, storeId: req.storeId } });
+
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
     const items = (task.checklistItems || []).map(item =>
@@ -4599,7 +4651,8 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
 
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findFirst({ where: { id, storeId: req.storeId } });
+
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (task.taskType !== 'MISSING_INFO') return res.status(400).json({ error: 'Not a missing info task' });
     if (task.status === 'COMPLETED') return res.status(400).json({ error: 'Task is already completed' });
@@ -4718,7 +4771,8 @@ app.post('/api/tasks/:id/undo-completion', authMiddleware, async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
 
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findFirst({ where: { id, storeId: req.storeId } });
+
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (task.status !== 'COMPLETED') return res.status(400).json({ error: 'Task is not completed' });
 
@@ -4793,7 +4847,7 @@ app.patch('/api/tasks/:id/assign', authMiddleware, adminMiddleware, async (req, 
 
     const { assignedToId } = req.body; // null = open to all; number = specific member
 
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findFirst({ where: { id, storeId: req.storeId } });
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
     const updated = await prisma.task.update({
@@ -4827,7 +4881,8 @@ app.post('/api/tasks/:id/resolve-followup', authMiddleware, async (req, res) => 
 
     const { outcome, completedItems = [] } = req.body;
 
-    const task = await prisma.task.findUnique({ where: { id } });
+    const task = await prisma.task.findFirst({ where: { id, storeId: req.storeId } });
+
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!['PLAYER_FOLLOWUP', 'BONUS_FOLLOWUP'].includes(task.taskType)) {
       return res.status(400).json({ error: 'Not a followup task' });
@@ -4979,8 +5034,8 @@ app.get('/api/profit-takeouts', authMiddleware, async (req, res) => {
     const { page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [records, total] = await Promise.all([
-      prisma.profitTakeout.findMany({ orderBy: { takenAt: 'desc' }, skip, take: parseInt(limit) }),
-      prisma.profitTakeout.count(),
+      prisma.profitTakeout.findMany({ where: { storeId: req.storeId }, orderBy: { takenAt: 'desc' }, skip, take: parseInt(limit) }),
+      prisma.profitTakeout.count({ where: { storeId: req.storeId } }),
     ]);
     res.json({ data: records, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -4999,6 +5054,7 @@ app.post('/api/profit-takeouts', authMiddleware, adminMiddleware, async (req, re
         notes: notes || null,
         takenAt: takenAt ? new Date(takenAt) : new Date(),
         recordedById: req.userId,
+        storeId: req.storeId
       },
     });
     if (walletId) {
