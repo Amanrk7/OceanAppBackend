@@ -61,7 +61,8 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
     // All players
     const allPlayers = await prisma.user.findMany({
       where : { role: 'PLAYER' },
-      select: { id: true, name: true, username: true, balance: true, tier: true },
+      // select: { id: true, name: true, username: true, balance: true, tier: true },
+      select: { id: true, name: true, username: true, balance: true, tier: true, storeId: true },
     });
     if (!allPlayers.length) return { created: 0, skipped: 0 };
 
@@ -121,6 +122,7 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
 
       const task = await prisma.task.create({
         data: {
+          storeId     :  p.storeId || 1,
           title       : `${emoji} Follow up: ${p.name} (@${p.username})`,
           description : `Player is ${p.category.replace('_', ' ')}. Last deposit: ${p.lastDepositDate}. Balance: $${parseFloat(p.balance).toFixed(2)}.`,
           taskType    : 'PLAYER_FOLLOWUP',
@@ -235,6 +237,7 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
 
       const task = await prisma.task.create({
         data: {
+          storeId     :  player.storeId || 1,
           title       : `${meta.emoji} ${meta.label}: ${player.name} (@${player.username})`,
           description : details,
           taskType    : 'BONUS_FOLLOWUP',
@@ -274,7 +277,9 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
         currentStreak: { gte: STREAK_THRESHOLD },
         lastPlayedDate: { gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) },
       },
-      select: { id: true, name: true, username: true, currentStreak: true, balance: true },
+      // select: { id: true, name: true, username: true, currentStreak: true, balance: true },
+      select: { id: true, name: true, username: true, currentStreak: true, balance: true, storeId: true },
+
     });
 
     for (const p of streakPlayers) {
@@ -295,7 +300,10 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
     const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const newReferredPlayers = await prisma.user.findMany({
       where  : { role: 'PLAYER', referredBy: { not: null }, createdAt: { gte: cutoff } },
-      include: { referrer: { select: { id: true, name: true, username: true } } },
+      include: { referrer: { 
+        // select: { id: true, name: true, username: true, storeId: true } 
+        select: { id: true, name: true, username: true, balance: true, referredBy: true, createdAt: true, storeId: true }
+      } },
     });
 
     for (const p of newReferredPlayers) {
@@ -317,7 +325,7 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
     const depositWindow = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const recentDeposits = await prisma.transaction.findMany({
       where  : { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: depositWindow } },
-      include: { user: { select: { id: true, name: true, username: true, balance: true } } },
+      include: { user: { select: { id: true, name: true, username: true, balance: true, storeId: true } } },
       orderBy: { createdAt: 'desc' },
     });
 
