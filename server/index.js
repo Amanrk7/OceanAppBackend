@@ -4024,6 +4024,7 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     }).catch(() => []);
 
     const wallets = await prisma.wallet.findMany({
+      where: { storeId: req.storeId },
       orderBy: [{ method: 'asc' }, { name: 'asc' }],
     });
 
