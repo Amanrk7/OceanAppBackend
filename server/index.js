@@ -142,7 +142,8 @@ const adminMiddleware = async (req, res, next) => {
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const user = await prisma.user.findUnique({ where: { username } });
+    // const user = await prisma.user.findUnique({ where: { username } });
+    const user = await prisma.user.findFirst({ where: { username } });
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
