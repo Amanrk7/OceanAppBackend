@@ -352,6 +352,19 @@ function shapePlayer(user) {
 
   const streakBonus = (user.currentStreak || 0) * 0.5;
 
+  const allTimeDeposits = parseFloat(
+    (user.transactions || [])
+      .filter(t => t.type === 'DEPOSIT' && t.status === 'COMPLETED')
+      .reduce((s, t) => s + parseFloat(t.amount), 0)
+      .toFixed(2)
+  );
+  const allTimeCashouts = parseFloat(
+    (user.transactions || [])
+      .filter(t => t.type === 'WITHDRAWAL' && t.status === 'COMPLETED')
+      .reduce((s, t) => s + parseFloat(t.amount), 0)
+      .toFixed(2)
+  );
+  
   return {
     id: user.id, name: user.name, username: user.username, email: user.email,
     phone: user.phone || null, tier: user.tier, status: user.status,
@@ -386,6 +399,7 @@ function shapePlayer(user) {
       bonusByType,             // ← NEW: { Streak: 50, Match: 30, ... }
       pendingCount: unclaimed.length,
     },
+    allTimeDeposits, allTimeCashouts,
     referralsList, friendsList, transactionHistory,
     // Add this to the returned object in shapePlayer, alongside transactionHistory
     grantedBonuses: (user.transactions || [])
@@ -3083,7 +3097,7 @@ app.get('/api/players/:id/pending-bonuses', authMiddleware, async (req, res) => 
 app.post('/api/milestone-bonuses/:id/claim', authMiddleware, async (req, res) => {
   try {
     const bonusId = parseInt(req.params.id);
-    const { gameId, notes } = req.body;
+    const { gameId, notes, amount: amountOverride } = req.body;
     if (!gameId) return res.status(400).json({ error: 'gameId is required' });
 
     const bonus = await prisma.depositMilestoneBonus.findUnique({
@@ -3096,7 +3110,10 @@ app.post('/api/milestone-bonuses/:id/claim', authMiddleware, async (req, res) =>
     const game = await prisma.game.findUnique({ where: { id: gameId } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
 
-    const bonusAmt = parseFloat(bonus.bonusAmount);
+    // const bonusAmt = parseFloat(bonus.bonusAmount);
+    const bonusAmt = (amountOverride && parseFloat(amountOverride) > 0)
+      ? parseFloat(amountOverride)
+      : parseFloat(bonus.bonusAmount);
     if (game.pointStock < bonusAmt) {
       return res.status(400).json({
         error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts, need ${bonusAmt}.`,
