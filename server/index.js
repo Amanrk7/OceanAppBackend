@@ -1986,7 +1986,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
 
     const game = await prisma.game.findUnique({ where: { id: gameId }, select: { id: true, name: true, pointStock: true } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
-    if (cashoutAmt > game.pointStock) return res.status(400).json({ error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts.` });
+    // if (cashoutAmt > game.pointStock) return res.status(400).json({ error: `Insufficient game stock. ${game.name} has ${game.pointStock.toFixed(2)} pts.` });
 
     // const balanceAfter = balanceBefore - cashoutAmt;
     const newStock = game.pointStock + cashoutAmt;
