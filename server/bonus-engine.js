@@ -61,9 +61,9 @@ export async function checkMilestoneBonuses(playerId, prisma, broadcastFn) {
         if (!newMilestones.length) return [];
 
         const [player, creatorId] = await Promise.all([
-            prisma.user.findUnique({ where: { id: playerId }, select: { name: true, username: true } }),
-            getSystemCreatorId(prisma),
-        ]);
+  prisma.user.findUnique({ where: { id: playerId }, select: { name: true, username: true, storeId: true } }),
+  getSystemCreatorId(prisma),
+]);
         if (!creatorId) {
             console.warn('[bonus-engine] No admin found to create milestone tasks');
             return [];
@@ -80,6 +80,7 @@ export async function checkMilestoneBonuses(playerId, prisma, broadcastFn) {
             // Auto-create BONUS_FOLLOWUP task for all team members
             const task = await prisma.task.create({
                 data: {
+                    storeId: player?.storeId || 1,
                     title: `💰 $${m} Daily Milestone — ${player.name} earns $${MILESTONE_BONUS}`,
                     description:
                         `${player.name} (@${player.username}) deposited $${totalToday.toFixed(2)} today (${date}), ` +
@@ -179,7 +180,7 @@ export async function checkReferralWeeklyBonus(referredPlayerId, prisma, broadca
             const [referrer, creatorId] = await Promise.all([
                 prisma.user.findUnique({
                     where: { id: player.referredBy },
-                    select: { name: true, username: true },
+                    select: { name: true, username: true, storeId: true },
                 }),
                 getSystemCreatorId(prisma),
             ]);
@@ -187,6 +188,7 @@ export async function checkReferralWeeklyBonus(referredPlayerId, prisma, broadca
             if (creatorId && referrer) {
                 const task = await prisma.task.create({
                     data: {
+                        storeId: referrer?.storeId || 1,
                         title:
                             `🔗 Referral Weekly Bonus — ${referrer.name} can claim 10% of ${player.name}'s deposits`,
                         description:
