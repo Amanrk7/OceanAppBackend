@@ -3490,7 +3490,13 @@ app.post('/api/shifts/start', authMiddleware, async (req, res) => {
   try {
     const { teamRole } = req.body;
     if (!teamRole) return res.status(400).json({ error: 'teamRole is required' });
-    await prisma.shift.updateMany({ where: { teamRole, isActive: true }, data: { isActive: false, endTime: new Date() } });
+    // await prisma.shift.updateMany({ where: { teamRole, isActive: true }, data: { isActive: false, endTime: new Date() } });
+
+    const team = await getOrCreateTeam(teamRole, req.storeId);
+await prisma.shift.updateMany({ 
+  where: { teamRole, isActive: true, teamId: team.id }, // scoped to this store's team
+  data: { isActive: false, endTime: new Date() } 
+});
     const team = await getOrCreateTeam(teamRole, req.storeId);
 
     await prisma.team.update({ where: { id: team.id }, data: { isShiftActive: true } });
@@ -3558,6 +3564,8 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
       improvements: shiftImprovements,
     });
 
+    // At the end of PATCH /api/shifts/:id/end, before res.json:
+broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration });
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
