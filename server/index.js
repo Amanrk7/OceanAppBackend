@@ -3486,18 +3486,42 @@ app.get('/api/shifts/active/:role', authMiddleware, async (req, res) => {
   }
 });
 
+// app.post('/api/shifts/start', authMiddleware, async (req, res) => {
+//   try {
+//     const { teamRole } = req.body;
+//     if (!teamRole) return res.status(400).json({ error: 'teamRole is required' });
+//     // await prisma.shift.updateMany({ where: { teamRole, isActive: true }, data: { isActive: false, endTime: new Date() } });
+
+//     // const team = await getOrCreateTeam(teamRole, req.storeId);
+// await prisma.shift.updateMany({ 
+//   where: { teamRole, isActive: true, teamId: team.id }, // scoped to this store's team
+//   data: { isActive: false, endTime: new Date() } 
+// });
+//     const team = await getOrCreateTeam(teamRole, req.storeId);
+
+//     await prisma.team.update({ where: { id: team.id }, data: { isShiftActive: true } });
+//     const shift = await prisma.shift.create({ data: { teamId: team.id, teamRole, startTime: new Date(), isActive: true } });
+//     const member = await prisma.user.findFirst({ where: { role: teamRole }, select: { name: true } });
+//     notify('SHIFT_START', { memberName: member?.name, teamRole, shiftId: shift.id });
+//     res.status(201).json({ data: shift, message: 'Shift started' });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to start shift: ' + err.message });
+//   }
+// });
+
 app.post('/api/shifts/start', authMiddleware, async (req, res) => {
   try {
     const { teamRole } = req.body;
     if (!teamRole) return res.status(400).json({ error: 'teamRole is required' });
-    // await prisma.shift.updateMany({ where: { teamRole, isActive: true }, data: { isActive: false, endTime: new Date() } });
 
-    // const team = await getOrCreateTeam(teamRole, req.storeId);
-await prisma.shift.updateMany({ 
-  where: { teamRole, isActive: true, teamId: team.id }, // scoped to this store's team
-  data: { isActive: false, endTime: new Date() } 
-});
+    // ✅ 1. Get/create team FIRST
     const team = await getOrCreateTeam(teamRole, req.storeId);
+
+    // ✅ 2. THEN use team.id to scope the updateMany to this store only
+    await prisma.shift.updateMany({ 
+      where: { teamRole, isActive: true, teamId: team.id },
+      data: { isActive: false, endTime: new Date() } 
+    });
 
     await prisma.team.update({ where: { id: team.id }, data: { isShiftActive: true } });
     const shift = await prisma.shift.create({ data: { teamId: team.id, teamRole, startTime: new Date(), isActive: true } });
