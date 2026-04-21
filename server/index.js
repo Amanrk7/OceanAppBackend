@@ -2938,19 +2938,20 @@ app.delete('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) =
 // EXPENSES ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
-app.get('/api/expenses', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/expenses', authMiddleware, async (req, res) => {
   try {
-    const { category, search } = req.query;
+    const { category, search, fromDate, toDate } = req.query;
 
     const where = { storeId: req.storeId };
     if (category) where.category = category.toUpperCase().replace(' ', '_');
     if (search) where.details = { contains: search, mode: 'insensitive' };
+    if (fromDate || toDate) {
+      where.createdAt = {};
+      if (fromDate) where.createdAt.gte = new Date(fromDate);
+      if (toDate) where.createdAt.lte = new Date(toDate);
+    }
     const expenses = await prisma.expense.findMany({ where, include: { game: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } });
     res.json({ data: expenses });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch expenses' });
-  }
-});
 
 app.post('/api/expenses', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -5181,11 +5182,17 @@ app.get('/api/test-discord', async (req, res) => {
 
 app.get('/api/profit-takeouts', authMiddleware, async (req, res) => {
   try {
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 50, fromDate, toDate } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    const where = { storeId: req.storeId };
+    if (fromDate || toDate) {
+      where.takenAt = {};
+      if (fromDate) where.takenAt.gte = new Date(fromDate);
+      if (toDate) where.takenAt.lte = new Date(toDate);
+    }
     const [records, total] = await Promise.all([
-      prisma.profitTakeout.findMany({ where: { storeId: req.storeId }, orderBy: { takenAt: 'desc' }, skip, take: parseInt(limit) }),
-      prisma.profitTakeout.count({ where: { storeId: req.storeId } }),
+      prisma.profitTakeout.findMany({ where, orderBy: { takenAt: 'desc' }, skip, take: parseInt(limit) }),
+      prisma.profitTakeout.count({ where }),
     ]);
     res.json({ data: records, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
   } catch (err) { res.status(500).json({ error: err.message }); }
