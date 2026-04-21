@@ -2952,6 +2952,10 @@ app.get('/api/expenses', authMiddleware, async (req, res) => {
     }
     const expenses = await prisma.expense.findMany({ where, include: { game: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } });
     res.json({ data: expenses });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch expenses' });
+  }
+});
 
 app.post('/api/expenses', authMiddleware, adminMiddleware, async (req, res) => {
   try {
