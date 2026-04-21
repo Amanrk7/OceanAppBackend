@@ -4192,22 +4192,22 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     //   select: { id: true, name: true, username: true, role: true },
     // });
 
-    const teams = roles.map((role, idx) => {
-  const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
-  const storeOffset = (req.storeId - 1) * 4;
-  const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
+//     const teams = roles.map((role, idx) => {
+//   const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
+//   const storeOffset = (req.storeId - 1) * 4;
+//   const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
 
-  return {
-    role,
-    storeLabel,
-    member: teamUsers.find(u => u.role === role) || null,
-    shifts: roleShifts.map(s => ({
-      ...s,
-      displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
-      isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
-    })),
-  };
-});
+//   return {
+//     role,
+//     storeLabel,
+//     member: teamUsers.find(u => u.role === role) || null,
+//     shifts: roleShifts.map(s => ({
+//       ...s,
+//       displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
+//       isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
+//     })),
+//   };
+// });
 
     // const teams = roles.map(role => ({
     //   role,
@@ -4232,21 +4232,47 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
 //   };
 // });
 // In GET /api/reports/daily, update the teams builder further:
-const teams = roles.map(role => {
-  const storeLocalMember = teamUsers.find(u => u.role === role) || null;
-  const roleIndex = roles.indexOf(role) + 1;
-  // Store 1 → "Team 1-4", Store 2 → "Team 5-8", etc.
+// const teams = roles.map(role => {
+//   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
+//   const roleIndex = roles.indexOf(role) + 1;
+//   // Store 1 → "Team 1-4", Store 2 → "Team 5-8", etc.
+//   const storeOffset = (req.storeId - 1) * 4;
+//   const storeLabel = `Team ${roleIndex + storeOffset}`;
+
+//   return {
+//     role,
+//     storeLabel,            // ← "Team 5", "Team 6", ... for store 2
+//     member: storeLocalMember,
+//     shifts: roleShifts.map(s => ({
+//       ...s,
+//       displayMember: s.performer || storeLocalMember,
+//       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
+//     })),
+//   };
+// });
+
+    // ── Replace the teams builder section in GET /api/reports/daily ──
+
+const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+const teamUsers = await prisma.user.findMany({
+  where: { role: { in: roles }, storeId: req.storeId },
+  select: { id: true, name: true, username: true, role: true },
+});
+
+// ✅ CORRECT: roleShifts and roleIndex defined BEFORE use
+const teams = roles.map((role, idx) => {
+  const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
   const storeOffset = (req.storeId - 1) * 4;
-  const storeLabel = `Team ${roleIndex + storeOffset}`;
+  const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
 
   return {
     role,
-    storeLabel,            // ← "Team 5", "Team 6", ... for store 2
-    member: storeLocalMember,
+    storeLabel,
+    member: teamUsers.find(u => u.role === role) || null,
     shifts: roleShifts.map(s => ({
       ...s,
-      displayMember: s.performer || storeLocalMember,
-      isGuestMember: s.performer && s.performer.storeId !== req.storeId,
+      displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
+      isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
     })),
   };
 });
