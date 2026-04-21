@@ -1565,6 +1565,31 @@ app.delete('/api/referral-bonuses/:id', authMiddleware, async (req, res) => {
 // TRANSACTIONS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
+// app.post('/api/payments', authMiddleware, adminMiddleware, async (req, res) => {
+//   try {
+//     const { amount, walletId, category, date, notes } = req.body;
+//     if (!amount || !walletId) return res.status(400).json({ error: 'Amount and walletId are required' });
+
+//     const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(walletId) } });
+//     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+//     if (wallet.balance < parseFloat(amount)) return res.status(400).json({ error: 'Insufficient wallet balance' });
+
+//     const [updatedWallet, payment] = await prisma.$transaction([
+//       prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: wallet.balance - parseFloat(amount) } }),
+//       prisma.expense.create({
+//         data: {
+//           details: `Payment (${wallet.method} - ${wallet.name})`,
+//           category: category?.toUpperCase().replace(' ', '_') || 'POINT_RELOAD',
+//           amount: 0, paymentMade: parseFloat(amount), notes: notes || null, gameId: null,
+//         }
+//       })
+//     ]);
+
+//     res.status(201).json({ data: { wallet: updatedWallet, payment }, message: 'Payment recorded and wallet updated' });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to record payment' });
+//   }
+// });
 app.post('/api/payments', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { amount, walletId, category, date, notes } = req.body;
@@ -1580,7 +1605,11 @@ app.post('/api/payments', authMiddleware, adminMiddleware, async (req, res) => {
         data: {
           details: `Payment (${wallet.method} - ${wallet.name})`,
           category: category?.toUpperCase().replace(' ', '_') || 'POINT_RELOAD',
-          amount: 0, paymentMade: parseFloat(amount), notes: notes || null, gameId: null,
+          amount: 0,
+          paymentMade: parseFloat(amount),
+          notes: notes || null,
+          gameId: null,
+          storeId: req.storeId,  // ✅ ADD THIS
         }
       })
     ]);
