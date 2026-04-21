@@ -4186,11 +4186,28 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     const shifts = await prisma.shift.findMany({ where: shiftWhere, orderBy: { startTime: 'asc' } });
     const enrichedShifts = await Promise.all(shifts.map(enrichShift));
 
-    const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
-    const teamUsers = await prisma.user.findMany({
-      where: { role: { in: roles }, storeId: req.storeId, },
-      select: { id: true, name: true, username: true, role: true },
-    });
+    // const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    // const teamUsers = await prisma.user.findMany({
+    //   where: { role: { in: roles }, storeId: req.storeId, },
+    //   select: { id: true, name: true, username: true, role: true },
+    // });
+
+    const teams = roles.map((role, idx) => {
+  const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
+  const storeOffset = (req.storeId - 1) * 4;
+  const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
+
+  return {
+    role,
+    storeLabel,
+    member: teamUsers.find(u => u.role === role) || null,
+    shifts: roleShifts.map(s => ({
+      ...s,
+      displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
+      isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
+    })),
+  };
+});
 
     // const teams = roles.map(role => ({
     //   role,
