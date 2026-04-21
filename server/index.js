@@ -1539,6 +1539,28 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
   }
 });
 
+app.delete('/api/referral-bonuses/:id', authMiddleware, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        if (isNaN(id)) return res.status(400).json({ error: 'Invalid bonus ID' });
+ 
+        const rb = await prisma.referralBonus.findUnique({ where: { id } });
+        if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
+ 
+        // Only allow cancellation if neither side has been claimed yet
+        if (rb.referrerClaimed || rb.referredClaimed) {
+            return res.status(400).json({
+                error: 'Cannot cancel — at least one side has already been granted. Undo the transaction instead.',
+            });
+        }
+ 
+        await prisma.referralBonus.delete({ where: { id } });
+        res.json({ message: 'Referral bonus eligibility cancelled and removed.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
+    }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // TRANSACTIONS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
