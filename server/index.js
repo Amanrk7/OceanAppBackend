@@ -3954,7 +3954,8 @@ async function enrichShift(shift) {
     .then(us => us.map(u => u.id));
 
   // const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
-  const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, rating, checkin] = await Promise.all([
+  const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, rating, checkin, expenses,
+    profitTakeouts ] = await Promise.all([
 
     prisma.transaction.findMany({
       where: {
@@ -3998,6 +3999,17 @@ async function enrichShift(shift) {
       where: { shiftId: shift.id },
       include: { user: { select: { id: true, name: true } } },
     }).catch(() => null),
+    // NEW: expenses recorded during this shift window
+    prisma.expense.findMany({
+      where: { storeId, createdAt: timeWindow },
+      include: { game: { select: { id: true, name: true } } },
+    }).catch(() => []),
+
+    // NEW: profit takeouts during this shift window
+    prisma.profitTakeout.findMany({
+      where: { storeId, takenAt: timeWindow },
+    }).catch(() => []),
+
   ]);
 
   const transactions = rawTransactions.map(t => {
@@ -4093,16 +4105,30 @@ async function enrichShift(shift) {
       improvements = parsed.improvements ?? null;
     } catch (_) { }
   }
+
+    const totalExpenses = expenses.reduce((s, e) => s + parseFloat(e.amount || 0), 0);
+  const totalTakeouts = profitTakeouts.reduce((s, t) => s + parseFloat(t.amount || 0), 0);
+
+  let performer = null;
+if (checkin?.userId) {
+  performer = await prisma.user.findUnique({
+    where: { id: checkin.userId },
+    select: { id: true, name: true, username: true, role: true, storeId: true },
+  }).catch(() => null);
+}
   // ─────────────────────────────────────────────────────────────
 
   return {
     ...shift,
+    performer,
     checkin,
     startSnapshot,   // ← NEW
     endSnapshot,     // ← NEW
     effortReason,    // ← NEW
     improvements,    // ← NEW
     rating,
+    expenses,         
+    profitTakeouts,
     stats: {
       tasksCompleted: tasks.length,
       playersAdded: playersAdded.length,
@@ -4131,6 +4157,11 @@ async function enrichShift(shift) {
       gameDiscrepancy: endSnapshot?.gameDiscrepancy ?? null,
       totalDiscrepancy: endSnapshot?.totalDiscrepancy ?? null,
       isBalanced: endSnapshot?.isBalanced ?? null,
+
+      totalExpenses: f2(totalExpenses),
+      totalTakeouts: f2(totalTakeouts),
+      expenseCount: expenses.length,
+      takeoutCount: profitTakeouts.length,
       // ─────────────────────────────────────────────────────────
     },
     tasks,
@@ -4161,12 +4192,47 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
       select: { id: true, name: true, username: true, role: true },
     });
 
-    const teams = roles.map(role => ({
-      role,
-      member: teamUsers.find(u => u.role === role) || null,
-      shifts: enrichedShifts.filter(s => s.teamRole === role),
-    }));
+    // const teams = roles.map(role => ({
+    //   role,
+    //   member: teamUsers.find(u => u.role === role) || null,
+    //   shifts: enrichedShifts.filter(s => s.teamRole === role),
+    // }));
 
+    // Replace the existing teams builder:
+// const teams = roles.map(role => {
+//   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
+//   const roleShifts = enrichedShifts.filter(s => s.teamRole === role);
+
+//   return {
+//     role,
+//     member: storeLocalMember,
+//     shifts: roleShifts.map(s => ({
+//       ...s,
+//       // Override: show actual performer if different from store-local member
+//       displayMember: s.performer || storeLocalMember,
+//       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
+//     })),
+//   };
+// });
+// In GET /api/reports/daily, update the teams builder further:
+const teams = roles.map(role => {
+  const storeLocalMember = teamUsers.find(u => u.role === role) || null;
+  const roleIndex = roles.indexOf(role) + 1;
+  // Store 1 → "Team 1-4", Store 2 → "Team 5-8", etc.
+  const storeOffset = (req.storeId - 1) * 4;
+  const storeLabel = `Team ${roleIndex + storeOffset}`;
+
+  return {
+    role,
+    storeLabel,            // ← "Team 5", "Team 6", ... for store 2
+    member: storeLocalMember,
+    shifts: roleShifts.map(s => ({
+      ...s,
+      displayMember: s.performer || storeLocalMember,
+      isGuestMember: s.performer && s.performer.storeId !== req.storeId,
+    })),
+  };
+});
     const storeUserIds = await prisma.user
       .findMany({ where: { storeId: req.storeId }, select: { id: true } })
       .then(us => us.map(u => u.id));
