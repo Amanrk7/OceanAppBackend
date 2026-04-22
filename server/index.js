@@ -3020,10 +3020,7 @@ app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, asy
 app.get('/api/games', authMiddleware, async (req, res) => {
   try {
     const { status, search } = req.query;
-    const where = { storeId: req.storeId };
-    if (status) where.status = status.toUpperCase();
-    if (search) where.name = { contains: search, mode: 'insensitive' };
-    const games = await prisma.game.findMany({ where, orderBy: { name: 'asc' } });
+    const games = await getGamesForStore(req.storeId, { status, search });
     res.json({ data: games });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch games' });
@@ -3075,6 +3072,56 @@ app.delete('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) =
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete game' });
   }
+});
+
+// Share toggle for wallets
+app.patch('/api/wallets/:id/share', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { isShared } = req.body;
+    const wallet = await prisma.wallet.update({
+      where: { id: parseInt(req.params.id) },
+      data: { isShared: Boolean(isShared) },
+    });
+    broadcastTaskUpdate('wallet_share_updated', { walletId: wallet.id, isShared: wallet.isShared });
+    res.json({ data: wallet });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Share toggle for games
+app.patch('/api/games/:id/share', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { isShared } = req.body;
+    const game = await prisma.game.update({
+      where: { id: req.params.id },
+      data: { isShared: Boolean(isShared) },
+    });
+    broadcastTaskUpdate('game_share_updated', { gameId: game.id, isShared: game.isShared });
+    res.json({ data: game });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Per-store wallet balance breakdown (admin)
+app.get('/api/wallets/:id/store-balances', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const walletId = parseInt(req.params.id);
+    const [wallet, storeBalances] = await Promise.all([
+      prisma.wallet.findUnique({ where: { id: walletId } }),
+      prisma.walletStoreBalance.findMany({ where: { walletId } }),
+    ]);
+    res.json({ data: { wallet, storeBalances, globalBalance: wallet?.balance } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Per-store game stock breakdown (admin)
+app.get('/api/games/:id/store-stocks', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const gameId = req.params.id;
+    const [game, storeStocks] = await Promise.all([
+      prisma.game.findUnique({ where: { id: gameId } }),
+      prisma.gameStoreStock.findMany({ where: { gameId } }),
+    ]);
+    res.json({ data: { game, storeStocks, globalStock: game?.pointStock } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -3144,9 +3191,49 @@ app.patch('/api/expenses/:id', authMiddleware, adminMiddleware, async (req, res)
 // WALLETS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
+// ── Shared resource helpers — paste above the wallet/game routes ──
+
+async function getWalletsForStore(storeId) {
+  const wallets = await prisma.wallet.findMany({
+    where: {
+      OR: [
+        { storeId },
+        { isShared: true, isLive: true },
+      ]
+    },
+    include: { storeBalances: { where: { storeId } } },
+    orderBy: [{ method: 'asc' }, { name: 'asc' }],
+  });
+  return wallets.map(w => ({
+    ...w,
+    balance: w.storeBalances[0]?.balance ?? (w.storeId === storeId ? w.balance : 0),
+    isOwned: w.storeId === storeId,
+    globalBalance: w.balance,
+  }));
+}
+
+async function getGamesForStore(storeId, filters = {}) {
+  const where = { OR: [{ storeId }, { isShared: true }] };
+  if (filters.status) where.status = filters.status.toUpperCase();
+  if (filters.search) where.name = { contains: filters.search, mode: 'insensitive' };
+  const games = await prisma.game.findMany({
+    where,
+    include: { storeStocks: { where: { storeId } } },
+    orderBy: { name: 'asc' },
+  });
+  return games.map(g => ({
+    ...g,
+    pointStock: g.storeStocks[0]?.pointStock ?? (g.storeId === storeId ? g.pointStock : 0),
+    status: g.storeStocks[0]?.status ?? g.status,
+    isOwned: g.storeId === storeId,
+    globalStock: g.pointStock,
+  }));
+}
+
+
 app.get('/api/wallets', authMiddleware, async (req, res) => {
   try {
-    const wallets = await prisma.wallet.findMany({ where: { storeId: req.storeId }, orderBy: [{ method: 'asc' }, { name: 'asc' }] });
+    const wallets = await getWalletsForStore(req.storeId);
     const grouped = wallets.reduce((acc, wallet) => {
       if (!acc[wallet.method]) acc[wallet.method] = { method: wallet.method, totalBalance: 0, subAccounts: [] };
       acc[wallet.method].subAccounts.push(wallet);
