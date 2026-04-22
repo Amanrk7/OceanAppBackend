@@ -1539,23 +1539,52 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
   }
 });
 
+// app.delete('/api/referral-bonuses/:id', authMiddleware, async (req, res) => {
+//     try {
+//         const id = parseInt(req.params.id);
+//         if (isNaN(id)) return res.status(400).json({ error: 'Invalid bonus ID' });
+ 
+//         const rb = await prisma.referralBonus.findUnique({ where: { id } });
+//         if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
+ 
+//         // Only allow cancellation if neither side has been claimed yet
+//         if (rb.referrerClaimed || rb.referredClaimed) {
+//             return res.status(400).json({
+//                 error: 'Cannot cancel — at least one side has already been granted. Undo the transaction instead.',
+//             });
+//         }
+ 
+//         await prisma.referralBonus.delete({ where: { id } });
+//         res.json({ message: 'Referral bonus eligibility cancelled and removed.' });
+//     } catch (err) {
+//         res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
+//     }
+// });
+
 app.delete('/api/referral-bonuses/:id', authMiddleware, async (req, res) => {
     try {
         const id = parseInt(req.params.id);
         if (isNaN(id)) return res.status(400).json({ error: 'Invalid bonus ID' });
- 
+
         const rb = await prisma.referralBonus.findUnique({ where: { id } });
         if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
- 
-        // Only allow cancellation if neither side has been claimed yet
-        if (rb.referrerClaimed || rb.referredClaimed) {
+
+        // B side already cancelled or granted — nothing to do
+        if (rb.referredClaimed) {
             return res.status(400).json({
-                error: 'Cannot cancel — at least one side has already been granted. Undo the transaction instead.',
+                error: "Player B's referral bonus has already been claimed or cancelled.",
             });
         }
- 
-        await prisma.referralBonus.delete({ where: { id } });
-        res.json({ message: 'Referral bonus eligibility cancelled and removed.' });
+
+        // ✅ Only cancel B's side — leave the record intact so referrer (A) can still be granted
+        await prisma.referralBonus.update({
+            where: { id },
+            data: { referredClaimed: true, referredClaimedAt: new Date() },
+        });
+
+        res.json({
+            message: "Player B's referral bonus cancelled. The referrer (A) bonus is still available to grant from the Bonus page.",
+        });
     } catch (err) {
         res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
     }
