@@ -433,7 +433,7 @@ app.get('/api/players', authMiddleware, storeAccessMiddleware, async (req, res) 
     const allPlayers = await prisma.user.findMany({
       where,
       select: {
-        id: true, username: true, name: true, email: true, phone: true,
+        id: true, username: true, name: true, email: true, phone: true, noAccountOn: true,
         status: true, balance: true, tier: true, tierPoints: true,
         gamesPlayed: true, winStreak: true, currentStreak: true,
         playTimeMinutes: true, lastPlayedDate: true, cashoutLimit: true,
@@ -542,6 +542,45 @@ app.get('/api/players/search', authMiddleware, async (req, res) => {
 
 // ✅ FIX: /api/players/missing-info MUST be before /api/players/:id
 // otherwise Express treats "missing-info" as an :id param
+// app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
+//   try {
+//     const players = await prisma.user.findMany({
+//       where: { role: 'PLAYER', storeId: req.storeId },
+//       select: {
+//         id: true, name: true, username: true, email: true, phone: true,
+//         tier: true, createdAt: true, snapchat: true, instagram: true, telegram: true,
+//       }
+//     });
+
+//     const CONTACT_FIELDS = ['email', 'phone', 'snapchat', 'instagram', 'telegram'];
+
+//     const withMissing = players
+//       .map(p => {
+//         const missing = CONTACT_FIELDS.filter(f => !p[f] || String(p[f]).trim() === '');
+//         return { ...p, missingFields: missing, isCritical: missing.length >= 3 };
+//       })
+//       .filter(p => p.missingFields.length > 0); // ← only players with actual missing fields
+
+//     withMissing.sort((a, b) => {
+//       if (b.isCritical !== a.isCritical) return b.isCritical ? 1 : -1;
+//       return b.missingFields.length - a.missingFields.length;
+//     });
+
+//     res.json({
+//       data: withMissing,
+//       stats: {
+//         total: withMissing.length,
+//         critical: withMissing.filter(p => p.isCritical).length,
+//         missingSnapchat: withMissing.filter(p => p.missingFields.includes('snapchat')).length,
+//         missingPhone: withMissing.filter(p => p.missingFields.includes('phone')).length,
+//         missingEmail: withMissing.filter(p => p.missingFields.includes('email')).length,
+//       }
+//     });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
 app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
   try {
     const players = await prisma.user.findMany({
@@ -549,6 +588,8 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
       select: {
         id: true, name: true, username: true, email: true, phone: true,
         tier: true, createdAt: true, snapchat: true, instagram: true, telegram: true,
+        status: true,             // ← ADD
+        noAccountOn: true,        // ← ADD
       }
     });
 
@@ -556,10 +597,15 @@ app.get('/api/players/missing-info', authMiddleware, async (req, res) => {
 
     const withMissing = players
       .map(p => {
-        const missing = CONTACT_FIELDS.filter(f => !p[f] || String(p[f]).trim() === '');
-        return { ...p, missingFields: missing, isCritical: missing.length >= 3 };
+        // A field is "missing" only if: not filled AND not marked N/A
+        const missing = CONTACT_FIELDS.filter(f => {
+          if ((p.noAccountOn || []).includes(f)) return false; // ← skip N/A fields
+          return !p[f] || String(p[f]).trim() === '';
+        });
+        const naFields = CONTACT_FIELDS.filter(f => (p.noAccountOn || []).includes(f));
+        return { ...p, missingFields: missing, naFields, isCritical: missing.length >= 3 };
       })
-      .filter(p => p.missingFields.length > 0); // ← only players with actual missing fields
+      .filter(p => p.missingFields.length > 0); // only show truly missing
 
     withMissing.sort((a, b) => {
       if (b.isCritical !== a.isCritical) return b.isCritical ? 1 : -1;
@@ -890,8 +936,20 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     const {
       name, email, phone, tier, status, balance, cashoutLimit,
       facebook, telegram, instagram, x, snapchat, source,
-      currentStreak, lastPlayedDate, totalBonusEarned, chimeTag, cashappTag, paypalEmail, referredById, friendIds
+      currentStreak, lastPlayedDate, totalBonusEarned, chimeTag, cashappTag, paypalEmail, referredById, friendIds, noAccountOn
     } = req.body;
+
+    // ── UNREACHABLE is admin-only ────────────────────────────────────────────
+    if (status === 'UNREACHABLE') {
+      const actor = await prisma.user.findUnique({
+        where: { id: req.userId },
+        select: { role: true },
+      });
+      if (!['ADMIN', 'SUPER_ADMIN'].includes(actor?.role)) {
+        return res.status(403).json({ error: 'Only admins can mark a player as Unreachable.' });
+      }
+    }
+
 
     const updateData = {};
     if (name !== undefined) updateData.name = name.trim();
@@ -901,6 +959,7 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       updateData.tier = tier;
       if (cashoutLimit === undefined) updateData.cashoutLimit = TIER_CASHOUT[tier] ?? 250;
     }
+
     if (cashoutLimit !== undefined) updateData.cashoutLimit = parseFloat(cashoutLimit);
     if (status !== undefined) updateData.status = status;
     if (balance !== undefined) updateData.balance = parseFloat(balance);
@@ -917,6 +976,10 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     if (paypalEmail !== undefined) updateData.paypalEmail = paypalEmail || null;
     if (referredById !== undefined) {
       updateData.referredBy = referredById ? parseInt(referredById) : null;
+    }
+    if (noAccountOn !== undefined && Array.isArray(noAccountOn)) {
+      const ALLOWED = ['email', 'phone', 'snapchat', 'instagram', 'telegram'];
+      updateData.noAccountOn = noAccountOn.filter(f => ALLOWED.includes(f));
     }
 
     const updated = await prisma.user.update({ where: { id, storeId: req.storeId }, data: updateData });
@@ -1540,54 +1603,54 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
 });
 
 // app.delete('/api/referral-bonuses/:id', authMiddleware, async (req, res) => {
-//     try {
-//         const id = parseInt(req.params.id);
-//         if (isNaN(id)) return res.status(400).json({ error: 'Invalid bonus ID' });
- 
-//         const rb = await prisma.referralBonus.findUnique({ where: { id } });
-//         if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
- 
-//         // Only allow cancellation if neither side has been claimed yet
-//         if (rb.referrerClaimed || rb.referredClaimed) {
-//             return res.status(400).json({
-//                 error: 'Cannot cancel — at least one side has already been granted. Undo the transaction instead.',
-//             });
-//         }
- 
-//         await prisma.referralBonus.delete({ where: { id } });
-//         res.json({ message: 'Referral bonus eligibility cancelled and removed.' });
-//     } catch (err) {
-//         res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
+//   try {
+//     const id = parseInt(req.params.id);
+//     if (isNaN(id)) return res.status(400).json({ error: 'Invalid bonus ID' });
+
+//     const rb = await prisma.referralBonus.findUnique({ where: { id } });
+//     if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
+
+//     // Only allow cancellation if neither side has been claimed yet
+//     if (rb.referrerClaimed || rb.referredClaimed) {
+//       return res.status(400).json({
+//         error: 'Cannot cancel — at least one side has already been granted. Undo the transaction instead.',
+//       });
 //     }
+
+//     await prisma.referralBonus.delete({ where: { id } });
+//     res.json({ message: 'Referral bonus eligibility cancelled and removed.' });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
+//   }
 // });
 
 app.delete('/api/referral-bonuses/:id', authMiddleware, async (req, res) => {
-    try {
-        const id = parseInt(req.params.id);
-        if (isNaN(id)) return res.status(400).json({ error: 'Invalid bonus ID' });
+  try {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid bonus ID' });
 
-        const rb = await prisma.referralBonus.findUnique({ where: { id } });
-        if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
+    const rb = await prisma.referralBonus.findUnique({ where: { id } });
+    if (!rb) return res.status(404).json({ error: 'Referral bonus record not found' });
 
-        // B side already cancelled or granted — nothing to do
-        if (rb.referredClaimed) {
-            return res.status(400).json({
-                error: "Player B's referral bonus has already been claimed or cancelled.",
-            });
-        }
-
-        // ✅ Only cancel B's side — leave the record intact so referrer (A) can still be granted
-        await prisma.referralBonus.update({
-            where: { id },
-            data: { referredClaimed: true, referredClaimedAt: new Date() },
-        });
-
-        res.json({
-            message: "Player B's referral bonus cancelled. The referrer (A) bonus is still available to grant from the Bonus page.",
-        });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
+    // B side already cancelled or granted — nothing to do
+    if (rb.referredClaimed) {
+      return res.status(400).json({
+        error: "Player B's referral bonus has already been claimed or cancelled.",
+      });
     }
+
+    // ✅ Only cancel B's side — leave the record intact so referrer (A) can still be granted
+    await prisma.referralBonus.update({
+      where: { id },
+      data: { referredClaimed: true, referredClaimedAt: new Date() },
+    });
+
+    res.json({
+      message: "Player B's referral bonus cancelled. The referrer (A) bonus is still available to grant from the Bonus page.",
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -3603,9 +3666,9 @@ app.post('/api/shifts/start', authMiddleware, async (req, res) => {
     const team = await getOrCreateTeam(teamRole, req.storeId);
 
     // ✅ 2. THEN use team.id to scope the updateMany to this store only
-    await prisma.shift.updateMany({ 
+    await prisma.shift.updateMany({
       where: { teamRole, isActive: true, teamId: team.id },
-      data: { isActive: false, endTime: new Date() } 
+      data: { isActive: false, endTime: new Date() }
     });
 
     await prisma.team.update({ where: { id: team.id }, data: { isShiftActive: true } });
@@ -3674,7 +3737,7 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
     });
 
     // At the end of PATCH /api/shifts/:id/end, before res.json:
-broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration });
+    broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration });
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
@@ -4040,62 +4103,62 @@ async function enrichShift(shift) {
 
   // const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, checkin] = await Promise.all([
   const [rawTransactions, tasks, playersAdded, bonusesGranted, issueActivity, rating, checkin, expenses,
-    profitTakeouts ] = await Promise.all([
+    profitTakeouts] = await Promise.all([
 
-    prisma.transaction.findMany({
-      where: {
-        userId: { in: storeUserIds },
-        createdAt: timeWindow,
-        status: { in: ['COMPLETED', 'PENDING'] },
-      },
-      include: {
-        user: { select: { id: true, name: true } },
-        game: { select: { id: true, name: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    }),
-    prisma.task.findMany({
-      where: { completedAt: timeWindow, status: 'COMPLETED', storeId },
-      include: {
-        assignedTo: { select: { id: true, name: true, role: true } },
-        subTasks: true,
-        progressLogs: {
-          include: { user: { select: { id: true, name: true } } },
-          orderBy: { createdAt: 'asc' },
+      prisma.transaction.findMany({
+        where: {
+          userId: { in: storeUserIds },
+          createdAt: timeWindow,
+          status: { in: ['COMPLETED', 'PENDING'] },
         },
-      },
-    }).catch(() => []),
-    prisma.user.findMany({
-      where: { role: 'PLAYER', storeId, createdAt: timeWindow },
-      select: { id: true, name: true, username: true, tier: true, createdAt: true },
-    }).catch(() => []),
-    prisma.transaction.findMany({
-      where: { userId: { in: storeUserIds }, type: { in: ['BONUS', 'MATCH_BONUS', 'SPECIAL'] }, status: 'COMPLETED', createdAt: timeWindow },
-      include: {
-        user: { select: { id: true, name: true } },
-        game: { select: { id: true, name: true } },
-      },
-    }).catch(() => []),
-    prisma.issue.findMany({
-      where: { storeId, OR: [{ createdAt: timeWindow }, { updatedAt: timeWindow, status: 'RESOLVED' }] },
-    }).catch(() => []),
-    prisma.shiftRating.findUnique({ where: { shiftId: shift.id } }),
-    prisma.shiftCheckin.findUnique({
-      where: { shiftId: shift.id },
-      include: { user: { select: { id: true, name: true } } },
-    }).catch(() => null),
-    // NEW: expenses recorded during this shift window
-    prisma.expense.findMany({
-      where: { storeId, createdAt: timeWindow },
-      include: { game: { select: { id: true, name: true } } },
-    }).catch(() => []),
+        include: {
+          user: { select: { id: true, name: true } },
+          game: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.task.findMany({
+        where: { completedAt: timeWindow, status: 'COMPLETED', storeId },
+        include: {
+          assignedTo: { select: { id: true, name: true, role: true } },
+          subTasks: true,
+          progressLogs: {
+            include: { user: { select: { id: true, name: true } } },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      }).catch(() => []),
+      prisma.user.findMany({
+        where: { role: 'PLAYER', storeId, createdAt: timeWindow },
+        select: { id: true, name: true, username: true, tier: true, createdAt: true },
+      }).catch(() => []),
+      prisma.transaction.findMany({
+        where: { userId: { in: storeUserIds }, type: { in: ['BONUS', 'MATCH_BONUS', 'SPECIAL'] }, status: 'COMPLETED', createdAt: timeWindow },
+        include: {
+          user: { select: { id: true, name: true } },
+          game: { select: { id: true, name: true } },
+        },
+      }).catch(() => []),
+      prisma.issue.findMany({
+        where: { storeId, OR: [{ createdAt: timeWindow }, { updatedAt: timeWindow, status: 'RESOLVED' }] },
+      }).catch(() => []),
+      prisma.shiftRating.findUnique({ where: { shiftId: shift.id } }),
+      prisma.shiftCheckin.findUnique({
+        where: { shiftId: shift.id },
+        include: { user: { select: { id: true, name: true } } },
+      }).catch(() => null),
+      // NEW: expenses recorded during this shift window
+      prisma.expense.findMany({
+        where: { storeId, createdAt: timeWindow },
+        include: { game: { select: { id: true, name: true } } },
+      }).catch(() => []),
 
-    // NEW: profit takeouts during this shift window
-    prisma.profitTakeout.findMany({
-      where: { storeId, takenAt: timeWindow },
-    }).catch(() => []),
+      // NEW: profit takeouts during this shift window
+      prisma.profitTakeout.findMany({
+        where: { storeId, takenAt: timeWindow },
+      }).catch(() => []),
 
-  ]);
+    ]);
 
   const transactions = rawTransactions.map(t => {
     let displayType = t.type;
@@ -4191,16 +4254,16 @@ async function enrichShift(shift) {
     } catch (_) { }
   }
 
-    const totalExpenses = expenses.reduce((s, e) => s + parseFloat(e.amount || 0), 0);
+  const totalExpenses = expenses.reduce((s, e) => s + parseFloat(e.amount || 0), 0);
   const totalTakeouts = profitTakeouts.reduce((s, t) => s + parseFloat(t.amount || 0), 0);
 
   let performer = null;
-if (checkin?.userId) {
-  performer = await prisma.user.findUnique({
-    where: { id: checkin.userId },
-    select: { id: true, name: true, username: true, role: true, storeId: true },
-  }).catch(() => null);
-}
+  if (checkin?.userId) {
+    performer = await prisma.user.findUnique({
+      where: { id: checkin.userId },
+      select: { id: true, name: true, username: true, role: true, storeId: true },
+    }).catch(() => null);
+  }
   // ─────────────────────────────────────────────────────────────
 
   return {
@@ -4212,7 +4275,7 @@ if (checkin?.userId) {
     effortReason,    // ← NEW
     improvements,    // ← NEW
     rating,
-    expenses,         
+    expenses,
     profitTakeouts,
     stats: {
       tasksCompleted: tasks.length,
@@ -4277,22 +4340,22 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     //   select: { id: true, name: true, username: true, role: true },
     // });
 
-//     const teams = roles.map((role, idx) => {
-//   const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
-//   const storeOffset = (req.storeId - 1) * 4;
-//   const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
+    //     const teams = roles.map((role, idx) => {
+    //   const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
+    //   const storeOffset = (req.storeId - 1) * 4;
+    //   const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
 
-//   return {
-//     role,
-//     storeLabel,
-//     member: teamUsers.find(u => u.role === role) || null,
-//     shifts: roleShifts.map(s => ({
-//       ...s,
-//       displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
-//       isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
-//     })),
-//   };
-// });
+    //   return {
+    //     role,
+    //     storeLabel,
+    //     member: teamUsers.find(u => u.role === role) || null,
+    //     shifts: roleShifts.map(s => ({
+    //       ...s,
+    //       displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
+    //       isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
+    //     })),
+    //   };
+    // });
 
     // const teams = roles.map(role => ({
     //   role,
@@ -4301,66 +4364,66 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     // }));
 
     // Replace the existing teams builder:
-// const teams = roles.map(role => {
-//   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
-//   const roleShifts = enrichedShifts.filter(s => s.teamRole === role);
+    // const teams = roles.map(role => {
+    //   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
+    //   const roleShifts = enrichedShifts.filter(s => s.teamRole === role);
 
-//   return {
-//     role,
-//     member: storeLocalMember,
-//     shifts: roleShifts.map(s => ({
-//       ...s,
-//       // Override: show actual performer if different from store-local member
-//       displayMember: s.performer || storeLocalMember,
-//       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
-//     })),
-//   };
-// });
-// In GET /api/reports/daily, update the teams builder further:
-// const teams = roles.map(role => {
-//   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
-//   const roleIndex = roles.indexOf(role) + 1;
-//   // Store 1 → "Team 1-4", Store 2 → "Team 5-8", etc.
-//   const storeOffset = (req.storeId - 1) * 4;
-//   const storeLabel = `Team ${roleIndex + storeOffset}`;
+    //   return {
+    //     role,
+    //     member: storeLocalMember,
+    //     shifts: roleShifts.map(s => ({
+    //       ...s,
+    //       // Override: show actual performer if different from store-local member
+    //       displayMember: s.performer || storeLocalMember,
+    //       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
+    //     })),
+    //   };
+    // });
+    // In GET /api/reports/daily, update the teams builder further:
+    // const teams = roles.map(role => {
+    //   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
+    //   const roleIndex = roles.indexOf(role) + 1;
+    //   // Store 1 → "Team 1-4", Store 2 → "Team 5-8", etc.
+    //   const storeOffset = (req.storeId - 1) * 4;
+    //   const storeLabel = `Team ${roleIndex + storeOffset}`;
 
-//   return {
-//     role,
-//     storeLabel,            // ← "Team 5", "Team 6", ... for store 2
-//     member: storeLocalMember,
-//     shifts: roleShifts.map(s => ({
-//       ...s,
-//       displayMember: s.performer || storeLocalMember,
-//       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
-//     })),
-//   };
-// });
+    //   return {
+    //     role,
+    //     storeLabel,            // ← "Team 5", "Team 6", ... for store 2
+    //     member: storeLocalMember,
+    //     shifts: roleShifts.map(s => ({
+    //       ...s,
+    //       displayMember: s.performer || storeLocalMember,
+    //       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
+    //     })),
+    //   };
+    // });
 
     // ── Replace the teams builder section in GET /api/reports/daily ──
 
-const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
-const teamUsers = await prisma.user.findMany({
-  where: { role: { in: roles }, storeId: req.storeId },
-  select: { id: true, name: true, username: true, role: true },
-});
+    const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    const teamUsers = await prisma.user.findMany({
+      where: { role: { in: roles }, storeId: req.storeId },
+      select: { id: true, name: true, username: true, role: true },
+    });
 
-// ✅ CORRECT: roleShifts and roleIndex defined BEFORE use
-const teams = roles.map((role, idx) => {
-  const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
-  const storeOffset = (req.storeId - 1) * 4;
-  const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
+    // ✅ CORRECT: roleShifts and roleIndex defined BEFORE use
+    const teams = roles.map((role, idx) => {
+      const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
+      const storeOffset = (req.storeId - 1) * 4;
+      const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
 
-  return {
-    role,
-    storeLabel,
-    member: teamUsers.find(u => u.role === role) || null,
-    shifts: roleShifts.map(s => ({
-      ...s,
-      displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
-      isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
-    })),
-  };
-});
+      return {
+        role,
+        storeLabel,
+        member: teamUsers.find(u => u.role === role) || null,
+        shifts: roleShifts.map(s => ({
+          ...s,
+          displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
+          isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
+        })),
+      };
+    });
     const storeUserIds = await prisma.user
       .findMany({ where: { storeId: req.storeId }, select: { id: true } })
       .then(us => us.map(u => u.id));
@@ -5347,7 +5410,79 @@ app.patch('/api/users/:id/store-access', authMiddleware, adminMiddleware, async 
   }
 });
 
+// ── Unreachable player re-check (every 2 months) ─────────────────────────────
+async function scheduleUnreachablePlayerCheck(prisma) {
+  const TWO_MONTHS_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+  const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;   // run the checker daily
 
+  const runCheck = async () => {
+    try {
+      const unreachablePlayers = await prisma.user.findMany({
+        where: { role: 'PLAYER', status: 'UNREACHABLE' },
+        select: { id: true, name: true, username: true, storeId: true },
+      });
+      if (!unreachablePlayers.length) return;
+
+      const systemAdmin = await prisma.user.findFirst({
+        where: { role: { in: ['SUPER_ADMIN', 'ADMIN'] } },
+        select: { id: true },
+      });
+      if (!systemAdmin) return;
+
+      const cutoff = new Date(Date.now() - TWO_MONTHS_MS);
+
+      for (const player of unreachablePlayers) {
+        // Skip if an active or recently completed reachability task already exists
+        const existing = await prisma.task.findFirst({
+          where: {
+            notes: { contains: `"playerId":${player.id}` },
+            taskType: 'PLAYER_FOLLOWUP',
+            OR: [
+              { status: { in: ['PENDING', 'IN_PROGRESS'] } },
+              { status: 'COMPLETED', completedAt: { gte: cutoff } },
+            ],
+          },
+        });
+        if (existing) continue;
+
+        const task = await prisma.task.create({
+          data: {
+            title: `📡 Re-check unreachable player — ${player.name}`,
+            description:
+              `${player.name} (@${player.username}) has been marked UNREACHABLE. ` +
+              `It's been ~2 months — attempt contact again to see if they are reachable.`,
+            taskType: 'PLAYER_FOLLOWUP',
+            priority: 'MEDIUM',
+            status: 'PENDING',
+            createdById: systemAdmin.id,
+            assignToAll: true,
+            storeId: player.storeId,
+            notes: JSON.stringify({
+              playerId: player.id,
+              playerName: player.name,
+              username: player.username,
+              category: 'UNREACHABLE',
+              autoGenerated: true,
+            }),
+          },
+          include: {
+            createdBy: { select: { id: true, name: true, role: true } },
+            assignedTo: { select: { id: true, name: true, role: true } },
+          },
+        });
+
+        broadcastTaskUpdate('task_created', task);
+        console.log(`📡 Unreachable re-check task created for ${player.name}`);
+      }
+    } catch (err) {
+      console.error('Unreachable player check error (non-fatal):', err);
+    }
+  };
+
+  // Run once on startup, then daily
+  setTimeout(runCheck, 15_000);
+  setInterval(runCheck, CHECK_INTERVAL_MS);
+}
 // ═══════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════
@@ -5381,6 +5516,8 @@ app.listen(PORT, () => {
   scheduleBonusEligibilityCheck(prisma); // bonus reminders → #alerts
   schedulePlayerFollowupGeneration(prisma);
   scheduleBonusFollowupGeneration(prisma);
+  scheduleUnreachablePlayerCheck(prisma);   // ← ADD
+
 });
 
 process.on('SIGINT', async () => {
