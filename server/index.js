@@ -433,7 +433,7 @@ app.get('/api/players', authMiddleware, storeAccessMiddleware, async (req, res) 
     const allPlayers = await prisma.user.findMany({
       where,
       select: {
-        id: true, username: true, name: true, email: true, phone: true, noAccountOn: true,
+        id: true, username: true, name: true, email: true, phone: true, noAccountOn: true, status: true,
         status: true, balance: true, tier: true, tierPoints: true,
         gamesPlayed: true, winStreak: true, currentStreak: true,
         playTimeMinutes: true, lastPlayedDate: true, cashoutLimit: true,
@@ -459,16 +459,28 @@ app.get('/api/players', authMiddleware, storeAccessMiddleware, async (req, res) 
     const lastDepositMap = {};
     lastDeposits.forEach(r => { lastDepositMap[r.userId] = r._max.createdAt; });
 
-    const computeStatus = (playerId) => {
-      const lastDep = lastDepositMap[playerId];
-      if (!lastDep) return 'INACTIVE';
-      if (lastDep >= todayStart) return 'ACTIVE';
-      if (lastDep >= twoDaysAgo) return 'CRITICAL';
-      if (lastDep >= sevenDaysAgo) return 'HIGHLY_CRITICAL';
-      return 'INACTIVE';
-    };
+    // const computeStatus = (playerId) => {
+    //   const lastDep = lastDepositMap[playerId];
+    //   if (!lastDep) return 'INACTIVE';
+    //   if (lastDep >= todayStart) return 'ACTIVE';
+    //   if (lastDep >= twoDaysAgo) return 'CRITICAL';
+    //   if (lastDep >= sevenDaysAgo) return 'HIGHLY_CRITICAL';
+    //   return 'INACTIVE';
+    // };
+    // AFTER — add player lookup with status check
+const computeStatus = (playerId, storedStatus) => {
+  if (storedStatus === 'UNREACHABLE') return 'UNREACHABLE';
+  const lastDep = lastDepositMap[playerId];
+  if (!lastDep) return 'INACTIVE';
+  if (lastDep >= todayStart) return 'ACTIVE';
+  if (lastDep >= twoDaysAgo) return 'CRITICAL';
+  if (lastDep >= sevenDaysAgo) return 'HIGHLY_CRITICAL';
+  return 'INACTIVE';
+};
 
-    const statusFiltered = status ? allPlayers.filter(p => computeStatus(p.id) === status) : allPlayers;
+    // const statusFiltered = status ? allPlayers.filter(p => computeStatus(p.id) === status) : allPlayers;
+    const statusFiltered = status ? allPlayers.filter(p => computeStatus(p.id, p.status) === status) : allPlayers;
+
     const total = statusFiltered.length;
     const paginated = statusFiltered.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
@@ -480,7 +492,9 @@ app.get('/api/players', authMiddleware, storeAccessMiddleware, async (req, res) 
     freezeRecords.forEach(f => { freezeMap[f.userId] = f; });
 
     const formatted = paginated.map(p => {
-      const dynamicStatus = computeStatus(p.id);
+      // const dynamicStatus = computeStatus(p.id);
+      const dynamicStatus = computeStatus(p.id, p.status);
+
       return {
         id: p.id, name: p.name, username: p.username, email: p.email, phone: p.phone,
         status: dynamicStatus, balance: parseFloat(p.balance), tier: p.tier,
@@ -3311,27 +3325,45 @@ app.get('/api/attendance', authMiddleware, async (req, res) => {
     const lastDepositMap = {};
     lastDeposits.forEach(r => { lastDepositMap[r.userId] = r._max.createdAt; });
 
+    // const withStatus = allPlayers.map(p => {
+    //   const lastDep = lastDepositMap[p.id];
+    //   let attendanceStatus;
+    //   if (!lastDep) attendanceStatus = 'Inactive';
+    //   else if (lastDep >= todayStart) attendanceStatus = 'Active';
+    //   else if (lastDep >= twoDaysAgo) attendanceStatus = 'Critical';
+    //   else if (lastDep >= sevenDaysAgo) attendanceStatus = 'Highly-Critical';
+    //   else attendanceStatus = 'Inactive';
+    //   return { ...p, attendanceStatus };
+    // });
+
     const withStatus = allPlayers.map(p => {
-      const lastDep = lastDepositMap[p.id];
-      let attendanceStatus;
-      if (!lastDep) attendanceStatus = 'Inactive';
-      else if (lastDep >= todayStart) attendanceStatus = 'Active';
-      else if (lastDep >= twoDaysAgo) attendanceStatus = 'Critical';
-      else if (lastDep >= sevenDaysAgo) attendanceStatus = 'Highly-Critical';
-      else attendanceStatus = 'Inactive';
-      return { ...p, attendanceStatus };
-    });
+  if (p.status === 'UNREACHABLE') return { ...p, attendanceStatus: 'Unreachable' };
+  const lastDep = lastDepositMap[p.id];
+  let attendanceStatus;
+  if (!lastDep) attendanceStatus = 'Inactive';
+  else if (lastDep >= todayStart) attendanceStatus = 'Active';
+  else if (lastDep >= twoDaysAgo) attendanceStatus = 'Critical';
+  else if (lastDep >= sevenDaysAgo) attendanceStatus = 'Highly-Critical';
+  else attendanceStatus = 'Inactive';
+  return { ...p, attendanceStatus };
+});
 
     const stats = {
-      total: withStatus.length,
-      active: withStatus.filter(p => p.attendanceStatus === 'Active').length,
-      critical: withStatus.filter(p => p.attendanceStatus === 'Critical').length,
-      highlyCritical: withStatus.filter(p => p.attendanceStatus === 'Highly-Critical').length,
-      inactive: withStatus.filter(p => p.attendanceStatus === 'Inactive').length,
-    };
+  total: withStatus.length,
+  active: withStatus.filter(p => p.attendanceStatus === 'Active').length,
+  critical: withStatus.filter(p => p.attendanceStatus === 'Critical').length,
+  highlyCritical: withStatus.filter(p => p.attendanceStatus === 'Highly-Critical').length,
+  inactive: withStatus.filter(p => p.attendanceStatus === 'Inactive').length,
+  unreachable: withStatus.filter(p => p.attendanceStatus === 'Unreachable').length,  // ← ADD
+};
 
     const { status } = req.query;
-    const statusMap = { 'Active': 'Active', 'Critical': 'Critical', 'Highly-Critical': 'Highly-Critical', 'Inactive': 'Inactive' };
+    // const statusMap = { 'Active': 'Active', 'Critical': 'Critical', 'Highly-Critical': 'Highly-Critical', 'Inactive': 'Inactive' };
+    const statusMap = { 
+  'Active': 'Active', 'Critical': 'Critical', 
+  'Highly-Critical': 'Highly-Critical', 'Inactive': 'Inactive',
+  'Unreachable': 'Unreachable',  // ← ADD
+};
     const filtered = status && statusMap[status] ? withStatus.filter(p => p.attendanceStatus === statusMap[status]) : withStatus;
     const paginated = filtered.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
