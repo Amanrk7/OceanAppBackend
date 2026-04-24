@@ -1,7 +1,8 @@
-// auto-task-generator.js
-// Periodically creates PLAYER_FOLLOWUP and BONUS_FOLLOWUP tasks.
-// Each player gets at most ONE active task per category at a time.
-// Members claim tasks; admins can assign them.
+// auto-task-generator.js  (complete replacement)
+// Changes vs original:
+//  • generatePlayerFollowupTasks / generateBonusFollowupTasks accept optional storeId
+//  • broadcast() calls now pass task.storeId for real-time store isolation
+//  • Scheduled jobs pass storeId when called from the API endpoints
 
 import axios from 'axios';
 import { fmtTXDate, fmtTX } from './discord-notifications.js';
@@ -12,14 +13,10 @@ const BOT_TOKEN    = process.env.DISCORD_BOT_TOKEN;
 const CHANNEL_ALERTS = process.env.DISCORD_CHANNEL_ALERTS;
 const CHANNEL_SHIFTS = process.env.DISCORD_CHANNEL_SHIFTS;
 
-// How often the generator runs
-const PLAYER_GEN_INTERVAL_MS = 6  * 60 * 60 * 1000;  // every 6h
-const BONUS_GEN_INTERVAL_MS  = 12 * 60 * 60 * 1000;  // every 12h
-
-// Streak bonus: only remind if streak ≥ this
+const PLAYER_GEN_INTERVAL_MS = 6  * 60 * 60 * 1000;
+const BONUS_GEN_INTERVAL_MS  = 12 * 60 * 60 * 1000;
 const STREAK_THRESHOLD = parseInt(process.env.STREAK_BONUS_THRESHOLD || '7', 10);
 
-// ── Discord helper ────────────────────────────────────────────────────────────
 async function discordSendJSON(payload, channel = 'alerts') {
   if (!BOT_TOKEN || !PROXY_URL) return false;
   const channelId = channel === 'shifts' ? CHANNEL_SHIFTS : CHANNEL_ALERTS;
@@ -39,34 +36,34 @@ async function discordSendJSON(payload, channel = 'alerts') {
   }
 }
 
-// ── Shared: broadcast via SSE (injected at wire-up time) ─────────────────────
 let _broadcast = null;
 export function setBroadcastFn(fn) { _broadcast = fn; }
-function broadcast(type, data) { if (_broadcast) _broadcast(type, data); }
+// Pass storeId so only that store's SSE clients receive the event
+function broadcast(type, data, storeId = null) {
+  if (_broadcast) _broadcast(type, data, storeId);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PLAYER FOLLOWUP TASKS
-// One task per inactive / highly-critical player.
-// Deduplication: check for existing PLAYER_FOLLOWUP task with matching playerId
-// in notes that is still PENDING or IN_PROGRESS.
+// storeId = null  → run for ALL stores (scheduled)
+// storeId = N     → run only for store N (admin-triggered via API)
 // ─────────────────────────────────────────────────────────────────────────────
-
-export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedule') {
+export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedule', storeId = null) {
   try {
     const now          = new Date();
     const todayStart   = new Date(now); todayStart.setHours(0, 0, 0, 0);
     const twoDaysAgo   = new Date(todayStart); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
     const sevenDaysAgo = new Date(todayStart); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    // All players
+    const playerWhere = { role: 'PLAYER' };
+    if (storeId) playerWhere.storeId = storeId;
+
     const allPlayers = await prisma.user.findMany({
-      where : { role: 'PLAYER' },
-      // select: { id: true, name: true, username: true, balance: true, tier: true },
+      where: playerWhere,
       select: { id: true, name: true, username: true, balance: true, tier: true, storeId: true },
     });
     if (!allPlayers.length) return { created: 0, skipped: 0 };
 
-    // Last deposit per player
     const lastDeposits = await prisma.transaction.groupBy({
       by   : ['userId'],
       where: { type: 'DEPOSIT', status: 'COMPLETED', userId: { in: allPlayers.map(p => p.id) } },
@@ -75,7 +72,6 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
     const lastDepMap = {};
     lastDeposits.forEach(r => { lastDepMap[r.userId] = r._max.createdAt; });
 
-    // Categorise
     const targets = [];
     for (const p of allPlayers) {
       const lastDep = lastDepMap[p.id];
@@ -90,22 +86,32 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
       return { created: 0, skipped: 0 };
     }
 
-    // Existing active PLAYER_FOLLOWUP tasks
+    // Only check existing tasks for the relevant store(s)
+    const existingTaskWhere = { taskType: 'PLAYER_FOLLOWUP', status: { in: ['PENDING', 'IN_PROGRESS'] } };
+    if (storeId) existingTaskWhere.storeId = storeId;
+
     const existingTasks = await prisma.task.findMany({
-      where : { taskType: 'PLAYER_FOLLOWUP', status: { in: ['PENDING', 'IN_PROGRESS'] } },
+      where : existingTaskWhere,
       select: { id: true, notes: true },
     });
     const coveredPlayerIds = new Set();
     existingTasks.forEach(t => {
-      try {
-        const meta = JSON.parse(t.notes || '{}');
-        if (meta.playerId) coveredPlayerIds.add(meta.playerId);
-      } catch (_) {}
+      try { const meta = JSON.parse(t.notes || '{}'); if (meta.playerId) coveredPlayerIds.add(meta.playerId); } catch (_) {}
     });
 
-    let created = 0;
-    let skipped = 0;
+    let created = 0, skipped = 0;
     const newTasks = [];
+
+    // Use first admin as system creator
+    const systemAdmin = await prisma.user.findFirst({
+      where: { role: { in: ['SUPER_ADMIN', 'ADMIN'] }, ...(storeId ? { storeAccess: { has: storeId } } : {}) },
+      select: { id: true },
+    }) || await prisma.user.findFirst({ where: { role: { in: ['SUPER_ADMIN', 'ADMIN'] } }, select: { id: true } });
+
+    if (!systemAdmin) {
+      console.warn('[auto-task] No admin found — cannot create tasks');
+      return { created: 0, skipped: 0 };
+    }
 
     for (const p of targets) {
       if (coveredPlayerIds.has(p.id)) { skipped++; continue; }
@@ -115,20 +121,20 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
       const emoji    = isHighlyCritical ? '🟡' : '🔴';
 
       const checklistItems = [
-        { id: `item_${Date.now()}_${p.id}_0`, label: 'Reach out to player',           fieldKey: 'contacted',  required: true,  done: false, completedBy: null, completedAt: null },
-        { id: `item_${Date.now()}_${p.id}_1`, label: 'Player responded',               fieldKey: 'responded',  required: false, done: false, completedBy: null, completedAt: null },
-        { id: `item_${Date.now()}_${p.id}_2`, label: 'Deposit received / issue resolved', fieldKey: 'resolved', required: true,  done: false, completedBy: null, completedAt: null },
+        { id: `item_${Date.now()}_${p.id}_0`, label: 'Reach out to player',              fieldKey: 'contacted',  required: true,  done: false, completedBy: null, completedAt: null },
+        { id: `item_${Date.now()}_${p.id}_1`, label: 'Player responded',                  fieldKey: 'responded',  required: false, done: false, completedBy: null, completedAt: null },
+        { id: `item_${Date.now()}_${p.id}_2`, label: 'Deposit received / issue resolved', fieldKey: 'resolved',   required: true,  done: false, completedBy: null, completedAt: null },
       ];
 
       const task = await prisma.task.create({
         data: {
-          storeId     :  p.storeId || 1,
+          storeId     : p.storeId || 1,
           title       : `${emoji} Follow up: ${p.name} (@${p.username})`,
           description : `Player is ${p.category.replace('_', ' ')}. Last deposit: ${p.lastDepositDate}. Balance: $${parseFloat(p.balance).toFixed(2)}.`,
           taskType    : 'PLAYER_FOLLOWUP',
           priority,
           status      : 'PENDING',
-          createdById : 2, // system — use your system/admin user id
+          createdById : systemAdmin.id,
           assignedToId: null,
           assignToAll : true,
           checklistItems,
@@ -150,34 +156,23 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
         },
       });
 
-      // broadcast('task_created', task);
+      // ← Pass task.storeId so only that store's clients receive it
       broadcast('task_created', task, task.storeId);
       newTasks.push(task);
       created++;
     }
 
-    // Discord notification
     if (created > 0) {
       const hcList = newTasks.filter(t => { try { return JSON.parse(t.notes).category === 'HIGHLY_CRITICAL'; } catch { return false; } });
       const inList = newTasks.filter(t => { try { return JSON.parse(t.notes).category === 'INACTIVE'; } catch { return false; } });
-
       const fields = [];
-      if (hcList.length) fields.push({
-        name : `🟡 Highly Critical (${hcList.length})`,
-        value: hcList.slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** (@${m.username}) — Last: ${m.lastDepositDate}`; }).join('\n').slice(0, 1000),
-        inline: false,
-      });
-      if (inList.length) fields.push({
-        name : `🔴 Inactive (${inList.length})`,
-        value: inList.slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** (@${m.username}) — Last: ${m.lastDepositDate}`; }).join('\n').slice(0, 1000),
-        inline: false,
-      });
-
+      if (hcList.length) fields.push({ name: `🟡 Highly Critical (${hcList.length})`, value: hcList.slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** (@${m.username}) — Last: ${m.lastDepositDate}`; }).join('\n').slice(0, 1000), inline: false });
+      if (inList.length) fields.push({ name: `🔴 Inactive (${inList.length})`,         value: inList.slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** (@${m.username}) — Last: ${m.lastDepositDate}`; }).join('\n').slice(0, 1000), inline: false });
       await discordSendJSON({
         embeds: [{
           title      : '📋 Player Followup Tasks Generated',
           color      : 0xf59e0b,
-          description: `**${created}** new followup task(s) created for team members to claim.\n${skipped} player(s) already have active tasks.`,
+          description: `**${created}** new followup task(s) created.${storeId ? ` (Store ${storeId})` : ''}\n${skipped} player(s) already have active tasks.`,
           fields,
           footer     : { text: `Triggered by: ${triggeredBy} · OceanBets` },
           timestamp  : now.toISOString(),
@@ -185,7 +180,7 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
       }, 'alerts');
     }
 
-    console.log(`📋 Player followup tasks: created=${created}, skipped=${skipped}`);
+    console.log(`📋 Player followup tasks: created=${created}, skipped=${skipped}${storeId ? ` (store ${storeId})` : ''}`);
     return { created, skipped, total: targets.length };
   } catch (err) {
     console.error('generatePlayerFollowupTasks error:', err.message);
@@ -195,35 +190,40 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BONUS FOLLOWUP TASKS
-// One task per player per bonus type: streak | referral | match
+// storeId = null  → all stores; storeId = N → store N only
 // ─────────────────────────────────────────────────────────────────────────────
-
-export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule') {
+export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule', storeId = null) {
   try {
     const now = new Date();
     const created_tasks = [];
-    let created = 0;
-    let skipped = 0;
+    let created = 0, skipped = 0;
 
-    // Helper: check if an active BONUS_FOLLOWUP task already exists for playerId+bonusType
-    async function hasActiveTask(playerId, bonusType) {
+    const systemAdmin = await prisma.user.findFirst({
+      where: { role: { in: ['SUPER_ADMIN', 'ADMIN'] }, ...(storeId ? { storeAccess: { has: storeId } } : {}) },
+      select: { id: true },
+    }) || await prisma.user.findFirst({ where: { role: { in: ['SUPER_ADMIN', 'ADMIN'] } }, select: { id: true } });
+
+    if (!systemAdmin) {
+      console.warn('[auto-task] No admin found — cannot create bonus tasks');
+      return { created: 0, skipped: 0 };
+    }
+
+    async function hasActiveTask(playerId, bonusType, taskStoreId) {
       const existing = await prisma.task.findFirst({
         where: {
           taskType: 'BONUS_FOLLOWUP',
           status  : { in: ['PENDING', 'IN_PROGRESS'] },
           notes   : { contains: `"playerId":${playerId}` },
+          ...(taskStoreId ? { storeId: taskStoreId } : {}),
         },
         select: { id: true, notes: true },
       });
       if (!existing) return false;
-      try {
-        const meta = JSON.parse(existing.notes || '{}');
-        return meta.bonusType === bonusType;
-      } catch { return false; }
+      try { const meta = JSON.parse(existing.notes || '{}'); return meta.bonusType === bonusType; } catch { return false; }
     }
 
     async function createBonusTask({ player, bonusType, eligibleAmount, details, priority = 'HIGH' }) {
-      if (await hasActiveTask(player.id, bonusType)) { skipped++; return; }
+      if (await hasActiveTask(player.id, bonusType, player.storeId)) { skipped++; return; }
 
       const labels = {
         streak  : { emoji: '🔥', label: 'Streak Bonus',   desc: 'Grant streak bonus' },
@@ -238,13 +238,13 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
 
       const task = await prisma.task.create({
         data: {
-          storeId     :  player.storeId || 1,
+          storeId     : player.storeId || 1,
           title       : `${meta.emoji} ${meta.label}: ${player.name} (@${player.username})`,
           description : details,
           taskType    : 'BONUS_FOLLOWUP',
           priority,
           status      : 'PENDING',
-          createdById : 1,
+          createdById : systemAdmin.id,
           assignedToId: null,
           assignToAll : true,
           checklistItems,
@@ -266,22 +266,23 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
         },
       });
 
-      // broadcast('task_created', task);
+      // ← Pass task.storeId for store-isolated real-time delivery
       broadcast('task_created', task, task.storeId);
       created_tasks.push(task);
       created++;
     }
 
-    // ── A: Streak bonus eligible ──────────────────────────────────────────────
-    const streakPlayers = await prisma.user.findMany({
-      where : {
-        role         : 'PLAYER',
-        currentStreak: { gte: STREAK_THRESHOLD },
-        lastPlayedDate: { gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) },
-      },
-      // select: { id: true, name: true, username: true, currentStreak: true, balance: true },
-      select: { id: true, name: true, username: true, currentStreak: true, balance: true, storeId: true },
+    // ── A: Streak bonus eligible ──────────────────────────────
+    const streakWhere = {
+      role         : 'PLAYER',
+      currentStreak: { gte: STREAK_THRESHOLD },
+      lastPlayedDate: { gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) },
+    };
+    if (storeId) streakWhere.storeId = storeId;
 
+    const streakPlayers = await prisma.user.findMany({
+      where : streakWhere,
+      select: { id: true, name: true, username: true, currentStreak: true, balance: true, storeId: true },
     });
 
     for (const p of streakPlayers) {
@@ -298,14 +299,14 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
       }
     }
 
-    // ── B: Referral bonus not granted ─────────────────────────────────────────
+    // ── B: Referral bonus not granted ─────────────────────────
     const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const referralWhere = { role: 'PLAYER', referredBy: { not: null }, createdAt: { gte: cutoff } };
+    if (storeId) referralWhere.storeId = storeId;
+
     const newReferredPlayers = await prisma.user.findMany({
-      where  : { role: 'PLAYER', referredBy: { not: null }, createdAt: { gte: cutoff } },
-      include: { referrer: { 
-        // select: { id: true, name: true, username: true, storeId: true } 
-        select: { id: true, name: true, username: true, balance: true, referredBy: true, createdAt: true, storeId: true }
-      } },
+      where  : referralWhere,
+      include: { referrer: { select: { id: true, name: true, username: true, balance: true, referredBy: true, createdAt: true, storeId: true } } },
     });
 
     for (const p of newReferredPlayers) {
@@ -323,10 +324,20 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
       }
     }
 
-    // ── C: Match bonus not claimed (deposits in last 24h) ─────────────────────
+    // ── C: Match bonus not claimed (deposits in last 24h) ─────
     const depositWindow = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const matchDepositWhere = { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: depositWindow } };
+    if (storeId) {
+      // Filter deposits to only players in this store
+      const storePlayers = await prisma.user.findMany({
+        where: { role: 'PLAYER', storeId },
+        select: { id: true },
+      });
+      matchDepositWhere.userId = { in: storePlayers.map(p => p.id) };
+    }
+
     const recentDeposits = await prisma.transaction.findMany({
-      where  : { type: 'DEPOSIT', status: 'COMPLETED', createdAt: { gte: depositWindow } },
+      where  : matchDepositWhere,
       include: { user: { select: { id: true, name: true, username: true, balance: true, storeId: true } } },
       orderBy: { createdAt: 'desc' },
     });
@@ -355,21 +366,18 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
       }
     }
 
-    // Discord notification
     if (created > 0) {
       const byType = { streak: 0, referral: 0, match: 0 };
       created_tasks.forEach(t => { try { const m = JSON.parse(t.notes); byType[m.bonusType] = (byType[m.bonusType] || 0) + 1; } catch {} });
-
       const fields = [];
-      if (byType.streak)   fields.push({ name: `🔥 Streak Bonuses (${byType.streak})`,   value: created_tasks.filter(t => { try { return JSON.parse(t.notes).bonusType === 'streak'; } catch { return false; } }).slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** — ${m.details}`; }).join('\n').slice(0, 1000), inline: false });
+      if (byType.streak)   fields.push({ name: `🔥 Streak Bonuses (${byType.streak})`,   value: created_tasks.filter(t => { try { return JSON.parse(t.notes).bonusType === 'streak';   } catch { return false; } }).slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** — ${m.details}`; }).join('\n').slice(0, 1000), inline: false });
       if (byType.referral) fields.push({ name: `👥 Referral Bonuses (${byType.referral})`, value: created_tasks.filter(t => { try { return JSON.parse(t.notes).bonusType === 'referral'; } catch { return false; } }).slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** — ${m.details}`; }).join('\n').slice(0, 1000), inline: false });
-      if (byType.match)    fields.push({ name: `💰 Match Bonuses (${byType.match})`,    value: created_tasks.filter(t => { try { return JSON.parse(t.notes).bonusType === 'match'; } catch { return false; } }).slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** — ${m.details}`; }).join('\n').slice(0, 1000), inline: false });
-
+      if (byType.match)    fields.push({ name: `💰 Match Bonuses (${byType.match})`,    value: created_tasks.filter(t => { try { return JSON.parse(t.notes).bonusType === 'match';    } catch { return false; } }).slice(0, 8).map(t => { const m = JSON.parse(t.notes); return `• **${m.playerName}** — ${m.details}`; }).join('\n').slice(0, 1000), inline: false });
       await discordSendJSON({
         embeds: [{
           title      : '🎁 Bonus Followup Tasks Generated',
           color      : 0x22c55e,
-          description: `**${created}** new bonus followup task(s) need attention.\n${skipped} already have active tasks.`,
+          description: `**${created}** new bonus followup task(s) need attention.${storeId ? ` (Store ${storeId})` : ''}\n${skipped} already have active tasks.`,
           fields,
           footer     : { text: `Triggered by: ${triggeredBy} · OceanBets` },
           timestamp  : now.toISOString(),
@@ -377,7 +385,7 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
       }, 'alerts');
     }
 
-    console.log(`🎁 Bonus followup tasks: created=${created}, skipped=${skipped}`);
+    console.log(`🎁 Bonus followup tasks: created=${created}, skipped=${skipped}${storeId ? ` (store ${storeId})` : ''}`);
     return { created, skipped };
   } catch (err) {
     console.error('generateBonusFollowupTasks error:', err.message);
@@ -386,17 +394,17 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCHEDULERS — call from server.js inside app.listen()
+// SCHEDULERS
 // ─────────────────────────────────────────────────────────────────────────────
-
 export function schedulePlayerFollowupGeneration(prisma) {
   console.log('📋 Scheduling player followup task generation (every 6h)');
-  setTimeout(() => generatePlayerFollowupTasks(prisma, 'schedule'), 15_000);
-  setInterval(() => generatePlayerFollowupTasks(prisma, 'schedule'), PLAYER_GEN_INTERVAL_MS);
+  // storeId = null → runs for ALL stores on the schedule
+  setTimeout(() => generatePlayerFollowupTasks(prisma, 'schedule', null), 15_000);
+  setInterval(() => generatePlayerFollowupTasks(prisma, 'schedule', null), PLAYER_GEN_INTERVAL_MS);
 }
 
 export function scheduleBonusFollowupGeneration(prisma) {
   console.log('🎁 Scheduling bonus followup task generation (every 12h)');
-  setTimeout(() => generateBonusFollowupTasks(prisma, 'schedule'), 30_000);
-  setInterval(() => generateBonusFollowupTasks(prisma, 'schedule'), BONUS_GEN_INTERVAL_MS);
+  setTimeout(() => generateBonusFollowupTasks(prisma, 'schedule', null), 30_000);
+  setInterval(() => generateBonusFollowupTasks(prisma, 'schedule', null), BONUS_GEN_INTERVAL_MS);
 }
