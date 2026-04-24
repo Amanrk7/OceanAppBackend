@@ -3013,12 +3013,15 @@ app.get('/api/games', authMiddleware, async (req, res) => {
 
 app.post('/api/games', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { name, slug, pointStock, status } = req.body;
+    // const { name, slug, pointStock, status } = req.body;
+    const { name, slug, pointStock, status, isShared } = req.body;
     if (!name || !slug) return res.status(400).json({ error: 'Name and slug are required' });
+// ...
     const existing = await prisma.game.findFirst({ where: { storeId: req.storeId, OR: [{ name }, { slug }] } });
 
     if (existing) return res.status(409).json({ error: 'A game with that name or slug already exists' });
-    const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId } });
+const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId, isShared: isShared === true } });
+    // const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId } });
 
     res.status(201).json({ data: game, message: 'Game created successfully' });
   } catch (err) {
@@ -3281,10 +3284,13 @@ app.get('/api/wallets', authMiddleware, async (req, res) => {
 app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const { balance, name, identifier, isLive } = req.body;
+    // const { balance, name, identifier, isLive } = req.body;
+    const { balance, name, identifier, isLive, isShared } = req.body;
+// ...
     const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(id) } });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-    const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), } });
+    // const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), } });
+const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), ...(isShared !== undefined && { isShared: Boolean(isShared) }) } });
     checkThresholdsAndNotify({ walletId: parseInt(id) }, prisma);
     broadcastSharedResourceUpdate(null, parseInt(id), prisma).catch(() => {});
     res.json({ data: updated, message: 'Wallet updated' });
@@ -3295,9 +3301,12 @@ app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) 
 
 app.post('/api/wallets', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { name, method, identifier, balance, isLive } = req.body;
+    // const { name, method, identifier, balance, isLive } = req.body;
+    const { name, method, identifier, balance, isLive, isShared } = req.body;
+// ...
     if (!name || !method) return res.status(400).json({ error: 'Name and method are required' });
-    const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, storeId: req.storeId } });
+    // const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, storeId: req.storeId } });
+const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, isShared: isShared === true, storeId: req.storeId } });
 
     res.status(201).json({ data: wallet, message: 'Wallet created' });
   } catch (err) {
