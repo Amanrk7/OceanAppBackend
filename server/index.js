@@ -5306,19 +5306,37 @@ app.delete('/api/tasks/:id', authMiddleware, adminMiddleware, async (req, res) =
 
 // ── POST /api/tasks/generate-player-followup ─────────────────────
 // Admin manually triggers generation of player followup tasks.
+// app.post('/api/tasks/generate-player-followup', authMiddleware, adminMiddleware, async (req, res) => {
+//   try {
+//     const result = await generatePlayerFollowupTasks(prisma, `admin:${req.userId}`);
+//     res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// // ── POST /api/tasks/generate-bonus-followup ──────────────────────
+// app.post('/api/tasks/generate-bonus-followup', authMiddleware, adminMiddleware, async (req, res) => {
+//   try {
+//     const result = await generateBonusFollowupTasks(prisma, `admin:${req.userId}`);
+//     res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
 app.post('/api/tasks/generate-player-followup', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const result = await generatePlayerFollowupTasks(prisma, `admin:${req.userId}`);
+    const result = await generatePlayerFollowupTasks(prisma, `admin:${req.userId}`, req.storeId);
     res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ── POST /api/tasks/generate-bonus-followup ──────────────────────
+ 
 app.post('/api/tasks/generate-bonus-followup', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const result = await generateBonusFollowupTasks(prisma, `admin:${req.userId}`);
+    const result = await generateBonusFollowupTasks(prisma, `admin:${req.userId}`, req.storeId);
     res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
