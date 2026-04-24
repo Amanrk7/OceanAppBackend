@@ -852,7 +852,9 @@ app.post('/api/players/:id/assign-missing-info-task', authMiddleware, async (req
         },
         include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true, role: true } } }
       });
-      broadcastTaskUpdate('task_updated', updated);
+      // broadcastTaskUpdate('task_updated', updated);
+      broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
+
       return res.status(409).json({ existingTaskId: existing.id, data: updated, message: 'Task already exists — assignee updated' });
     }
 
@@ -894,7 +896,9 @@ app.post('/api/players/:id/assign-missing-info-task', authMiddleware, async (req
       }
     });
 
-    broadcastTaskUpdate('task_created', task);
+    // broadcastTaskUpdate('task_created', task);
+    broadcastTaskUpdate('task_created', task, task.storeId ?? req.storeId);
+
     res.status(201).json({ data: task, message: 'Missing info task created successfully' });
   } catch (err) {
     console.error('assign-missing-info-task error:', err);
@@ -1182,10 +1186,8 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
           }
         });
 
-        broadcastTaskUpdate('task_updated', syncedTask);
-        // Also broadcast player update so MissingPlayersPage refreshes
-        // broadcastTaskUpdate('player_updated', { playerId: id });
-        broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
+        broadcastTaskUpdate('task_updated', syncedTask, syncedTask.storeId ?? req.storeId);
+        broadcastTaskUpdate('player_updated', { playerId: id, storeId: req.storeId }, req.storeId);
       }
     } catch (syncErr) {
       console.error('Task sync error (non-fatal):', syncErr);
@@ -1260,7 +1262,9 @@ app.post('/api/players/:id/streak/freeze', authMiddleware, async (req, res) => {
     });
 
     // broadcastTaskUpdate('player_updated', { playerId: id });
-    broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
+    // broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
+    broadcastTaskUpdate('player_updated', { playerId: id, storeId: req.storeId }, req.storeId);
+
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak frozen until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1290,7 +1294,9 @@ app.post('/api/players/:id/streak/extend-freeze', authMiddleware, async (req, re
     });
 
     // broadcastTaskUpdate('player_updated', { playerId: id });
-    broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
+    // broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
+    broadcastTaskUpdate('player_updated', { playerId: id, storeId: req.storeId }, req.storeId);
+
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s freeze extended until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1310,7 +1316,9 @@ app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) =>
     ]);
 
     // broadcastTaskUpdate('player_updated', { playerId: id });
-    broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
+    // broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
+    broadcastTaskUpdate('player_updated', { playerId: id, storeId: req.storeId }, req.storeId);
+
     res.json({
       data: { playerId: id, playerName: player.name, streakReset: true, previousStreak: player.currentStreak },
       message: `${player.name}'s streak unfrozen and reset to 0`,
@@ -3867,6 +3875,7 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
     // At the end of PATCH /api/shifts/:id/end, before res.json:
     // broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration });
     broadcastTaskUpdate('shift_ended', { shiftId, teamRole, duration, storeId: req.storeId }, req.storeId);
+    
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
@@ -3905,6 +3914,7 @@ app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
     });
 
     broadcastTaskUpdate('shift_checkin', { shiftId, checkin, storeId: req.storeId }, req.storeId);
+    
     res.json({ data: checkin, message: 'Balance confirmed. Shift started!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3957,6 +3967,7 @@ app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
     });
 
     broadcastTaskUpdate('shift_checkout', { shiftId, checkin, storeId: req.storeId }, req.storeId);
+    
 
     // ── NEW: Funds ↔ Game Points Balance check ─────────────────
     try {
@@ -4096,6 +4107,7 @@ app.post('/api/shifts/:id/rate', authMiddleware, adminMiddleware, async (req, re
     });
 
     broadcastTaskUpdate('shift_rated', { shiftId, memberId, overallRating, storeId: req.storeId }, req.storeId);
+    
     res.json({ data: rating, message: `Shift rated: ${overallRating.toFixed(1)}/5` });
   } catch (err) {
     console.error('Rate shift error:', err);
@@ -5032,7 +5044,9 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
       await prisma.subTask.createMany({ data: subTasks.map(st => ({ taskId: task.id, assignedToId: st.assignedToId ? parseInt(st.assignedToId) : null, label: st.label || '', targetValue: st.targetValue ? parseFloat(st.targetValue) : null, currentValue: 0, status: 'PENDING' })) });
     }
 
-    broadcastTaskUpdate('task_created', task);
+    // broadcastTaskUpdate('task_created', task);
+    broadcastTaskUpdate('task_created', task, task.storeId ?? req.storeId);
+
     if (task.taskType !== 'MISSING_INFO') {
       const assigneeName = task.assignedTo?.name ?? (assignToAll ? 'All members' : null);
       const creator = await prisma.user.findUnique({ where: { id: req.userId }, select: { name: true } });
@@ -5081,7 +5095,9 @@ app.patch('/api/tasks/:id/checklist', authMiddleware, async (req, res) => {
       include: { createdBy: { select: { id: true, name: true, role: true } }, assignedTo: { select: { id: true, name: true, role: true } } }
     });
 
-    broadcastTaskUpdate('task_updated', updated);
+    // broadcastTaskUpdate('task_updated', updated);
+    broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
+
     res.json({ data: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5122,7 +5138,9 @@ app.post('/api/tasks/:id/claim', authMiddleware, async (req, res) => {
       }
     });
 
-    broadcastTaskUpdate('task_updated', updated);
+    // broadcastTaskUpdate('task_updated', updated);
+    broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
+
     res.json({ data: updated, message: 'Task claimed successfully' });
   } catch (err) {
     console.error('Claim task error:', err);
@@ -5130,8 +5148,8 @@ app.post('/api/tasks/:id/claim', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/tasks/:id/submit-missing-info — member submits collected player data
-app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) => {
+// POST /api/tasks/:id/assign — member submits collected player data
+app.post('/api/tasks/:id/assign', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid task ID' });
@@ -5206,7 +5224,11 @@ app.post('/api/tasks/:id/submit-missing-info', authMiddleware, async (req, res) 
       }
     });
 
-    broadcastTaskUpdate('task_updated', updatedTask);
+    // broadcastTaskUpdate('task_updated', updatedTask);
+    // broadcastTaskUpdate('task_updated', updatedTask, updatedTask.storeId ?? req.storeId);
+    broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
+
+
     res.json({
       data: updatedTask,
       player: { ...updatedPlayer, password: undefined },
@@ -5245,6 +5267,7 @@ app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
 
     // broadcastTaskUpdate('task_updated', updated);
     broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
+    
     res.json({ data: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5283,7 +5306,9 @@ app.post('/api/tasks/:id/undo-completion', authMiddleware, async (req, res) => {
       }
     });
 
-    broadcastTaskUpdate('task_updated', updated);
+    // broadcastTaskUpdate('task_updated', updated);
+    broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
+
     res.json({ data: updated, message: 'Task reopened successfully' });
   } catch (err) {
     console.error('Undo completion error:', err);
@@ -5298,32 +5323,12 @@ app.delete('/api/tasks/:id', authMiddleware, adminMiddleware, async (req, res) =
     await prisma.task.delete({ where: { id } });
     // broadcastTaskUpdate('task_deleted', { id });
     broadcastTaskUpdate('task_deleted', { id, storeId: req.storeId }, req.storeId);
+    
     res.json({ message: 'Task deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ── POST /api/tasks/generate-player-followup ─────────────────────
-// Admin manually triggers generation of player followup tasks.
-// app.post('/api/tasks/generate-player-followup', authMiddleware, adminMiddleware, async (req, res) => {
-//   try {
-//     const result = await generatePlayerFollowupTasks(prisma, `admin:${req.userId}`);
-//     res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
-
-// // ── POST /api/tasks/generate-bonus-followup ──────────────────────
-// app.post('/api/tasks/generate-bonus-followup', authMiddleware, adminMiddleware, async (req, res) => {
-//   try {
-//     const result = await generateBonusFollowupTasks(prisma, `admin:${req.userId}`);
-//     res.json({ success: true, message: `Created ${result.created} task(s). ${result.skipped} already had active tasks.`, data: result });
-//   } catch (err) {
-//     res.status(500).json({ error: err.message });
-//   }
-// });
 
 app.post('/api/tasks/generate-player-followup', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -5370,7 +5375,9 @@ app.patch('/api/tasks/:id/assign', authMiddleware, adminMiddleware, async (req, 
       },
     });
 
-    broadcastTaskUpdate('task_updated', updated);
+    // broadcastTaskUpdate('task_updated', updated);
+    broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
+
     res.json({ data: updated, message: assignedToId ? `Task assigned to ${updated.assignedTo?.name}` : 'Task opened to all members' });
   } catch (err) {
     res.status(500).json({ error: err.message });
