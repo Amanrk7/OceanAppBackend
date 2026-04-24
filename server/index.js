@@ -903,34 +903,86 @@ app.post('/api/players/:id/assign-missing-info-task', authMiddleware, async (req
 });
 
 // GET /api/players/:id — single player (MUST be after all /players/xxx static routes)
+// app.get('/api/players/:id', authMiddleware, async (req, res) => {
+//   try {
+//     const id = parseInt(req.params.id);
+//     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+
+//     const user = await prisma.user.findUnique({
+//       where: { id, storeId: req.storeId },
+//       include: {
+//         transactions: {
+//           orderBy: { createdAt: 'desc' }, take: 200,
+//           include: { game: { select: { id: true, name: true } }, },
+//         },
+//         bonuses: true,
+//         referrals: { select: { id: true, name: true, username: true } },
+//         referrer: { select: { id: true, name: true, username: true } },
+//         friends: { select: { id: true, name: true, username: true } },
+//         friendOf: { select: { id: true, name: true, username: true } },
+//       },
+//     });
+
+//     // if (!user) return res.status(404).json({ error: 'Player not found' });
+//     // res.json({ data: shapePlayer(user) });
+
+
+//     if (!user) return res.status(404).json({ error: 'Player not found' });
+//     // const freezeRecord = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
+//     const freezeRecord = prisma.streakFreeze ? await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null) : null;
+//     const shaped = shapePlayer(user);
+//     shaped.streakFreeze = computeFreezeStatus(
+//       { currentStreak: user.currentStreak || 0, lastPlayedDate: user.lastPlayedDate },
+//       freezeRecord
+//     );
+//     res.json({ data: shaped });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to fetch player' });
+//   }
+// });
+
 app.get('/api/players/:id', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
 
-    const user = await prisma.user.findUnique({
-      where: { id, storeId: req.storeId },
-      include: {
-        transactions: {
-          orderBy: { createdAt: 'desc' }, take: 200,
-          include: { game: { select: { id: true, name: true } }, },
+    const [user, depAgg, cashAgg, freezeRecord] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id, storeId: req.storeId },
+        include: {
+          transactions: {
+            orderBy: { createdAt: 'desc' }, take: 200,
+            include: { game: { select: { id: true, name: true } } },
+          },
+          bonuses: true,
+          referrals: { select: { id: true, name: true, username: true } },
+          referrer: { select: { id: true, name: true, username: true } },
+          friends: { select: { id: true, name: true, username: true } },
+          friendOf: { select: { id: true, name: true, username: true } },
         },
-        bonuses: true,
-        referrals: { select: { id: true, name: true, username: true } },
-        referrer: { select: { id: true, name: true, username: true } },
-        friends: { select: { id: true, name: true, username: true } },
-        friendOf: { select: { id: true, name: true, username: true } },
-      },
-    });
-
-    // if (!user) return res.status(404).json({ error: 'Player not found' });
-    // res.json({ data: shapePlayer(user) });
-
+      }),
+      // ── Real all-time aggregates — no take limit ──────────────────────
+      prisma.transaction.aggregate({
+        where: { userId: id, type: 'DEPOSIT', status: 'COMPLETED' },
+        _sum: { amount: true },
+      }),
+      prisma.transaction.aggregate({
+        where: { userId: id, type: 'WITHDRAWAL', status: 'COMPLETED' },
+        _sum: { amount: true },
+      }),
+      prisma.streakFreeze
+        ? prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null)
+        : Promise.resolve(null),
+    ]);
 
     if (!user) return res.status(404).json({ error: 'Player not found' });
-    // const freezeRecord = await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null);
-    const freezeRecord = prisma.streakFreeze ? await prisma.streakFreeze.findUnique({ where: { userId: id } }).catch(() => null) : null;
+
     const shaped = shapePlayer(user);
+
+    // Override the 200-txn estimates with real all-time DB aggregates
+    shaped.allTimeDeposits = parseFloat(parseFloat(depAgg._sum.amount  || 0).toFixed(2));
+    shaped.allTimeCashouts = parseFloat(parseFloat(cashAgg._sum.amount || 0).toFixed(2));
+
     shaped.streakFreeze = computeFreezeStatus(
       { currentStreak: user.currentStreak || 0, lastPlayedDate: user.lastPlayedDate },
       freezeRecord
@@ -940,7 +992,6 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch player' });
   }
 });
-
 
 app.patch('/api/players/:id', authMiddleware, async (req, res) => {
   try {
