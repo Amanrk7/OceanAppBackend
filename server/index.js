@@ -1644,6 +1644,7 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
 
     const results = await prisma.$transaction(ops);
     checkThresholdsAndNotify({ gameId }, prisma);
+    broadcastSharedResourceUpdate(gameId, null, prisma).catch(() => {});
     const updatedGame = results[0];
     const updatedPlayer = results[1];
 
@@ -1948,6 +1949,7 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
     }
 
     checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
+    broadcastSharedResourceUpdate(gameId, null, prisma).catch(() => {});
     if (prisma.streakFreeze) {
       await prisma.streakFreeze.deleteMany({ where: { userId: parseInt(playerId) } }).catch(() => { });
     }
@@ -2278,12 +2280,6 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     const player = await prisma.user.findUnique({ where: { id: parseInt(playerId) }, select: { id: true, name: true, balance: true, currentStreak: true, cashoutLimit: true } });
     if (!player) return res.status(404).json({ error: 'Player not found' });
 
-    // const balanceBefore = parseFloat(player.balance);
-    // if (cashoutAmt > balanceBefore) return res.status(400).json({ error: `Insufficient player balance. Has $${balanceBefore.toFixed(2)}, requested $${cashoutAmt.toFixed(2)}.` });
-
-    // const wallet = await prisma.wallet.findUnique({ where: { where: { isLive: true }, id: parseInt(walletId) }, select: { id: true, name: true, method: true, balance: true } });
-    // if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-    // Replace the broken findUnique in both endpoints:
     const wallet = await prisma.wallet.findUnique({
       where: { id: parseInt(walletId) },
       select: { id: true, name: true, method: true, balance: true, isLive: true }
@@ -2348,85 +2344,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Cashout failed: ' + err.message });
   }
 });
-
-// app.get('/api/transactions', authMiddleware, async (req, res) => {
-//   try {
-//     // const { page = 1, limit = 10, type = '', status = '' } = req.query;
-//     const { page = 1, limit = 10, type = '', status = '', fromDate = '', toDate = '' } = req.query;
-//     const skip = (parseInt(page) - 1) * parseInt(limit);
-//     // const where = {};
-//     // if (type) where.type = type;
-//     // if (status) where.status = status;
-//     const where = {};
-//     if (type) where.type = type;
-//     if (status) where.status = status;
-//     if (fromDate || toDate) {
-//       where.createdAt = {};
-//       if (fromDate) where.createdAt.gte = new Date(fromDate);
-//       if (toDate) where.createdAt.lte = new Date(toDate);
-//     }
-
-
-//     const [transactions, total] = await Promise.all([
-//       prisma.transaction.findMany({ where, include: { user: { select: { id: true, name: true, email: true } }, game: { select: { id: true, name: true } } }, skip, take: parseInt(limit), orderBy: { createdAt: 'desc' } }),
-//       prisma.transaction.count({ where }),
-//     ]);
-
-//     const formatted = transactions.map(t => {
-//       let type = t.type;
-//       let bonusType = null;
-//       if (t.type === 'DEPOSIT') type = 'Deposit';
-//       else if (t.type === 'WITHDRAWAL') type = 'Cashout';
-//       else if (t.type === 'BONUS') {
-//         if (t.description?.includes('Match')) { type = 'Match Bonus'; bonusType = 'match'; }
-//         else if (t.description?.includes('Special')) { type = 'Special Bonus'; bonusType = 'special'; }
-//         else if (t.description?.includes('Streak')) { type = 'Streak Bonus'; bonusType = 'streak'; }
-//         else if (t.description?.includes('Referral')) { type = 'Referral Bonus'; bonusType = 'referral'; }
-//         else { type = 'Bonus'; }
-//       }
-
-//       let walletMethod = t.paymentMethod || 'Unknown';
-//       let walletName = 'Account';
-//       const walletMatch = t.description?.match(/via ([^ ]+) - (.*?)$/);
-//       if (walletMatch) { walletMethod = walletMatch[1]; walletName = walletMatch[2]; }
-
-//       // const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
-//       // const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
-//       // const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
-//       // const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
-//       // const feeMatch = t.notes?.match(/^fee:([\d.]+)/);
-//       // const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
-
-//       const noteMatch = t.notes?.match(/From game: ([^|]+)(?:\|balanceBefore:([\d.]+)\|balanceAfter:([\d.]+))?/);
-//       const gameName = noteMatch ? noteMatch[1].trim() : t.game?.name || null;
-//       const balanceBefore = noteMatch?.[2] ? parseFloat(noteMatch[2]) : null;
-//       const balanceAfter = noteMatch?.[3] ? parseFloat(noteMatch[3]) : null;
-//       const feeMatch = t.notes?.match(/fee:([\d.]+)/);
-//       const fee = feeMatch ? parseFloat(feeMatch[1]) : null;
-
-//       // NEW: parse game stock snapshots
-//       const stockBeforeMatch = t.notes?.match(/gameStockBefore:([\d.]+)/);
-//       const stockAfterMatch = t.notes?.match(/gameStockAfter:([\d.]+)/);
-//       const gameStockBefore = stockBeforeMatch ? parseFloat(stockBeforeMatch[1]) : null;
-//       const gameStockAfter = stockAfterMatch ? parseFloat(stockAfterMatch[1]) : null;
-
-//       return {
-//         id: `TXN${String(t.id).padStart(6, '0')}`,
-//         playerId: t.userId, playerName: t.user?.name || '—', email: t.user?.email || '—',
-//         type, bonusType, amount: parseFloat(t.amount),
-//         paidAmount: parseFloat(t.paidAmount ?? 0),
-//         fee,
-//         walletMethod, walletName, gameName, balanceBefore, balanceAfter,
-//         status: t.status, timestamp: fmtTX(t.createdAt), date: fmtTXDate(t.createdAt), gameStockBefore,
-//         gameStockAfter,
-//       };
-//     });
-
-//     res.json({ data: formatted, pagination: { page: parseInt(page), limit: parseInt(limit), total, pages: Math.ceil(total / parseInt(limit)) } });
-//   } catch (err) {
-//     res.status(500).json({ error: 'Failed to fetch transactions' });
-//   }
-// });
+     
 
 app.get('/api/transactions', authMiddleware, async (req, res) => {
   try {
@@ -2964,6 +2882,7 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
     // checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined });
     checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined }, prisma).catch(() => { });
+    broadcastSharedResourceUpdate(tx.gameId || null, wallet?.id || null, prisma).catch(() => {});
 
     res.json({
       success: true,
@@ -3115,6 +3034,7 @@ app.patch('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) =>
     if (!game) return res.status(404).json({ error: 'Game not found' });
     const updatedGame = await prisma.game.update({ where: { id }, data: { ...(pointStock !== undefined && { pointStock }), ...(status && { status }) } });
     checkThresholdsAndNotify({ gameId: id }, prisma);
+    broadcastSharedResourceUpdate(id, null, prisma).catch(() => {});
     res.json({ data: updatedGame, message: 'Game updated successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update game' });
@@ -3258,6 +3178,25 @@ app.patch('/api/expenses/:id', authMiddleware, adminMiddleware, async (req, res)
 
 // ── Shared resource helpers — paste above the wallet/game routes ──
 
+// async function getWalletsForStore(storeId) {
+//   const wallets = await prisma.wallet.findMany({
+//     where: {
+//       OR: [
+//         { storeId },
+//         { isShared: true, isLive: true },
+//       ]
+//     },
+//     include: { storeBalances: { where: { storeId } } },
+//     orderBy: [{ method: 'asc' }, { name: 'asc' }],
+//   });
+//   return wallets.map(w => ({
+//     ...w,
+//     balance: w.storeBalances[0]?.balance ?? (w.storeId === storeId ? w.balance : 0),
+//     isOwned: w.storeId === storeId,
+//     globalBalance: w.balance,
+//   }));
+// }
+
 async function getWalletsForStore(storeId) {
   const wallets = await prisma.wallet.findMany({
     where: {
@@ -3271,11 +3210,33 @@ async function getWalletsForStore(storeId) {
   });
   return wallets.map(w => ({
     ...w,
-    balance: w.storeBalances[0]?.balance ?? (w.storeId === storeId ? w.balance : 0),
+    // Shared wallets: always use global balance (same across all stores)
+    // Owned wallets:  use per-store balance if tracked, else global
+    balance: w.isShared
+      ? w.balance
+      : (w.storeBalances[0]?.balance ?? (w.storeId === storeId ? w.balance : 0)),
     isOwned: w.storeId === storeId,
     globalBalance: w.balance,
   }));
 }
+
+// async function getGamesForStore(storeId, filters = {}) {
+//   const where = { OR: [{ storeId }, { isShared: true }] };
+//   if (filters.status) where.status = filters.status.toUpperCase();
+//   if (filters.search) where.name = { contains: filters.search, mode: 'insensitive' };
+//   const games = await prisma.game.findMany({
+//     where,
+//     include: { storeStocks: { where: { storeId } } },
+//     orderBy: { name: 'asc' },
+//   });
+//   return games.map(g => ({
+//     ...g,
+//     pointStock: g.storeStocks[0]?.pointStock ?? (g.storeId === storeId ? g.pointStock : 0),
+//     status: g.storeStocks[0]?.status ?? g.status,
+//     isOwned: g.storeId === storeId,
+//     globalStock: g.pointStock,
+//   }));
+// }
 
 async function getGamesForStore(storeId, filters = {}) {
   const where = { OR: [{ storeId }, { isShared: true }] };
@@ -3288,8 +3249,14 @@ async function getGamesForStore(storeId, filters = {}) {
   });
   return games.map(g => ({
     ...g,
-    pointStock: g.storeStocks[0]?.pointStock ?? (g.storeId === storeId ? g.pointStock : 0),
-    status: g.storeStocks[0]?.status ?? g.status,
+    // Shared games: always use global pointStock (same across all stores)
+    // Owned games:  use per-store stock if tracked, else global
+    pointStock: g.isShared
+      ? g.pointStock
+      : (g.storeStocks[0]?.pointStock ?? (g.storeId === storeId ? g.pointStock : 0)),
+    status: g.isShared
+      ? g.status
+      : (g.storeStocks[0]?.status ?? g.status),
     isOwned: g.storeId === storeId,
     globalStock: g.pointStock,
   }));
@@ -3319,6 +3286,7 @@ app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) 
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), } });
     checkThresholdsAndNotify({ walletId: parseInt(id) }, prisma);
+    broadcastSharedResourceUpdate(null, parseInt(id), prisma).catch(() => {});
     res.json({ data: updated, message: 'Wallet updated' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update wallet' });
@@ -4767,6 +4735,32 @@ function broadcastTaskUpdate(eventType, data) {
   }
 }
 setBroadcastFn(broadcastTaskUpdate);
+
+// Broadcast shared resource changes so all stores update in real-time
+async function broadcastSharedResourceUpdate(gameId = null, walletId = null, prisma) {
+  if (gameId) {
+    const g = await prisma.game.findUnique({
+      where: { id: gameId },
+      select: { id: true, isShared: true, pointStock: true, status: true },
+    }).catch(() => null);
+    if (g?.isShared) {
+      broadcastTaskUpdate('shared_game_updated', {
+        gameId: g.id, pointStock: g.pointStock, status: g.status,
+      });
+    }
+  }
+  if (walletId) {
+    const w = await prisma.wallet.findUnique({
+      where: { id: walletId },
+      select: { id: true, isShared: true, balance: true },
+    }).catch(() => null);
+    if (w?.isShared) {
+      broadcastTaskUpdate('shared_wallet_updated', {
+        walletId: w.id, balance: w.balance,
+      });
+    }
+  }
+}
 
 /**
  * For every unclaimed DepositMilestoneBonus belonging to `playerId`,
