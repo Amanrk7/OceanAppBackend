@@ -1184,7 +1184,8 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
 
         broadcastTaskUpdate('task_updated', syncedTask);
         // Also broadcast player update so MissingPlayersPage refreshes
-        broadcastTaskUpdate('player_updated', { playerId: id });
+        // broadcastTaskUpdate('player_updated', { playerId: id });
+        broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
       }
     } catch (syncErr) {
       console.error('Task sync error (non-fatal):', syncErr);
@@ -1258,7 +1259,8 @@ app.post('/api/players/:id/streak/freeze', authMiddleware, async (req, res) => {
       update: { freezeUntil, frozenById: req.userId, frozenAt: new Date(), note: note || `Frozen ${hoursNum}h by staff` },
     });
 
-    broadcastTaskUpdate('player_updated', { playerId: id });
+    // broadcastTaskUpdate('player_updated', { playerId: id });
+    broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s streak frozen until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1287,7 +1289,8 @@ app.post('/api/players/:id/streak/extend-freeze', authMiddleware, async (req, re
       update: { freezeUntil: newUntil, frozenById: req.userId, note: note || `Extended +${hoursNum}h` },
     });
 
-    broadcastTaskUpdate('player_updated', { playerId: id });
+    // broadcastTaskUpdate('player_updated', { playerId: id });
+    broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
     res.json({ data: { ...freeze, isFrozen: true }, message: `${player.name}'s freeze extended until ${fmtTX(freeze.freezeUntil)}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1306,7 +1309,8 @@ app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) =>
       prisma.user.update({ where: { id }, data: { currentStreak: 0, lastPlayedDate: null } }),
     ]);
 
-    broadcastTaskUpdate('player_updated', { playerId: id });
+    // broadcastTaskUpdate('player_updated', { playerId: id });
+    broadcastTaskUpdate('player_updated', { playerId: id }, req.storeId);
     res.json({
       data: { playerId: id, playerName: player.name, streakReset: true, previousStreak: player.currentStreak },
       message: `${player.name}'s streak unfrozen and reset to 0`,
@@ -3781,29 +3785,6 @@ app.get('/api/shifts/active/:role', authMiddleware, async (req, res) => {
   }
 });
 
-// app.post('/api/shifts/start', authMiddleware, async (req, res) => {
-//   try {
-//     const { teamRole } = req.body;
-//     if (!teamRole) return res.status(400).json({ error: 'teamRole is required' });
-//     // await prisma.shift.updateMany({ where: { teamRole, isActive: true }, data: { isActive: false, endTime: new Date() } });
-
-//     // const team = await getOrCreateTeam(teamRole, req.storeId);
-// await prisma.shift.updateMany({ 
-//   where: { teamRole, isActive: true, teamId: team.id }, // scoped to this store's team
-//   data: { isActive: false, endTime: new Date() } 
-// });
-//     const team = await getOrCreateTeam(teamRole, req.storeId);
-
-//     await prisma.team.update({ where: { id: team.id }, data: { isShiftActive: true } });
-//     const shift = await prisma.shift.create({ data: { teamId: team.id, teamRole, startTime: new Date(), isActive: true } });
-//     const member = await prisma.user.findFirst({ where: { role: teamRole }, select: { name: true } });
-//     notify('SHIFT_START', { memberName: member?.name, teamRole, shiftId: shift.id });
-//     res.status(201).json({ data: shift, message: 'Shift started' });
-//   } catch (err) {
-//     res.status(500).json({ error: 'Failed to start shift: ' + err.message });
-//   }
-// });
-
 app.post('/api/shifts/start', authMiddleware, async (req, res) => {
   try {
     const { teamRole } = req.body;
@@ -3884,7 +3865,8 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
     });
 
     // At the end of PATCH /api/shifts/:id/end, before res.json:
-    broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration });
+    // broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration });
+    broadcastTaskUpdate('shift_ended', { shiftId, teamRole, duration, storeId: req.storeId }, req.storeId);
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to end shift: ' + err.message });
@@ -3922,7 +3904,7 @@ app.post('/api/shifts/:id/checkin', authMiddleware, async (req, res) => {
       },
     });
 
-    broadcastTaskUpdate('shift_checkin', { shiftId, checkin });
+    broadcastTaskUpdate('shift_checkin', { shiftId, checkin, storeId: req.storeId }, req.storeId);
     res.json({ data: checkin, message: 'Balance confirmed. Shift started!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3974,7 +3956,7 @@ app.post('/api/shifts/:id/checkout', authMiddleware, async (req, res) => {
       },
     });
 
-    broadcastTaskUpdate('shift_checkout', { shiftId, checkin });
+    broadcastTaskUpdate('shift_checkout', { shiftId, checkin, storeId: req.storeId }, req.storeId);
 
     // ── NEW: Funds ↔ Game Points Balance check ─────────────────
     try {
@@ -4113,7 +4095,7 @@ app.post('/api/shifts/:id/rate', authMiddleware, adminMiddleware, async (req, re
       },
     });
 
-    broadcastTaskUpdate('shift_rated', { shiftId, memberId, overallRating });
+    broadcastTaskUpdate('shift_rated', { shiftId, memberId, overallRating, storeId: req.storeId }, req.storeId);
     res.json({ data: rating, message: `Shift rated: ${overallRating.toFixed(1)}/5` });
   } catch (err) {
     console.error('Rate shift error:', err);
@@ -4732,14 +4714,25 @@ app.get('/api/chart/player-deposit-withdrawal', authMiddleware, adminMiddleware,
 // ═══════════════════════════════════════════════════════════════
 
 // ── SSE client registry ─────────────────────────────────────────
-const sseClients = new Map(); // Map<userId, Set<res>>
-
-// ── ✅ FIXED: broadcastTaskUpdate now uses sseClients (was using undefined `clients`) ─
-function broadcastTaskUpdate(eventType, data) {
+const sseClients = new Map(); // Map<userId, Set<{res, storeAccess}>>
+ 
+// Broadcast to all clients, optionally filtered to a specific storeId.
+// storeId = null  → send to every connected client (backwards-compatible)
+// storeId = N     → only send to clients whose storeAccess includes N
+function broadcastTaskUpdate(eventType, data, storeId = null) {
   const payload = `data: ${JSON.stringify({ type: eventType, data })}\n\n`;
   for (const clients of sseClients.values()) {
-    for (const res of clients) {
-      try { res.write(payload); } catch (_) { /* skip dead connections */ }
+    for (const client of clients) {
+      try {
+        if (
+          storeId !== null &&
+          client.storeAccess &&
+          !client.storeAccess.includes(storeId)
+        ) {
+          continue; // skip: this user doesn't have access to that store
+        }
+        client.res.write(payload);
+      } catch (_) { /* skip dead connections */ }
     }
   }
 }
@@ -4875,40 +4868,60 @@ async function incrementTaskProgress(taskId, userId, value, action, metadata = {
 // ── SSE handshake ────────────────────────────────────────────────
 // ✅ IMPORTANT: This MUST be before /api/tasks/:id or Express will match
 // "events" as an :id param and never reach this handler.
-app.get('/api/tasks/events', (req, res) => {
+app.get('/api/tasks/events', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
-
+ 
   let userId;
+  let userStoreAccess = [1];
+ 
   try {
-    const token = req.cookies?.token || req.headers?.authorization?.replace('Bearer ', '') || req.query?.token;
+    const token =
+      req.cookies?.token ||
+      req.headers?.authorization?.replace('Bearer ', '') ||
+      req.query?.token;
     if (!token) throw new Error('No token');
     const decoded = jwt.verify(token, JWT_SECRET);
-    // userId = decoded.id || decoded.userId;
     userId = decoded.userId;
-
     if (!userId) throw new Error('No userId in token');
+ 
+    // Fetch the user's store access list so we can filter broadcasts later
+    const userRecord = await prisma.user
+      .findUnique({ where: { id: userId }, select: { storeAccess: true, role: true } })
+      .catch(() => null);
+ 
+    if (userRecord) {
+      // ADMIN / SUPER_ADMIN can see all stores — give them a wildcard flag
+      if (['ADMIN', 'SUPER_ADMIN'].includes(userRecord.role)) {
+        userStoreAccess = null; // null = all stores
+      } else {
+        userStoreAccess = userRecord.storeAccess?.length
+          ? userRecord.storeAccess
+          : [1];
+      }
+    }
   } catch (err) {
     res.write('event: auth_error\ndata: {"error":"Unauthorized"}\n\n');
     res.end();
     return;
   }
-
+ 
   if (!sseClients.has(userId)) sseClients.set(userId, new Set());
-  sseClients.get(userId).add(res);
-
+  const clientEntry = { res, storeAccess: userStoreAccess };
+  sseClients.get(userId).add(clientEntry);
+ 
   res.write('event: connected\ndata: {"ok":true}\n\n');
-
+ 
   const ping = setInterval(() => {
     try { res.write(': ping\n\n'); } catch (_) { clearInterval(ping); }
   }, 25000);
-
+ 
   req.on('close', () => {
     clearInterval(ping);
-    sseClients.get(userId)?.delete(res);
+    sseClients.get(userId)?.delete(clientEntry);
     if (sseClients.get(userId)?.size === 0) sseClients.delete(userId);
   });
 });
@@ -5004,7 +5017,8 @@ app.post('/api/tasks', authMiddleware, adminMiddleware, async (req, res) => {
             progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 10 },
           },
         });
-        broadcastTaskUpdate('task_created', task);
+        // broadcastTaskUpdate('task_created', task);
+        broadcastTaskUpdate('task_created', task, task.storeId ?? req.storeId);
         return res.status(201).json({ data: task, message: 'Task open to all members' });
       }
     }
@@ -5229,7 +5243,8 @@ app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
       }
     });
 
-    broadcastTaskUpdate('task_updated', updated);
+    // broadcastTaskUpdate('task_updated', updated);
+    broadcastTaskUpdate('task_updated', updated, updated.storeId ?? req.storeId);
     res.json({ data: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5281,7 +5296,8 @@ app.delete('/api/tasks/:id', authMiddleware, adminMiddleware, async (req, res) =
   try {
     const id = parseInt(req.params.id);
     await prisma.task.delete({ where: { id } });
-    broadcastTaskUpdate('task_deleted', { id });
+    // broadcastTaskUpdate('task_deleted', { id });
+    broadcastTaskUpdate('task_deleted', { id, storeId: req.storeId }, req.storeId);
     res.json({ message: 'Task deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });
