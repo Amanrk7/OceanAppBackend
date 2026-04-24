@@ -107,7 +107,8 @@ export async function checkMilestoneBonuses(playerId, prisma, broadcastFn) {
                     }],
                 },
             });
-            broadcastFn?.('task_created', task);
+            // broadcastFn?.('task_created', task);
+            broadcastFn?.('task_created', task, task.storeId);
         }
 
         console.log(`[bonus-engine] Created ${created.length} milestone record(s) for player ${playerId}`);
@@ -221,7 +222,8 @@ export async function checkReferralWeeklyBonus(referredPlayerId, prisma, broadca
                         }],
                     },
                 });
-                broadcastFn?.('task_created', task);
+                // broadcastFn?.('task_created', task);
+                broadcastFn?.('task_created', task, task.storeId);
             }
         }
 
