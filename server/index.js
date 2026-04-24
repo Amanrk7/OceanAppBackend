@@ -3872,9 +3872,7 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
       improvements: shiftImprovements,
     });
 
-    // At the end of PATCH /api/shifts/:id/end, before res.json:
-    // broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration });
-    broadcastTaskUpdate('shift_ended', { shiftId, teamRole, duration, storeId: req.storeId }, req.storeId);
+    broadcastTaskUpdate('shift_ended', { shiftId, teamRole: existing.teamRole, duration, storeId: req.storeId }, req.storeId);
     
     res.json({ data: updated, message: 'Shift ended' });
   } catch (err) {
