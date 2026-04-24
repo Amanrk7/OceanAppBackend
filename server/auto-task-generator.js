@@ -150,7 +150,8 @@ export async function generatePlayerFollowupTasks(prisma, triggeredBy = 'schedul
         },
       });
 
-      broadcast('task_created', task);
+      // broadcast('task_created', task);
+      broadcast('task_created', task, task.storeId);
       newTasks.push(task);
       created++;
     }
@@ -265,7 +266,8 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
         },
       });
 
-      broadcast('task_created', task);
+      // broadcast('task_created', task);
+      broadcast('task_created', task, task.storeId);
       created_tasks.push(task);
       created++;
     }
