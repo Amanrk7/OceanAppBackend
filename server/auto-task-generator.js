@@ -318,7 +318,7 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
           player        : p,
           bonusType     : 'referral',
           eligibleAmount: null,
-          details       : `New player referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Referral bonus has not been granted yet.`,
+          details       : `This player was referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Grant Refferal Bonus to ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}!`,
           priority      : 'HIGH',
         });
       }
