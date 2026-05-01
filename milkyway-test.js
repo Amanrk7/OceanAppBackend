@@ -321,13 +321,35 @@ async function login(page) {
 
         // ── KEY FIX: wait for login form to appear in any frame ──
         const loginFrame = await waitForLoginForm(page, 15_000);
-        if (!loginFrame) {
-            console.warn('   ⚠️  [MW Sync] Login form not found in any frame — reloading…');
-            await saveDebugSnapshot(page, `login-attempt-${attempt}-no-form`);
-            await page.reload({ waitUntil: 'load' });
-            await page.waitForTimeout(3000);
-            continue;
-        }
+        // if (!loginFrame) {
+        //     console.warn('   ⚠️  [MW Sync] Login form not found in any frame — reloading…');
+        //     await saveDebugSnapshot(page, `login-attempt-${attempt}-no-form`);
+        //     await page.reload({ waitUntil: 'load' });
+        //     await page.waitForTimeout(3000);
+        //     continue;
+        // }
+        // Inside the login loop, replace the "no form" block:
+if (!loginFrame) {
+  const html = await page.content();
+  const isRuntimeError = html.includes('Runtime Error') || html.includes('<title>Runtime Error');
+  
+  console.warn('   ⚠️  [MW Sync] Login form not found — reloading…');
+  await saveDebugSnapshot(page, `login-attempt-${attempt}-no-form`);
+  
+  if (isRuntimeError) {
+    // Full context reset — stale session cookie is causing the server error
+    console.warn('   🔄 [MW Sync] Runtime Error detected — resetting browser context…');
+    mwPage = null;
+    loggedIn = false;
+    const page = await getBrowser(); // gets a fresh context
+    await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'networkidle', timeout: 45_000 });
+  } else {
+    await page.reload({ waitUntil: 'load' });
+  }
+  
+  await page.waitForTimeout(3000);
+  continue;
+}
 
         // Fill username — search across all frames
         const userResult = await findInputAcrossFrames(page, userSelectors);
@@ -619,17 +641,26 @@ export async function syncCreatePlayer(username, password = 'Players@123') {
 }
 
 export async function warmMilkywaySession() {
-    if (!MW_USER || !MW_PASS) return;
-    try {
-        const page = await getBrowser();
-        await login(page);
-        await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
-        console.log('🔥 [MW Sync] Session pre-warmed.');
-    } catch (err) {
-        console.warn(`⚠️  [MW Sync] Warm-up failed (will retry on first use): ${err.message}`);
-        loggedIn = false;
-        mwPage   = null;
+  if (!MW_USER || !MW_PASS) return;
+  try {
+    const page = await getBrowser();
+    await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'networkidle', timeout: 45_000 });
+    
+    // Don't attempt login if server is already erroring
+    const html = await page.content();
+    if (html.includes('Runtime Error')) {
+      console.warn('⚠️  [MW Sync] Server returned Runtime Error on warm-up — skipping login attempt.');
+      return;
     }
+    
+    await login(page);
+    await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
+    console.log('🔥 [MW Sync] Session pre-warmed.');
+  } catch (err) {
+    console.warn(`⚠️  [MW Sync] Warm-up failed (will retry on first use): ${err.message}`);
+    loggedIn = false;
+    mwPage = null;
+  }
 }
 
 /*
