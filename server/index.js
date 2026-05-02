@@ -2228,6 +2228,41 @@ app.post('/api/referral-bonuses/:id/claim', authMiddleware, async (req, res) => 
     const [updatedGame, referrerTx] = await prisma.$transaction(ops);
 
     checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
+
+    // ── Auto-complete related BONUS_FOLLOWUP tasks ────────────────────
+try {
+  const relatedTasks = await prisma.task.findMany({
+    where: {
+      taskType: 'BONUS_FOLLOWUP',
+      status: { in: ['PENDING', 'IN_PROGRESS'] },
+      OR: [
+        { notes: { contains: `"playerId":${rb.referrerId}` } },
+        { notes: { contains: `"playerId":${rb.referredId}` } },
+      ],
+    },
+  });
+
+  for (const t of relatedTasks) {
+    let meta = {};
+    try { meta = JSON.parse(t.notes || '{}'); } catch {}
+    if (['referral', 'referral_weekly'].includes(meta.bonusType)) {
+      const done = await prisma.task.update({
+        where: { id: t.id },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          checklistItems: (t.checklistItems || []).map(i => ({
+            ...i, done: true, completedBy: req.userId, completedAt: new Date().toISOString(),
+          })),
+        },
+      });
+      broadcastTaskUpdate('task_updated', done, done.storeId ?? req.storeId);
+    }
+  }
+} catch (taskErr) {
+  console.error('Referral task auto-complete error (non-fatal):', taskErr);
+}
+// ─────────────────────────────────────────────────────────────────
     res.json({
       success: true,
       message: grantBoth
