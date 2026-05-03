@@ -3805,6 +3805,138 @@ async function getOrCreateTeam(teamRole, storeId) {
   return team;
 }
 
+// ─── GET /api/shifts/shared-resource-usage ──────────────────────────────────
+// Returns per-store breakdown of shared game/wallet usage during a time window.
+// Used by CheckoutModal to explain cross-store discrepancies.
+app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) => {
+  try {
+    const { fromDate, toDate } = req.query;
+    if (!fromDate) return res.status(400).json({ error: 'fromDate required' });
+
+    const from = new Date(fromDate);
+    const to   = toDate ? new Date(toDate) : new Date();
+
+    // ── Shared games ───────────────────────────────────────────────────────────
+    const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
+
+    const gameUsage = await Promise.all(sharedGames.map(async (game) => {
+      // Pull ALL completed transactions for this game across ALL stores
+      const txns = await prisma.transaction.findMany({
+        where: {
+          gameId: game.id,
+          status: 'COMPLETED',
+          createdAt: { gte: from, lte: to },
+        },
+        include: { user: { select: { storeId: true, id: true } } },
+      });
+
+      const byStore = {};
+
+      txns.forEach(t => {
+        const sid = t.user?.storeId ?? 1;
+        if (!byStore[sid]) {
+          byStore[sid] = { storeId: sid, deposits: 0, cashouts: 0, bonuses: 0, fees: 0, txnCount: 0 };
+        }
+        const s   = byStore[sid];
+        const amt = parseFloat(t.amount);
+        const feeM = t.notes?.match(/fee:([\d.]+)/);
+        const fee  = feeM ? parseFloat(feeM[1]) : 0;
+
+        if (t.type === 'DEPOSIT') {
+          s.deposits += amt;
+          s.fees     += fee;
+        } else if (t.type === 'WITHDRAWAL') {
+          s.cashouts += amt;
+        } else if (t.type === 'BONUS') {
+          s.bonuses += amt;
+          // bonus fees also came from game stock
+          const bonusFeeM = t.notes?.match(/fee:([\d.]+)/);
+          if (bonusFeeM) s.fees += parseFloat(bonusFeeM[1]);
+        }
+        s.txnCount++;
+      });
+
+      // netPtsDeducted per store = Deposits + Fees + Bonuses − Cashouts
+      Object.values(byStore).forEach(s => {
+        s.netPtsDeducted = Math.round(s.deposits + s.fees + s.bonuses - s.cashouts);
+      });
+
+      const totalDeducted = Object.values(byStore)
+        .reduce((sum, s) => sum + s.netPtsDeducted, 0);
+
+      return {
+        gameId: game.id,
+        gameName: game.name,
+        currentStock: game.pointStock,
+        usageByStore: byStore,      // keyed by storeId string
+        totalDeducted,              // global total pts removed
+      };
+    }));
+
+    // ── Shared wallets ─────────────────────────────────────────────────────────
+    const sharedWallets = await prisma.wallet.findMany({
+      where: { isShared: true, isLive: true },
+    });
+
+    const walletUsage = await Promise.all(sharedWallets.map(async (wallet) => {
+      // Match description pattern used by deposit/cashout handlers
+      const pattern = `via ${wallet.method} - ${wallet.name}`;
+
+      const txns = await prisma.transaction.findMany({
+        where: {
+          description: { contains: pattern },
+          status: 'COMPLETED',
+          createdAt: { gte: from, lte: to },
+        },
+        include: { user: { select: { storeId: true } } },
+      });
+
+      const byStore = {};
+
+      txns.forEach(t => {
+        const sid = t.user?.storeId ?? 1;
+        if (!byStore[sid]) {
+          byStore[sid] = { storeId: sid, depositsIn: 0, cashoutsOut: 0, fees: 0, txnCount: 0 };
+        }
+        const s   = byStore[sid];
+        const amt = parseFloat(t.amount);
+        const feeM = t.notes?.match(/fee:([\d.]+)/);
+        const fee  = feeM ? parseFloat(feeM[1]) : 0;
+
+        if (t.type === 'DEPOSIT') {
+          s.depositsIn  += amt - fee;   // wallet receives deposit minus fee
+          s.fees        += fee;
+        } else if (t.type === 'WITHDRAWAL') {
+          s.cashoutsOut += amt + fee;   // wallet pays out cashout + fee
+        }
+        s.txnCount++;
+      });
+
+      Object.values(byStore).forEach(s => {
+        s.netWalletChange = parseFloat((s.depositsIn - s.cashoutsOut).toFixed(2));
+      });
+
+      const totalNetChange = parseFloat(
+        Object.values(byStore).reduce((sum, s) => sum + s.netWalletChange, 0).toFixed(2)
+      );
+
+      return {
+        walletId: wallet.id,
+        walletName: wallet.name,
+        method: wallet.method,
+        currentBalance: wallet.balance,
+        usageByStore: byStore,
+        totalNetChange,
+      };
+    }));
+
+    res.json({ data: { games: gameUsage, wallets: walletUsage } });
+  } catch (err) {
+    console.error('shared-resource-usage error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/shifts/:role', authMiddleware, async (req, res) => {
   try {
     const { role } = req.params;
@@ -5730,137 +5862,7 @@ async function scheduleUnreachablePlayerCheck(prisma) {
   setTimeout(runCheck, 15_000);
   setInterval(runCheck, CHECK_INTERVAL_MS);
 }
-// ─── GET /api/shifts/shared-resource-usage ──────────────────────────────────
-// Returns per-store breakdown of shared game/wallet usage during a time window.
-// Used by CheckoutModal to explain cross-store discrepancies.
-app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) => {
-  try {
-    const { fromDate, toDate } = req.query;
-    if (!fromDate) return res.status(400).json({ error: 'fromDate required' });
 
-    const from = new Date(fromDate);
-    const to   = toDate ? new Date(toDate) : new Date();
-
-    // ── Shared games ───────────────────────────────────────────────────────────
-    const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
-
-    const gameUsage = await Promise.all(sharedGames.map(async (game) => {
-      // Pull ALL completed transactions for this game across ALL stores
-      const txns = await prisma.transaction.findMany({
-        where: {
-          gameId: game.id,
-          status: 'COMPLETED',
-          createdAt: { gte: from, lte: to },
-        },
-        include: { user: { select: { storeId: true, id: true } } },
-      });
-
-      const byStore = {};
-
-      txns.forEach(t => {
-        const sid = t.user?.storeId ?? 1;
-        if (!byStore[sid]) {
-          byStore[sid] = { storeId: sid, deposits: 0, cashouts: 0, bonuses: 0, fees: 0, txnCount: 0 };
-        }
-        const s   = byStore[sid];
-        const amt = parseFloat(t.amount);
-        const feeM = t.notes?.match(/fee:([\d.]+)/);
-        const fee  = feeM ? parseFloat(feeM[1]) : 0;
-
-        if (t.type === 'DEPOSIT') {
-          s.deposits += amt;
-          s.fees     += fee;
-        } else if (t.type === 'WITHDRAWAL') {
-          s.cashouts += amt;
-        } else if (t.type === 'BONUS') {
-          s.bonuses += amt;
-          // bonus fees also came from game stock
-          const bonusFeeM = t.notes?.match(/fee:([\d.]+)/);
-          if (bonusFeeM) s.fees += parseFloat(bonusFeeM[1]);
-        }
-        s.txnCount++;
-      });
-
-      // netPtsDeducted per store = Deposits + Fees + Bonuses − Cashouts
-      Object.values(byStore).forEach(s => {
-        s.netPtsDeducted = Math.round(s.deposits + s.fees + s.bonuses - s.cashouts);
-      });
-
-      const totalDeducted = Object.values(byStore)
-        .reduce((sum, s) => sum + s.netPtsDeducted, 0);
-
-      return {
-        gameId: game.id,
-        gameName: game.name,
-        currentStock: game.pointStock,
-        usageByStore: byStore,      // keyed by storeId string
-        totalDeducted,              // global total pts removed
-      };
-    }));
-
-    // ── Shared wallets ─────────────────────────────────────────────────────────
-    const sharedWallets = await prisma.wallet.findMany({
-      where: { isShared: true, isLive: true },
-    });
-
-    const walletUsage = await Promise.all(sharedWallets.map(async (wallet) => {
-      // Match description pattern used by deposit/cashout handlers
-      const pattern = `via ${wallet.method} - ${wallet.name}`;
-
-      const txns = await prisma.transaction.findMany({
-        where: {
-          description: { contains: pattern },
-          status: 'COMPLETED',
-          createdAt: { gte: from, lte: to },
-        },
-        include: { user: { select: { storeId: true } } },
-      });
-
-      const byStore = {};
-
-      txns.forEach(t => {
-        const sid = t.user?.storeId ?? 1;
-        if (!byStore[sid]) {
-          byStore[sid] = { storeId: sid, depositsIn: 0, cashoutsOut: 0, fees: 0, txnCount: 0 };
-        }
-        const s   = byStore[sid];
-        const amt = parseFloat(t.amount);
-        const feeM = t.notes?.match(/fee:([\d.]+)/);
-        const fee  = feeM ? parseFloat(feeM[1]) : 0;
-
-        if (t.type === 'DEPOSIT') {
-          s.depositsIn  += amt - fee;   // wallet receives deposit minus fee
-          s.fees        += fee;
-        } else if (t.type === 'WITHDRAWAL') {
-          s.cashoutsOut += amt + fee;   // wallet pays out cashout + fee
-        }
-        s.txnCount++;
-      });
-
-      Object.values(byStore).forEach(s => {
-        s.netWalletChange = parseFloat((s.depositsIn - s.cashoutsOut).toFixed(2));
-      });
-
-      const totalNetChange = parseFloat(
-        Object.values(byStore).reduce((sum, s) => sum + s.netWalletChange, 0).toFixed(2)
-      );
-
-      return {
-        walletId: wallet.id,
-        walletName: wallet.name,
-        method: wallet.method,
-        currentBalance: wallet.balance,
-        usageByStore: byStore,
-        totalNetChange,
-      };
-    }));
-
-    res.json({ data: { games: gameUsage, wallets: walletUsage } });
-  } catch (err) {
-    console.error('shared-resource-usage error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
 // ═══════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════
