@@ -32,7 +32,8 @@ import {
   scheduleBonusFollowupGeneration,
   setBroadcastFn,
 } from './auto-task-generator.js';
-import { checkMilestoneBonuses, checkReferralWeeklyBonus } from './bonus-engine.js';
+// import { checkMilestoneBonuses, checkReferralWeeklyBonus } from './bonus-engine.js';
+import { checkMilestoneBonuses, checkReferralWeeklyBonus, checkMatchBonusTask, checkReferralBonusTask, checkStreakBonusTask } from './bonus-engine.js';
 
 
 
