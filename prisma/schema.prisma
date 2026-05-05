@@ -748,6 +748,58 @@ model ProfitTakeout {
     }
 
 
+model ShiftReconciliationSnapshot {
+  id        Int      @id @default(autoincrement())
+  shiftId   Int      @unique
+  storeId   Int      @default(1)
+
+  // Start snapshot (captured at checkin)
+  startWalletTotal  Float    @default(0)
+  startGameTotal    Float    @default(0)
+  startCapturedAt   DateTime?
+  startRawJson      Json?    // full walletSnapshot[], gameSnapshot[]
+
+  // End snapshot (captured at checkout)
+  endWalletTotal    Float    @default(0)
+  endGameTotal      Float    @default(0)
+  endCapturedAt     DateTime?
+  endRawJson        Json?
+
+  // Computed actuals
+  actualWalletChange  Float   @default(0)
+  actualGameChange    Float   @default(0)
+
+  // Computed expectations (from transaction scan)
+  expectedWalletChange  Float  @default(0)
+  expectedGameChange    Float  @default(0)
+
+  // Discrepancies
+  walletDiscrepancy   Float   @default(0)
+  gameDiscrepancy     Float   @default(0)
+  isBalanced          Boolean @default(false)
+
+  // Cross-store adjustments
+  crossStoreGamePts   Float   @default(0)
+  crossStoreWalletAmt Float   @default(0)
+  crossAdjBalanced    Boolean @default(false)
+
+  // Line-item breakdown (for modal display)
+  deposits             Float  @default(0)
+  completedCashouts    Float  @default(0)
+  pendingCashouts      Float  @default(0)
+  bonuses              Float  @default(0)
+  depositFees          Float  @default(0)
+  cashoutFees          Float  @default(0)
+  expenseWalletPaid    Float  @default(0)
+  pointsReloaded       Float  @default(0)
+  takeoutWalletPaid    Float  @default(0)
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([storeId])
+  @@map("shift_reconciliation_snapshots")
+}
 // ═══════════════════════════════════════════════════════════════
 // NOTIFICATIONS
 // ═══════════════════════════════════════════════════════════════
