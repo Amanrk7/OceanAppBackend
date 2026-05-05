@@ -335,6 +335,7 @@ function shapePlayer(user) {
       return {
         id: t.id, type, amount: parseFloat(t.amount), status: t.status,
         walletMethod, walletName, gameName,
+        description: t.description || '',  // ← ADD THIS LINE
         weeklyDepositTotal: parseFloat(weeklyDepositTotal.toFixed(2)),
         date: fmtTXDate(t.createdAt),
         createdAtISO: t.createdAt instanceof Date ? t.createdAt.toISOString() : String(t.createdAt), // ← ADD
