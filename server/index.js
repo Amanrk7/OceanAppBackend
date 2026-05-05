@@ -1956,6 +1956,10 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
       .catch(() => { });
     checkReferralWeeklyBonus(parseInt(playerId), prisma, broadcastTaskUpdate).catch(() => { });
 
+    checkMatchBonusTask(parseInt(playerId), prisma, broadcastTaskUpdate, req.storeId).catch(() => { });
+checkReferralBonusTask(parseInt(playerId), prisma, broadcastTaskUpdate, req.storeId).catch(() => { });
+checkStreakBonusTask(parseInt(playerId), prisma, broadcastTaskUpdate, req.storeId).catch(() => { });
+
     // ── NOW create the ReferralBonus eligibility record ───────────────────────
     // IMPORTANT: Must be AFTER $transaction so depositTx (results[2]) exists.
     const updatedPlayer = results[0];
