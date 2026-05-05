@@ -1349,7 +1349,9 @@ app.post('/api/players/:id/streak/unfreeze', authMiddleware, async (req, res) =>
 // DASHBOARD ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
-app.get('/api/dashboard/stats', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/dashboard/stats', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/dashboard/stats', authMiddleware, async (req, res) => {
+
   try {
 
     const storeWhere = { storeId: req.storeId };
@@ -1406,7 +1408,9 @@ app.get('/api/dashboard/stats', authMiddleware, adminMiddleware, async (req, res
   }
 });
 
-app.get('/api/analytics/top-depositors', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/analytics/top-depositors', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/analytics/top-depositors', authMiddleware, async (req, res) => {
+
   try {
     const getTop = async (days) => {
       const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
@@ -1430,7 +1434,9 @@ app.get('/api/analytics/top-depositors', authMiddleware, adminMiddleware, async 
   }
 });
 
-app.get('/api/analytics/top-cashouts', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/analytics/top-cashouts', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/analytics/top-cashouts', authMiddleware, async (req, res) => {
+
   try {
     const getTopCashouts = async (days) => {
       const sinceDate = new Date(); sinceDate.setDate(sinceDate.getDate() - days);
@@ -1454,7 +1460,9 @@ app.get('/api/analytics/top-cashouts', authMiddleware, adminMiddleware, async (r
   }
 });
 
-app.get('/api/profit/stats', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/profit/stats', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/profit/stats', authMiddleware, async (req, res) => {
+
   try {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const thirtyDaysAgo = new Date(today); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -1475,7 +1483,9 @@ app.get('/api/profit/stats', authMiddleware, adminMiddleware, async (req, res) =
   }
 });
 
-app.get('/api/analytics/top-games-deposits', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/analytics/top-games-deposits', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/analytics/top-games-deposits', authMiddleware, async (req, res) => {
+
   try {
     const storeUserIds = await prisma.user
       .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
@@ -1502,7 +1512,9 @@ app.get('/api/analytics/top-games-deposits', authMiddleware, adminMiddleware, as
   }
 });
 
-app.get('/api/analytics/top-games-cashouts', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/analytics/top-games-cashouts', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/analytics/top-games-cashouts', authMiddleware, async (req, res) => {
+
   try {
     const storeUserIds = await prisma.user
       .findMany({ where: { role: 'PLAYER', storeId: req.storeId }, select: { id: true } })
@@ -5071,7 +5083,9 @@ app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
 // CHARTS ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
 
-app.get('/api/chart/daily-profit', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/chart/daily-profit', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/chart/daily-profit', authMiddleware, async (req, res) => {
+
   try {
     // ADD at the start of each chart handler body:
     const storeUserIds = await prisma.user
@@ -5097,7 +5111,9 @@ app.get('/api/chart/daily-profit', authMiddleware, adminMiddleware, async (req, 
   }
 });
 
-app.get('/api/chart/player-activity', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/chart/player-activity', authMiddleware, adminMiddleware, async (req, res) => {
+  app.get('/api/chart/player-activity', authMiddleware, async (req, res) => {
+
   try {
     const storeUserIds = await prisma.user
       .findMany({ where: { storeId: req.storeId }, select: { id: true } })
@@ -5116,7 +5132,9 @@ app.get('/api/chart/player-activity', authMiddleware, adminMiddleware, async (re
   }
 });
 
-app.get('/api/chart/player-deposit-withdrawal', authMiddleware, adminMiddleware, async (req, res) => {
+// app.get('/api/chart/player-deposit-withdrawal', authMiddleware, adminMiddleware, async (req, res) => {
+app.get('/api/chart/player-deposit-withdrawal', authMiddleware, async (req, res) => {
+
   try {
     const getChartData = async (days) => {
 
