@@ -275,58 +275,55 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
   return false;
 }
 
-    async function createBonusTask({ player, bonusType, eligibleAmount, details, priority = 'HIGH' }) {
-      if (await hasActiveTask(player.id, bonusType, player.storeId)) { skipped++; return; }
+    async function createBonusTask({ player, bonusType, eligibleAmount, details, priority = 'HIGH', referrerId = null, referrerName = null }) {
+    if (await hasActiveTask(player.id, bonusType, player.storeId)) { skipped++; return; }
 
-      const labels = {
+    const labels = {
         streak  : { emoji: '🔥', label: 'Streak Bonus',   desc: 'Grant streak bonus' },
         referral: { emoji: '👥', label: 'Referral Bonus', desc: 'Grant referral bonus to player and referrer' },
         match   : { emoji: '💰', label: 'Match Bonus',    desc: 'Grant match bonus for recent deposit' },
-      };
-      const meta = labels[bonusType] || { emoji: '🎁', label: 'Bonus', desc: 'Grant bonus' };
+    };
+    const meta = labels[bonusType] || { emoji: '🎁', label: 'Bonus', desc: 'Grant bonus' };
 
-      const checklistItems = [
+    const checklistItems = [
         { id: `bonus_${Date.now()}_${player.id}`, label: meta.desc, fieldKey: 'granted', required: true, done: false, completedBy: null, completedAt: null },
-      ];
+    ];
 
-      const task = await prisma.task.create({
+    const task = await prisma.task.create({
         data: {
-          storeId     : player.storeId || 1,
-          title       : `${meta.emoji} ${meta.label}: ${player.name} (@${player.username})`,
-          description : details,
-          taskType    : 'BONUS_FOLLOWUP',
-          priority,
-          status      : 'PENDING',
-          createdById : systemAdmin.id,
-          assignedToId: null,
-          assignToAll : true,
-          checklistItems,
-          notes       : JSON.stringify({
-            // playerId      : player.id,
-            playerId: player.referredBy, // referrer's ID (who receives bonus)
-  referredPlayerId: player.id, // referred player's ID
-  playerName: referrer.name,
-            // playerName    : player.name,
-            username      : player.username,
-            bonusType,
-            bonusLabel    : meta.label,
-            eligibleAmount,
-            details,
-            generatedAt   : now.toISOString(),
-            triggeredBy,
-          }),
+            storeId     : player.storeId || 1,
+            title       : `${meta.emoji} ${meta.label}: ${player.name} (@${player.username})`,
+            description : details,
+            taskType    : 'BONUS_FOLLOWUP',
+            priority,
+            status      : 'PENDING',
+            createdById : systemAdmin.id,
+            assignedToId: null,
+            assignToAll : true,
+            checklistItems,
+            notes       : JSON.stringify({
+                playerId        : referrerId || player.id,   // referrer gets the bonus
+                referredPlayerId: referrerId ? player.id : null,
+                playerName      : referrerName || player.name,
+                username        : player.username,
+                bonusType,
+                bonusLabel      : meta.label,
+                eligibleAmount,
+                details,
+                generatedAt     : now.toISOString(),
+                triggeredBy,
+            }),
         },
         include: {
-          createdBy : { select: { id: true, name: true, role: true } },
-          assignedTo: { select: { id: true, name: true, role: true } },
+            createdBy : { select: { id: true, name: true, role: true } },
+            assignedTo: { select: { id: true, name: true, role: true } },
         },
-      });
+    });
 
-      // ← Pass task.storeId for store-isolated real-time delivery
-      broadcast('task_created', task, task.storeId);
-      created_tasks.push(task);
-      created++;
-    }
+    broadcast('task_created', task, task.storeId);
+    created_tasks.push(task);
+    created++;
+}
 
     // ── A: Streak bonus eligible ──────────────────────────────
     const streakWhere = {
@@ -367,20 +364,21 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
     });
 
     for (const p of newReferredPlayers) {
-      const hasBonusTx = await prisma.transaction.findFirst({
+    const hasBonusTx = await prisma.transaction.findFirst({
         where: { userId: p.id, type: 'BONUS', status: 'COMPLETED', description: { contains: 'Referral Bonus' } },
-      });
-      if (!hasBonusTx) {
+    });
+    if (!hasBonusTx) {
         await createBonusTask({
-          player        : p,
-          bonusType     : 'referral',
-          eligibleAmount: null,
-          // details       : `This player was referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Grant Refferal Bonus to ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'})`,
-          details: `This player was referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Grant Referral Bonus to ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'})`,
-          priority      : 'HIGH',
+            player        : p,
+            bonusType     : 'referral',
+            eligibleAmount: null,
+            details       : `This player was referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Grant Referral Bonus to ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'})`,
+            priority      : 'HIGH',
+            referrerId    : p.referrer?.id || null,       // ← ADD
+            referrerName  : p.referrer?.name || null,     // ← ADD
         });
-      }
     }
+}
 
     // ── C: Match bonus not claimed (deposits in last 24h) ─────
     const depositWindow = new Date(now.getTime() - 24 * 60 * 60 * 1000);
