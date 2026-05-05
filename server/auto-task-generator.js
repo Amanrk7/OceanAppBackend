@@ -208,19 +208,72 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
       return { created: 0, skipped: 0 };
     }
 
+    // async function hasActiveTask(playerId, bonusType, taskStoreId) {
+    //   const existing = await prisma.task.findFirst({
+    //     where: {
+    //       taskType: 'BONUS_FOLLOWUP',
+    //       status  : { in: ['PENDING', 'IN_PROGRESS'] },
+    //       notes   : { contains: `"playerId":${playerId}` },
+    //       ...(taskStoreId ? { storeId: taskStoreId } : {}),
+    //     },
+    //     select: { id: true, notes: true },
+    //   });
+    //   if (!existing) return false;
+    //   try { const meta = JSON.parse(existing.notes || '{}'); return meta.bonusType === bonusType; } catch { return false; }
+    // }
     async function hasActiveTask(playerId, bonusType, taskStoreId) {
-      const existing = await prisma.task.findFirst({
-        where: {
-          taskType: 'BONUS_FOLLOWUP',
-          status  : { in: ['PENDING', 'IN_PROGRESS'] },
-          notes   : { contains: `"playerId":${playerId}` },
-          ...(taskStoreId ? { storeId: taskStoreId } : {}),
-        },
-        select: { id: true, notes: true },
-      });
-      if (!existing) return false;
-      try { const meta = JSON.parse(existing.notes || '{}'); return meta.bonusType === bonusType; } catch { return false; }
+  const recentWindow = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24h
+
+  const checkNotes = [
+    `"playerId":${playerId}`,
+    `"referredPlayerId":${playerId}`,
+  ];
+
+  for (const noteFragment of checkNotes) {
+    // Check open tasks (no time limit)
+    const openTask = await prisma.task.findFirst({
+      where: {
+        taskType: 'BONUS_FOLLOWUP',
+        status: { in: ['PENDING', 'IN_PROGRESS'] },
+        notes: { contains: noteFragment },
+        ...(taskStoreId ? { storeId: taskStoreId } : {}),
+      },
+      select: { id: true, notes: true },
+    });
+
+    if (openTask) {
+      try {
+        const meta = JSON.parse(openTask.notes || '{}');
+        if (meta.bonusType === bonusType) return true;
+      } catch {
+        return true; // safe default — treat as existing
+      }
     }
+
+    // Check recently completed tasks (within 24h)
+    const recentCompleted = await prisma.task.findFirst({
+      where: {
+        taskType: 'BONUS_FOLLOWUP',
+        status: 'COMPLETED',
+        completedAt: { gte: recentWindow },
+        notes: { contains: noteFragment },
+        ...(taskStoreId ? { storeId: taskStoreId } : {}),
+      },
+      select: { id: true, notes: true },
+    });
+
+    if (recentCompleted) {
+      try {
+        const meta = JSON.parse(recentCompleted.notes || '{}');
+        if (meta.bonusType === bonusType) return true;
+      } catch {
+        return true; // safe default
+      }
+    }
+  }
+
+  return false;
+}
 
     async function createBonusTask({ player, bonusType, eligibleAmount, details, priority = 'HIGH' }) {
       if (await hasActiveTask(player.id, bonusType, player.storeId)) { skipped++; return; }
@@ -249,8 +302,11 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
           assignToAll : true,
           checklistItems,
           notes       : JSON.stringify({
-            playerId      : player.id,
-            playerName    : player.name,
+            // playerId      : player.id,
+            playerId: player.referredBy, // referrer's ID (who receives bonus)
+  referredPlayerId: player.id, // referred player's ID
+  playerName: referrer.name,
+            // playerName    : player.name,
             username      : player.username,
             bonusType,
             bonusLabel    : meta.label,
@@ -295,6 +351,7 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
           bonusType     : 'streak',
           eligibleAmount: parseFloat((p.currentStreak * 0.5).toFixed(2)),
           details       : `Player has a ${p.currentStreak}-day streak and hasn't received a streak bonus in 7 days.`,
+          
         });
       }
     }
@@ -318,7 +375,8 @@ export async function generateBonusFollowupTasks(prisma, triggeredBy = 'schedule
           player        : p,
           bonusType     : 'referral',
           eligibleAmount: null,
-          details       : `This player was referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Grant Refferal Bonus to ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'})`,
+          // details       : `This player was referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Grant Refferal Bonus to ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'})`,
+          details: `This player was referred by ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'}). Grant Referral Bonus to ${p.referrer?.name || '—'} (@${p.referrer?.username || '—'})`,
           priority      : 'HIGH',
         });
       }
