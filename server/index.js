@@ -337,6 +337,7 @@ function shapePlayer(user) {
         walletMethod, walletName, gameName,
         weeklyDepositTotal: parseFloat(weeklyDepositTotal.toFixed(2)),
         date: fmtTXDate(t.createdAt),
+        createdAtISO: t.createdAt instanceof Date ? t.createdAt.toISOString() : String(t.createdAt), // ← ADD
         // ── fee ─────────────────────────────────────────────────────────
         fee: (() => {
           const m = (t.notes || '').match(/fee:([\d.]+)/);
@@ -2340,7 +2341,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
     if (cashoutLimit > 0 && !streakWaived) {
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
       const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
-      const todayTotal = await prisma.transaction.aggregate({ where: { userId: parseInt(playerId), type: 'WITHDRAWAL', status: 'COMPLETED', createdAt: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true } });
+      const todayTotal = await prisma.transaction.aggregate({ where: { userId: parseInt(playerId), type: 'WITHDRAWAL', status: { in: ['COMPLETED', 'PENDING'] }, createdAt: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true } });
       const alreadyCashedOut = parseFloat(todayTotal._sum.amount || 0);
       if (alreadyCashedOut + cashoutAmt > cashoutLimit) {
         const remaining = cashoutLimit - alreadyCashedOut;
