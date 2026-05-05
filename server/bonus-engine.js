@@ -81,7 +81,7 @@ export async function checkMilestoneBonuses(playerId, prisma, broadcastFn) {
             const task = await prisma.task.create({
                 data: {
                     storeId: player?.storeId || 1,
-                    title: `💰 $${m} Daily Milestone — ${player.name} earns $${MILESTONE_BONUS}`,
+                    title: `💰 $${m} Daily Milestone — ${player.name} $${m}`,
                     description:
                         `${player.name} (@${player.username}) deposited $${totalToday.toFixed(2)} today (${date}), ` +
                         `hitting the $${m} milestone. Grant the $${MILESTONE_BONUS.toFixed(2)} bonus from the Bonus page.`,
