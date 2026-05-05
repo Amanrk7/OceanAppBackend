@@ -403,15 +403,30 @@ function shapePlayer(user) {
     allTimeDeposits, allTimeCashouts,
     referralsList, friendsList, transactionHistory,
     // Add this to the returned object in shapePlayer, alongside transactionHistory
-    grantedBonuses: (user.transactions || [])
-      .filter(t => t.type === 'BONUS' && t.status === 'COMPLETED' && new Date(t.createdAt) >= thirtyDaysAgo)
-      .map(t => ({
-        id: t.id,
-        amount: parseFloat(t.amount),
-        description: t.description || '',
-        gameName: t.game?.name || null,
-        createdAt: fmtTXDate(t.createdAt),
-      })),
+    // grantedBonuses: (user.transactions || [])
+    //   .filter(t => t.type === 'BONUS' && t.status === 'COMPLETED' && new Date(t.createdAt) >= thirtyDaysAgo)
+    //   .map(t => ({
+    //     id: t.id,
+    //     amount: parseFloat(t.amount),
+    //     description: t.description || '',
+    //     gameName: t.game?.name || null,
+    //     createdAt: fmtTXDate(t.createdAt),
+    //   })),
+    // In shapePlayer in server.js, grantedBonuses section:
+grantedBonuses: (user.transactions || [])
+  .filter(t => t.type === 'BONUS' && t.status === 'COMPLETED' && new Date(t.createdAt) >= thirtyDaysAgo)
+  .map(t => ({
+    id: t.id,
+    amount: parseFloat(t.amount),
+    description: t.description || '',
+    detail: (() => {
+      // Extract the part after " — " for context
+      const parts = (t.description || '').split(' — ');
+      return parts.length > 1 ? parts[1] : null;
+    })(),
+    gameName: t.game?.name || null,
+    createdAt: fmtTXDate(t.createdAt),
+  })),
   };
 }
 
