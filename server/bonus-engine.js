@@ -119,6 +119,272 @@ export async function checkMilestoneBonuses(playerId, prisma, broadcastFn) {
     }
 }
 
+// ── 3. MATCH BONUS TASK ───────────────────────────────────────────
+// Called after every deposit. Creates a BONUS_FOLLOWUP task if no
+// match bonus has been granted today for this player.
+export async function checkMatchBonusTask(playerId, prisma, broadcastFn, storeId = 1) {
+    try {
+        const now = new Date();
+        const depDay = new Date(now); depDay.setHours(0, 0, 0, 0);
+        const depDayEnd = new Date(depDay); depDayEnd.setHours(23, 59, 59, 999);
+
+        // Already got a match bonus today?
+        const matchBonusTx = await prisma.transaction.findFirst({
+            where: {
+                userId: playerId, type: 'BONUS', status: 'COMPLETED',
+                description: { contains: 'Match Bonus' },
+                createdAt: { gte: depDay, lte: depDayEnd },
+            },
+        });
+        if (matchBonusTx) return; // already granted today
+
+        // Already have an open task for today?
+        const recentWindow = new Date(depDay); // start of today
+        const existingTask = await prisma.task.findFirst({
+            where: {
+                taskType: 'BONUS_FOLLOWUP',
+                status: { in: ['PENDING', 'IN_PROGRESS'] },
+                storeId,
+                notes: { contains: `"playerId":${playerId}` },
+                createdAt: { gte: recentWindow },
+            },
+        });
+        // Check bonusType specifically
+        if (existingTask) {
+            try {
+                const meta = JSON.parse(existingTask.notes || '{}');
+                if (meta.bonusType === 'match') return;
+            } catch { return; }
+        }
+
+        // Get today's deposit amount for this player
+        const { _sum } = await prisma.transaction.aggregate({
+            where: {
+                userId: playerId, type: 'DEPOSIT', status: 'COMPLETED',
+                createdAt: { gte: depDay, lte: depDayEnd },
+            },
+            _sum: { amount: true },
+        });
+        const totalToday = parseFloat(_sum.amount || 0);
+        if (totalToday <= 0) return;
+
+        const player = await prisma.user.findUnique({
+            where: { id: playerId },
+            select: { id: true, name: true, username: true, storeId: true },
+        });
+        if (!player) return;
+
+        const creatorId = await getSystemCreatorId(prisma);
+        if (!creatorId) return;
+
+        const eligibleAmount = parseFloat((totalToday * 0.5).toFixed(2));
+
+        const task = await prisma.task.create({
+            data: {
+                storeId: player.storeId || storeId,
+                title: `💰 Match Bonus: ${player.name} (@${player.username})`,
+                description: `${player.name} deposited $${totalToday.toFixed(2)} today. No match bonus (50% = $${eligibleAmount}) granted yet.`,
+                taskType: 'BONUS_FOLLOWUP',
+                priority: 'MEDIUM',
+                status: 'PENDING',
+                createdById: creatorId,
+                assignToAll: true,
+                notes: JSON.stringify({
+                    playerId: player.id,
+                    playerName: player.name,
+                    username: player.username,
+                    bonusType: 'match',
+                    eligibleAmount,
+                    details: `Deposited $${totalToday.toFixed(2)} today. Match bonus = $${eligibleAmount}`,
+                    generatedAt: now.toISOString(),
+                    triggeredBy: 'deposit',
+                }),
+                checklistItems: [{
+                    id: `match_${playerId}_${Date.now()}`,
+                    label: 'Grant match bonus for recent deposit',
+                    fieldKey: 'granted',
+                    required: true,
+                    done: false,
+                    completedBy: null,
+                    completedAt: null,
+                }],
+            },
+        });
+
+        broadcastFn?.('task_created', task, task.storeId);
+        console.log(`[bonus-engine] Match bonus task created for ${player.name}`);
+    } catch (err) {
+        console.error('[bonus-engine] checkMatchBonusTask error:', err.message);
+    }
+}
+
+// ── 4. REFERRAL BONUS TASK ────────────────────────────────────────
+// Called after every deposit where bonusReferral=true was toggled,
+// but we also call it generally to catch any missed referral tasks.
+export async function checkReferralBonusTask(playerId, prisma, broadcastFn, storeId = 1) {
+    try {
+        const player = await prisma.user.findUnique({
+            where: { id: playerId },
+            select: { id: true, name: true, username: true, referredBy: true, storeId: true },
+        });
+        if (!player?.referredBy) return; // no referrer, skip
+
+        const referrer = await prisma.user.findUnique({
+            where: { id: player.referredBy },
+            select: { id: true, name: true, username: true },
+        });
+        if (!referrer) return;
+
+        // Already have an unclaimed referral bonus record?
+        const pendingRb = await prisma.referralBonus.findFirst({
+            where: { referrerId: player.referredBy, referredId: playerId, referrerClaimed: false },
+        });
+        if (!pendingRb) return; // no pending referral bonus to notify about
+
+        // Already have an open task for this?
+        const existingTask = await prisma.task.findFirst({
+            where: {
+                taskType: 'BONUS_FOLLOWUP',
+                status: { in: ['PENDING', 'IN_PROGRESS'] },
+                storeId: player.storeId || storeId,
+                notes: { contains: `"referredPlayerId":${playerId}` },
+            },
+        });
+        if (existingTask) {
+            try {
+                const meta = JSON.parse(existingTask.notes || '{}');
+                if (meta.bonusType === 'referral') return;
+            } catch { return; }
+        }
+
+        const creatorId = await getSystemCreatorId(prisma);
+        if (!creatorId) return;
+
+        const now = new Date();
+        const task = await prisma.task.create({
+            data: {
+                storeId: player.storeId || storeId,
+                title: `👥 Referral Bonus: ${player.name} (@${player.username})`,
+                description: `${player.name} was referred by ${referrer.name} (@${referrer.username}). Grant Referral Bonus to ${referrer.name}.`,
+                taskType: 'BONUS_FOLLOWUP',
+                priority: 'HIGH',
+                status: 'PENDING',
+                createdById: creatorId,
+                assignToAll: true,
+                notes: JSON.stringify({
+                    playerId: referrer.id,
+                    referredPlayerId: player.id,
+                    playerName: referrer.name,
+                    username: player.username,
+                    bonusType: 'referral',
+                    eligibleAmount: parseFloat(pendingRb.bonusAmount),
+                    details: `${player.name} was referred by ${referrer.name}. Deposit: $${parseFloat(pendingRb.depositAmount).toFixed(2)}`,
+                    generatedAt: now.toISOString(),
+                    triggeredBy: 'deposit',
+                }),
+                checklistItems: [{
+                    id: `ref_${playerId}_${Date.now()}`,
+                    label: `Grant referral bonus to ${referrer.name}`,
+                    fieldKey: 'granted',
+                    required: true,
+                    done: false,
+                    completedBy: null,
+                    completedAt: null,
+                }],
+            },
+        });
+
+        broadcastFn?.('task_created', task, task.storeId);
+        console.log(`[bonus-engine] Referral bonus task created for ${referrer.name} ← ${player.name}`);
+    } catch (err) {
+        console.error('[bonus-engine] checkReferralBonusTask error:', err.message);
+    }
+}
+
+// ── 5. STREAK BONUS TASK ──────────────────────────────────────────
+// Called after every deposit. Creates a task if player has a streak
+// >= threshold and hasn't received a streak bonus in 7 days.
+export async function checkStreakBonusTask(playerId, prisma, broadcastFn, storeId = 1) {
+    try {
+        const STREAK_THRESHOLD = parseInt(process.env.STREAK_BONUS_THRESHOLD || '7', 10);
+
+        const player = await prisma.user.findUnique({
+            where: { id: playerId },
+            select: { id: true, name: true, username: true, currentStreak: true, storeId: true },
+        });
+        if (!player || (player.currentStreak || 0) < STREAK_THRESHOLD) return;
+
+        // Already received a streak bonus in last 7 days?
+        const recentStreakBonus = await prisma.transaction.findFirst({
+            where: {
+                userId: playerId, type: 'BONUS', status: 'COMPLETED',
+                description: { contains: 'Streak Bonus' },
+                createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+            },
+        });
+        if (recentStreakBonus) return;
+
+        // Already have an open streak task?
+        const existingTask = await prisma.task.findFirst({
+            where: {
+                taskType: 'BONUS_FOLLOWUP',
+                status: { in: ['PENDING', 'IN_PROGRESS'] },
+                storeId: player.storeId || storeId,
+                notes: { contains: `"playerId":${playerId}` },
+            },
+        });
+        if (existingTask) {
+            try {
+                const meta = JSON.parse(existingTask.notes || '{}');
+                if (meta.bonusType === 'streak') return;
+            } catch { return; }
+        }
+
+        const creatorId = await getSystemCreatorId(prisma);
+        if (!creatorId) return;
+
+        const now = new Date();
+        const eligibleAmount = parseFloat((player.currentStreak * 0.5).toFixed(2));
+
+        const task = await prisma.task.create({
+            data: {
+                storeId: player.storeId || storeId,
+                title: `🔥 Streak Bonus: ${player.name} (@${player.username})`,
+                description: `${player.name} has a ${player.currentStreak}-day streak and hasn't received a streak bonus in 7 days.`,
+                taskType: 'BONUS_FOLLOWUP',
+                priority: 'HIGH',
+                status: 'PENDING',
+                createdById: creatorId,
+                assignToAll: true,
+                notes: JSON.stringify({
+                    playerId: player.id,
+                    playerName: player.name,
+                    username: player.username,
+                    bonusType: 'streak',
+                    eligibleAmount,
+                    details: `${player.currentStreak}-day streak. Eligible for $${eligibleAmount} streak bonus.`,
+                    generatedAt: now.toISOString(),
+                    triggeredBy: 'deposit',
+                }),
+                checklistItems: [{
+                    id: `streak_${playerId}_${Date.now()}`,
+                    label: 'Grant streak bonus',
+                    fieldKey: 'granted',
+                    required: true,
+                    done: false,
+                    completedBy: null,
+                    completedAt: null,
+                }],
+            },
+        });
+
+        broadcastFn?.('task_created', task, task.storeId);
+        console.log(`[bonus-engine] Streak bonus task created for ${player.name} (${player.currentStreak} days)`);
+    } catch (err) {
+        console.error('[bonus-engine] checkStreakBonusTask error:', err.message);
+    }
+}
+
 // ── 2. REFERRAL WEEKLY BONUS ──────────────────────────────────────
 // Call after a deposit by `referredPlayerId`. Looks up their referrer,
 // sums the last 7 days of their deposits, upserts the weekly record,
