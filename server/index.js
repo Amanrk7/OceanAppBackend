@@ -1946,7 +1946,7 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
         data: { userId: parseInt(playerId), type: 'DEPOSIT_MATCH', amount: new Prisma.Decimal(matchAmt.toString()), description: `Match Bonus - 50% of $${depositAmt.toFixed(2)}`, claimed: true, claimedAt: now },
       }));
       ops.push(prisma.transaction.create({
-        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(matchAmt.toString()), status: 'COMPLETED', description: `Match Bonus from ${game.name} - 50% of $${depositAmt.toFixed(2)}`, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
+        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(matchAmt.toString()), status: 'COMPLETED', description: `Match Bonus from ${game.name} - 50% of $${depositAmt.toFixed(2)}`, gameId: game.id,  notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
       }));
     }
 
@@ -1955,7 +1955,7 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
         data: { userId: parseInt(playerId), type: 'CUSTOM', amount: new Prisma.Decimal(specialAmt.toString()), description: `Special Bonus - 20% of $${depositAmt.toFixed(2)}`, claimed: true, claimedAt: now },
       }));
       ops.push(prisma.transaction.create({
-        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(specialAmt.toString()), status: 'COMPLETED', description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
+        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(specialAmt.toString()), status: 'COMPLETED', description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`, gameId: game.id,  notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
       }));
     }
 
@@ -3911,7 +3911,9 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
 
       // netPtsDeducted per store = Deposits + Fees + Bonuses − Cashouts
       Object.values(byStore).forEach(s => {
-        s.netPtsDeducted = Math.round(s.deposits + s.fees + s.bonuses - s.cashouts);
+        // s.netPtsDeducted = Math.round(s.deposits + s.fees + s.bonuses - s.cashouts);
+        // CORRECT: fees only affect wallet, not game pts
+s.netPtsDeducted = Math.round(s.deposits + s.bonuses - s.cashouts);
       });
 
       const totalDeducted = Object.values(byStore)
