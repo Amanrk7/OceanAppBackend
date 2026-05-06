@@ -4266,7 +4266,9 @@ app.get('/api/shifts/:id/live-reconciliation', authMiddleware, async (req, res) 
     );
 
     const expectedGameDeduction = parseFloat(
-      (deposits - totalFees + bonuses - completedCashouts - pointsReloaded).toFixed(2)
+      // (deposits - totalFees + bonuses - completedCashouts - pointsReloaded).toFixed(2)
+            (deposits + bonuses - completedCashouts - pointsReloaded).toFixed(2)
+
     );
     const expectedGameChange = Math.round(-expectedGameDeduction);
 
