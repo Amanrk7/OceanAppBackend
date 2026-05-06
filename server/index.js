@@ -3106,7 +3106,9 @@ app.post('/api/games', authMiddleware, adminMiddleware, async (req, res) => {
 const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId, isShared: isShared === true } });
     // const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId } });
 
-    res.status(201).json({ data: game, message: 'Game created successfully' });
+    // res.status(201).json({ data: game, message: 'Game created successfully' });
+    broadcastReconciliationUpdate(req.storeId);
+res.status(201).json({ data: game, message: 'Game created successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create game' });
   }
@@ -3119,8 +3121,12 @@ app.patch('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) =>
     const game = await prisma.game.findUnique({ where: { id } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
     const updatedGame = await prisma.game.update({ where: { id }, data: { ...(pointStock !== undefined && { pointStock }), ...(status && { status }) } });
+    // checkThresholdsAndNotify({ gameId: id }, prisma);
+    // broadcastSharedResourceUpdate(id, null, prisma).catch(() => {});
+    // res.json({ data: updatedGame, message: 'Game updated successfully' });
     checkThresholdsAndNotify({ gameId: id }, prisma);
     broadcastSharedResourceUpdate(id, null, prisma).catch(() => {});
+    broadcastReconciliationUpdate(req.storeId);
     res.json({ data: updatedGame, message: 'Game updated successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update game' });
@@ -3225,6 +3231,8 @@ app.post('/api/expenses', authMiddleware, adminMiddleware, async (req, res) => {
     const expense = await prisma.expense.create({ data: { gameId: gameId || null, details, category: category?.toUpperCase().replace(' ', '_') || 'POINT_RELOAD', amount: parseFloat(amount), pointsAdded: pointsAdded || 0, notes: notes || null, storeId: req.storeId }, include: { game: { select: { id: true, name: true } } } });
 if (req.body.paymentMade) broadcastReconciliationUpdate(req.storeId);
 
+    // res.status(201).json({ data: expense, message: 'Expense recorded successfully' });
+    broadcastReconciliationUpdate(req.storeId);
     res.status(201).json({ data: expense, message: 'Expense recorded successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create expense' });
@@ -3249,10 +3257,14 @@ app.patch('/api/expenses/:id', authMiddleware, adminMiddleware, async (req, res)
         prisma.expense.update({ where: { id }, data: { paymentMade: newAmount, ...(notes !== undefined && { notes }), ...(category && { category: category.toUpperCase().replace(' ', '_') }) } }),
         prisma.wallet.update({ where: { id: parseInt(walletId) }, data: { balance: { decrement: diff } } }),
       ]);
+      // return res.json({ data: updatedExpense, message: 'Payment updated and wallet adjusted' });
+      broadcastReconciliationUpdate(req.storeId);
       return res.json({ data: updatedExpense, message: 'Payment updated and wallet adjusted' });
     }
 
     const updated = await prisma.expense.update({ where: { id }, data: { ...(amount !== undefined && { amount: parseFloat(amount) }), ...(category && { category: category.toUpperCase().replace(' ', '_') }), ...(notes !== undefined && { notes }), ...(pointsAdded !== undefined && { pointsAdded: parseInt(pointsAdded, 10) }) } });
+    // res.json({ data: updated, message: 'Expense updated' });
+    broadcastReconciliationUpdate(req.storeId);
     res.json({ data: updated, message: 'Expense updated' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update expense' });
@@ -3394,6 +3406,8 @@ app.post('/api/wallets', authMiddleware, adminMiddleware, async (req, res) => {
     // const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, storeId: req.storeId } });
 const wallet = await prisma.wallet.create({ data: { name, method, identifier: identifier || null, balance: balance || 0, isLive: isLive !== undefined ? Boolean(isLive) : true, isShared: isShared === true, storeId: req.storeId } });
 
+    // res.status(201).json({ data: wallet, message: 'Wallet created' });
+    broadcastReconciliationUpdate(req.storeId);
     res.status(201).json({ data: wallet, message: 'Wallet created' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create wallet' });
@@ -6047,13 +6061,17 @@ app.patch('/api/profit-takeouts/:id', authMiddleware, adminMiddleware, async (re
         ...(takenAt && { takenAt: new Date(takenAt) }),
       },
     });
+    broadcastReconciliationUpdate(req.storeId);
     res.json({ data: updated, message: 'Record updated.' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/profit-takeouts/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
+    const delRecord = await prisma.profitTakeout.findUnique({ where: { id: parseInt(req.params.id) } });
     await prisma.profitTakeout.delete({ where: { id: parseInt(req.params.id) } });
+    if (delRecord?.walletId) broadcastReconciliationUpdate(delRecord.storeId ?? req.storeId);
+    else broadcastReconciliationUpdate(req.storeId);
     res.json({ message: 'Record deleted.' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
