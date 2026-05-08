@@ -3882,8 +3882,8 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     const from = new Date(fromDate);
     const to = toDate ? new Date(toDate) : new Date();
     // ADD near top of handler (after `const to = ...`)
-    const sharedGames = await prisma.game.findMany({ where: { isShared: true }, select: { id: true, name: true } });
-    const sharedWallets = await prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true } });
+    const sharedGames = await prisma.game.findMany({ where: { isShared: true }, select: { id: true, name: true, pointStock: true  } });
+    const sharedWallets = await prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true, method: true} });
 
     // ── Shared games ───────────────────────────────────────────────────────────
     // const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
@@ -4019,6 +4019,7 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
       }).catch(() => []),
       prisma.expense.findMany({
         where: {
+          storeId: { not: storeId },
           gameId: { in: sharedGames.map(g => g.id) },
           pointsAdded: { gt: 0 },
           createdAt: { gte: from, lte: to },
