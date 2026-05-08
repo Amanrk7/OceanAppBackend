@@ -3886,7 +3886,7 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     const sharedWallets = await prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true } });
 
     // ── Shared games ───────────────────────────────────────────────────────────
-    const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
+    // const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
 
     const gameUsage = await Promise.all(sharedGames.map(async (game) => {
       // Pull ALL completed transactions for this game across ALL stores
