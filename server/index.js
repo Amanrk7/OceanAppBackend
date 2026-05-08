@@ -4009,7 +4009,8 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
           storeId: { not: req.storeId },          // ← FIX 1: req.storeId
           walletId: { in: sharedWallets.map(w => w.id) },
           paymentMade: { gt: 0 },
-          createdAt: { gte: from, lte: to },
+          // createdAt: { gte: from, lte: to },
+          updatedAt: { gte: from, lte: to },
         },
       }).catch(() => []),
       prisma.profitTakeout.findMany({
@@ -4024,7 +4025,7 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
           storeId: { not: req.storeId },          // ← FIX 1: req.storeId
           gameId: { in: sharedGames.map(g => g.id) },
           pointsAdded: { gt: 0 },
-          createdAt: { gte: from, lte: to },
+          updatedAt: { gte: from, lte: to },
         },
       }).catch(() => []),
     ]);
@@ -4307,7 +4308,7 @@ app.get('/api/shifts/:id/live-reconciliation', authMiddleware, async (req, res) 
             storeId: { not: storeId },
             walletId: { in: sharedWalletIds },
             paymentMade: { gt: 0 },
-            createdAt: { gte: shiftStart, lte: now },
+            updatedAt: { gte: shiftStart, lte: now },
           },
         }).catch(() => [])
         : Promise.resolve([]),
