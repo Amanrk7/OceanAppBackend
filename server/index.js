@@ -4027,6 +4027,16 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
       }).catch(() => []),
     ]);
 
+    const crossWalletIds = [
+  ...expensesFromOtherStores.filter(e => e.walletId).map(e => e.walletId),
+  ...takeoutsFromOtherStores.filter(t => t.walletId).map(t => t.walletId),
+];
+
+// Collect the specific game IDs used in other-store expense reloads
+const crossGameIds = expensesFromOtherStores
+  .filter(e => e.gameId && e.pointsAdded > 0)
+  .map(e => e.gameId);
+
     res.json({
       data: {
         games: gameUsage,
@@ -4035,6 +4045,8 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
           totalCrossWalletExpenses: parseFloat(csExpenses.reduce((s, e) => s + (parseFloat(e.paymentMade) || 0), 0).toFixed(2)),
           totalCrossWalletTakeouts: parseFloat(csTakeouts.reduce((s, t) => s + parseFloat(t.amount), 0).toFixed(2)),
           totalCrossPointsReloaded: Math.round(csReloads.reduce((s, e) => s + (e.pointsAdded ?? 0), 0)),
+           affectedWalletIds: [...new Set(crossWalletIds)],  // ← ADD THIS
+  affectedGameIds:   [...new Set(crossGameIds)],     // ← ADD THIS
           expensesByStore: csExpenses.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (parseFloat(e.paymentMade) || 0); return acc; }, {}),
           takeoutsByStore: csTakeouts.reduce((acc, t) => { acc[t.storeId] = (acc[t.storeId] || 0) + parseFloat(t.amount); return acc; }, {}),
           reloadsByStore: csReloads.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (e.pointsAdded ?? 0); return acc; }, {}),
