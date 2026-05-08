@@ -3882,8 +3882,8 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     const from = new Date(fromDate);
     const to = toDate ? new Date(toDate) : new Date();
     // ADD near top of handler (after `const to = ...`)
-    const sharedGames = await prisma.game.findMany({ where: { isShared: true }, select: { id: true, name: true, pointStock: true  } });
-    const sharedWallets = await prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true, method: true} });
+    const sharedGames = await prisma.game.findMany({ where: { isShared: true }, select: { id: true, name: true, pointStock: true } });
+    const sharedWallets = await prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true, method: true } });
 
     // ── Shared games ───────────────────────────────────────────────────────────
     // const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
@@ -4006,6 +4006,7 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     const [csExpenses, csTakeouts, csReloads] = await Promise.all([
       prisma.expense.findMany({
         where: {
+          storeId: { not: req.storeId },          // ← FIX 1: req.storeId
           walletId: { in: sharedWallets.map(w => w.id) },
           paymentMade: { gt: 0 },
           createdAt: { gte: from, lte: to },
@@ -4013,13 +4014,14 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
       }).catch(() => []),
       prisma.profitTakeout.findMany({
         where: {
+          storeId: { not: req.storeId },          // ← FIX 1: req.storeId
           walletId: { in: sharedWallets.map(w => w.id) },
           takenAt: { gte: from, lte: to },
         },
       }).catch(() => []),
       prisma.expense.findMany({
         where: {
-          storeId: { not: storeId },
+          storeId: { not: req.storeId },          // ← FIX 1: req.storeId
           gameId: { in: sharedGames.map(g => g.id) },
           pointsAdded: { gt: 0 },
           createdAt: { gte: from, lte: to },
@@ -4028,14 +4030,13 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     ]);
 
     const crossWalletIds = [
-  ...expensesFromOtherStores.filter(e => e.walletId).map(e => e.walletId),
-  ...takeoutsFromOtherStores.filter(t => t.walletId).map(t => t.walletId),
-];
+      ...csExpenses.filter(e => e.walletId).map(e => e.walletId),   // ← FIX 2
+      ...csTakeouts.filter(t => t.walletId).map(t => t.walletId),   // ← FIX 3
+    ];
 
-// Collect the specific game IDs used in other-store expense reloads
-const crossGameIds = expensesFromOtherStores
-  .filter(e => e.gameId && e.pointsAdded > 0)
-  .map(e => e.gameId);
+    const crossGameIds = csReloads                                   // ← FIX 2
+      .filter(e => e.gameId && e.pointsAdded > 0)
+      .map(e => e.gameId);
 
     res.json({
       data: {
@@ -4045,8 +4046,8 @@ const crossGameIds = expensesFromOtherStores
           totalCrossWalletExpenses: parseFloat(csExpenses.reduce((s, e) => s + (parseFloat(e.paymentMade) || 0), 0).toFixed(2)),
           totalCrossWalletTakeouts: parseFloat(csTakeouts.reduce((s, t) => s + parseFloat(t.amount), 0).toFixed(2)),
           totalCrossPointsReloaded: Math.round(csReloads.reduce((s, e) => s + (e.pointsAdded ?? 0), 0)),
-           affectedWalletIds: [...new Set(crossWalletIds)],  // ← ADD THIS
-  affectedGameIds:   [...new Set(crossGameIds)],     // ← ADD THIS
+          affectedWalletIds: [...new Set(crossWalletIds)],
+          affectedGameIds: [...new Set(crossGameIds)],
           expensesByStore: csExpenses.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (parseFloat(e.paymentMade) || 0); return acc; }, {}),
           takeoutsByStore: csTakeouts.reduce((acc, t) => { acc[t.storeId] = (acc[t.storeId] || 0) + parseFloat(t.amount); return acc; }, {}),
           reloadsByStore: csReloads.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (e.pointsAdded ?? 0); return acc; }, {}),
