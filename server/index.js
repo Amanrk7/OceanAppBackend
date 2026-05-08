@@ -3945,9 +3945,9 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     }));
 
     // ── Shared wallets ─────────────────────────────────────────────────────────
-    const sharedWallets = await prisma.wallet.findMany({
-      where: { isShared: true, isLive: true },
-    });
+    // const sharedWallets = await prisma.wallet.findMany({
+    //   where: { isShared: true, isLive: true },
+    // });
 
     const walletUsage = await Promise.all(sharedWallets.map(async (wallet) => {
       // Match description pattern used by deposit/cashout handlers
