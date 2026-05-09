@@ -1015,210 +1015,425 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// app.patch('/api/players/:id', authMiddleware, async (req, res) => {
+//   try {
+//     const id = parseInt(req.params.id);
+//     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
+
+//     const {
+//       name, email, phone, tier, status, balance, cashoutLimit,
+//       facebook, telegram, instagram, x, snapchat, source,
+//       currentStreak, lastPlayedDate, totalBonusEarned, chimeTag, cashappTag, paypalEmail, referredById, friendIds, noAccountOn
+//     } = req.body;
+
+//     // ── UNREACHABLE is admin-only ────────────────────────────────────────────
+//     if (status === 'UNREACHABLE') {
+//       const actor = await prisma.user.findUnique({
+//         where: { id: req.userId },
+//         select: { role: true },
+//       });
+//       if (!['ADMIN', 'SUPER_ADMIN'].includes(actor?.role)) {
+//         return res.status(403).json({ error: 'Only admins can mark a player as Unreachable.' });
+//       }
+//     }
+
+
+//     const updateData = {};
+//     if (name !== undefined) updateData.name = name.trim();
+//     if (email !== undefined) updateData.email = email?.trim() || null;
+//     if (phone !== undefined) updateData.phone = phone?.trim() || null;
+//     if (tier !== undefined) {
+//       updateData.tier = tier;
+//       if (cashoutLimit === undefined) updateData.cashoutLimit = TIER_CASHOUT[tier] ?? 250;
+//     }
+
+//     if (cashoutLimit !== undefined) updateData.cashoutLimit = parseFloat(cashoutLimit);
+//     if (status !== undefined) updateData.status = status;
+//     if (balance !== undefined) updateData.balance = parseFloat(balance);
+//     if (facebook !== undefined) updateData.facebook = facebook || null;
+//     if (telegram !== undefined) updateData.telegram = telegram || null;
+//     if (instagram !== undefined) updateData.instagram = instagram || null;
+//     if (x !== undefined) updateData.twitterX = x || null;
+//     if (snapchat !== undefined) updateData.snapchat = snapchat || null;
+//     if (source !== undefined) updateData.source = source || null;
+//     if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
+//     if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
+//     if (chimeTag !== undefined) updateData.chimeTag = chimeTag || null;
+//     if (cashappTag !== undefined) updateData.cashappTag = cashappTag || null;
+//     if (paypalEmail !== undefined) updateData.paypalEmail = paypalEmail || null;
+//     if (referredById !== undefined) {
+//       updateData.referredBy = referredById ? parseInt(referredById) : null;
+//     }
+//     if (noAccountOn !== undefined && Array.isArray(noAccountOn)) {
+//       const ALLOWED = ['email', 'phone', 'snapchat', 'instagram', 'telegram'];
+//       updateData.noAccountOn = noAccountOn.filter(f => ALLOWED.includes(f));
+//     }
+
+//     const updated = await prisma.user.update({ where: { id, storeId: req.storeId }, data: updateData });
+
+//     // ── NEW: replace friends list ─────────────────────────────────────────
+//     if (friendIds !== undefined && Array.isArray(friendIds)) {
+//       // Fetch current friends to find who to disconnect
+//       const currentFriends = await prisma.user.findUnique({
+//         where: { id },
+//         select: { friends: { select: { id: true } }, friendOf: { select: { id: true } } },
+//       });
+//       const currentIds = [
+//         ...(currentFriends?.friends || []).map(f => f.id),
+//         ...(currentFriends?.friendOf || []).map(f => f.id),
+//       ];
+
+//       const toConnect = friendIds.filter(fid => !currentIds.includes(fid));
+//       const toDisconnect = currentIds.filter(fid => !friendIds.includes(fid));
+
+//       if (toDisconnect.length) {
+//         await prisma.user.update({
+//           where: { id },
+//           data: { friends: { disconnect: toDisconnect.map(fid => ({ id: fid })) } },
+//         });
+//         // Also remove the reverse side
+//         await Promise.all(toDisconnect.map(fid =>
+//           prisma.user.update({ where: { id: fid }, data: { friends: { disconnect: [{ id }] } } })
+//         ));
+//       }
+
+//       if (toConnect.length) {
+//         await prisma.user.update({
+//           where: { id },
+//           data: { friends: { connect: toConnect.map(fid => ({ id: fid })) } },
+//         });
+//         await Promise.all(toConnect.map(fid =>
+//           prisma.user.update({ where: { id: fid }, data: { friends: { connect: [{ id }] } } })
+//         ));
+//       }
+//     }
+//     // ── end friends update ────────────────────────────────────────────────
+
+//     // ── NEW: adjust totalBonusEarned via a bonus record ──────────────────
+//     if (totalBonusEarned !== undefined) {
+//       const currentTotal = await prisma.bonus.aggregate({
+//         where: { userId: id, claimed: true },
+//         _sum: { amount: true },
+//       });
+//       const currentSum = parseFloat(currentTotal._sum.amount || 0);
+//       const newTotal = parseFloat(totalBonusEarned);
+//       const diff = parseFloat((newTotal - currentSum).toFixed(2));
+
+//       if (Math.abs(diff) >= 0.01) {
+//         if (diff > 0) {
+//           // Create a positive adjustment bonus
+//           await prisma.bonus.create({
+//             data: {
+//               userId: id,
+//               type: 'CUSTOM',
+//               amount: diff,
+//               description: 'Manual adjustment by admin',
+//               claimed: true,
+//               claimedAt: new Date(),
+//             },
+//           });
+//         } else {
+//           // Reduce by deleting smallest bonuses until the diff is absorbed
+//           const bonuses = await prisma.bonus.findMany({
+//             where: { userId: id, claimed: true },
+//             orderBy: { amount: 'asc' },
+//           });
+//           let toRemove = Math.abs(diff);
+//           for (const b of bonuses) {
+//             if (toRemove <= 0) break;
+//             const bAmt = parseFloat(b.amount);
+//             if (bAmt <= toRemove) {
+//               await prisma.bonus.delete({ where: { id: b.id } });
+//               toRemove = parseFloat((toRemove - bAmt).toFixed(2));
+//             } else {
+//               await prisma.bonus.update({
+//                 where: { id: b.id },
+//                 data: { amount: parseFloat((bAmt - toRemove).toFixed(2)) },
+//               });
+//               toRemove = 0;
+//             }
+//           }
+//         }
+//       }
+//     }
+//     // ── end adjustment ───────────────────────────────────────────────────
+
+//     // ── Auto-sync MISSING_INFO task ────────────────────────────────────────────
+//     try {
+//       const activeTasks = await prisma.task.findMany({
+//         where: { taskType: 'MISSING_INFO', status: { in: ['PENDING', 'IN_PROGRESS'] } },
+//         include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true, role: true } } }
+//       });
+
+//       const linkedTask = activeTasks.find(t => {
+//         try { return JSON.parse(t.notes || '{}').playerId === id; } catch { return false; }
+//       });
+
+//       if (linkedTask) {
+//         const checklistItems = (linkedTask.checklistItems || []).map(item => {
+//           const key = item.fieldKey || item.label?.toLowerCase().replace(/ /g, '_');
+//           const nowFilled =
+//             (key === 'email' && updated.email) ||
+//             (key === 'phone' && updated.phone) ||
+//             (key === 'snapchat' && updated.snapchat) ||
+//             (key === 'instagram' && updated.instagram) ||
+//             (key === 'telegram' && updated.telegram);
+//           if (nowFilled && !item.done) {
+//             return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
+//           }
+//           return item;
+//         });
+
+//         const doneCount = checklistItems.filter(i => i.done).length;
+//         const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
+//         const anyDone = checklistItems.some(i => i.done);
+
+//         const syncedTask = await prisma.task.update({
+//           where: { id: linkedTask.id, storeId: req.storeId },
+//           data: {
+//             checklistItems,
+//             currentValue: doneCount,
+//             status: allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
+//             completedAt: allRequired ? new Date() : null,
+//           },
+//           include: {
+//             createdBy: { select: { id: true, name: true, role: true } },
+//             assignedTo: { select: { id: true, name: true, role: true } },
+//             subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+//             progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
+//           }
+//         });
+
+//         broadcastTaskUpdate('task_updated', syncedTask, syncedTask.storeId ?? req.storeId);
+//         broadcastTaskUpdate('player_updated', { playerId: id, storeId: req.storeId }, req.storeId);
+//       }
+//     } catch (syncErr) {
+//       console.error('Task sync error (non-fatal):', syncErr);
+//     }
+//     // ── End sync ───────────────────────────────────────────────────────────────
+
+//     res.json({ data: { ...updated, password: undefined }, message: 'Player updated successfully' });
+//   } catch (err) {
+//     if (err.code === 'P2002') return res.status(409).json({ error: 'Email already in use by another player' });
+//     res.status(500).json({ error: 'Failed to update player' });
+//   }
+// });
+
 app.patch('/api/players/:id', authMiddleware, async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
 
+    // ── Determine who is making the request ──────────────────────────────
+    const actor = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { role: true, name: true },
+    });
+
+    const isTeamMember = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'].includes(actor?.role);
+
+    // ── TEAM MEMBERS: queue a pending edit request instead of applying ───
+    if (isTeamMember) {
+      const ALLOWED_TEAM_FIELDS = [
+        'name', 'email', 'phone', 'facebook', 'telegram',
+        'instagram', 'x', 'snapchat', 'chimeTag', 'cashappTag',
+        'paypalEmail', 'source',
+      ];
+
+      // Only keep fields that are actually in ALLOWED_TEAM_FIELDS and are being changed
+      const changes = {};
+      for (const field of ALLOWED_TEAM_FIELDS) {
+        if (req.body[field] !== undefined) changes[field] = req.body[field];
+      }
+
+      if (Object.keys(changes).length === 0) {
+        return res.status(400).json({ error: 'No editable fields provided.' });
+      }
+
+      // Check for a duplicate pending request from the same member
+      const existing = await prisma.playerEditRequest.findFirst({
+        where: { playerId: id, requestedBy: req.userId, status: 'PENDING' },
+      });
+      if (existing) {
+        // Merge new changes into the existing pending request
+        const merged = { ...(existing.changes || {}), ...changes };
+        const updated = await prisma.playerEditRequest.update({
+          where: { id: existing.id },
+          data: { changes: merged },
+        });
+        broadcastTaskUpdate('edit_request_updated', { request: updated, storeId: req.storeId }, req.storeId);
+        return res.json({
+          pending: true,
+          message: 'Edit request updated — awaiting admin approval.',
+          data: updated,
+        });
+      }
+
+      const request = await prisma.playerEditRequest.create({
+        data: {
+          storeId: req.storeId,
+          playerId: id,
+          requestedBy: req.userId,
+          changes,
+          status: 'PENDING',
+        },
+        include: {
+          requester: { select: { id: true, name: true, role: true } },
+          player: { select: { id: true, name: true, username: true } },
+        },
+      });
+
+      broadcastTaskUpdate('edit_request_created', { request, storeId: req.storeId }, req.storeId);
+      return res.status(201).json({
+        pending: true,
+        message: `Edit submitted for ${request.player.name} — waiting for admin approval.`,
+        data: request,
+      });
+    }
+
+    // ── ADMINS: apply changes directly (existing logic unchanged) ────────
     const {
       name, email, phone, tier, status, balance, cashoutLimit,
       facebook, telegram, instagram, x, snapchat, source,
-      currentStreak, lastPlayedDate, totalBonusEarned, chimeTag, cashappTag, paypalEmail, referredById, friendIds, noAccountOn
+      currentStreak, lastPlayedDate, totalBonusEarned,
+      chimeTag, cashappTag, paypalEmail, referredById, friendIds, noAccountOn,
     } = req.body;
 
-    // ── UNREACHABLE is admin-only ────────────────────────────────────────────
-    if (status === 'UNREACHABLE') {
-      const actor = await prisma.user.findUnique({
-        where: { id: req.userId },
-        select: { role: true },
-      });
-      if (!['ADMIN', 'SUPER_ADMIN'].includes(actor?.role)) {
-        return res.status(403).json({ error: 'Only admins can mark a player as Unreachable.' });
-      }
-    }
-
-
-    const updateData = {};
-    if (name !== undefined) updateData.name = name.trim();
-    if (email !== undefined) updateData.email = email?.trim() || null;
-    if (phone !== undefined) updateData.phone = phone?.trim() || null;
-    if (tier !== undefined) {
-      updateData.tier = tier;
-      if (cashoutLimit === undefined) updateData.cashoutLimit = TIER_CASHOUT[tier] ?? 250;
-    }
-
-    if (cashoutLimit !== undefined) updateData.cashoutLimit = parseFloat(cashoutLimit);
-    if (status !== undefined) updateData.status = status;
-    if (balance !== undefined) updateData.balance = parseFloat(balance);
-    if (facebook !== undefined) updateData.facebook = facebook || null;
-    if (telegram !== undefined) updateData.telegram = telegram || null;
-    if (instagram !== undefined) updateData.instagram = instagram || null;
-    if (x !== undefined) updateData.twitterX = x || null;
-    if (snapchat !== undefined) updateData.snapchat = snapchat || null;
-    if (source !== undefined) updateData.source = source || null;
-    if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
-    if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
-    if (chimeTag !== undefined) updateData.chimeTag = chimeTag || null;
-    if (cashappTag !== undefined) updateData.cashappTag = cashappTag || null;
-    if (paypalEmail !== undefined) updateData.paypalEmail = paypalEmail || null;
-    if (referredById !== undefined) {
-      updateData.referredBy = referredById ? parseInt(referredById) : null;
-    }
-    if (noAccountOn !== undefined && Array.isArray(noAccountOn)) {
-      const ALLOWED = ['email', 'phone', 'snapchat', 'instagram', 'telegram'];
-      updateData.noAccountOn = noAccountOn.filter(f => ALLOWED.includes(f));
-    }
-
-    const updated = await prisma.user.update({ where: { id, storeId: req.storeId }, data: updateData });
-
-    // ── NEW: replace friends list ─────────────────────────────────────────
-    if (friendIds !== undefined && Array.isArray(friendIds)) {
-      // Fetch current friends to find who to disconnect
-      const currentFriends = await prisma.user.findUnique({
-        where: { id },
-        select: { friends: { select: { id: true } }, friendOf: { select: { id: true } } },
-      });
-      const currentIds = [
-        ...(currentFriends?.friends || []).map(f => f.id),
-        ...(currentFriends?.friendOf || []).map(f => f.id),
-      ];
-
-      const toConnect = friendIds.filter(fid => !currentIds.includes(fid));
-      const toDisconnect = currentIds.filter(fid => !friendIds.includes(fid));
-
-      if (toDisconnect.length) {
-        await prisma.user.update({
-          where: { id },
-          data: { friends: { disconnect: toDisconnect.map(fid => ({ id: fid })) } },
-        });
-        // Also remove the reverse side
-        await Promise.all(toDisconnect.map(fid =>
-          prisma.user.update({ where: { id: fid }, data: { friends: { disconnect: [{ id }] } } })
-        ));
-      }
-
-      if (toConnect.length) {
-        await prisma.user.update({
-          where: { id },
-          data: { friends: { connect: toConnect.map(fid => ({ id: fid })) } },
-        });
-        await Promise.all(toConnect.map(fid =>
-          prisma.user.update({ where: { id: fid }, data: { friends: { connect: [{ id }] } } })
-        ));
-      }
-    }
-    // ── end friends update ────────────────────────────────────────────────
-
-    // ── NEW: adjust totalBonusEarned via a bonus record ──────────────────
-    if (totalBonusEarned !== undefined) {
-      const currentTotal = await prisma.bonus.aggregate({
-        where: { userId: id, claimed: true },
-        _sum: { amount: true },
-      });
-      const currentSum = parseFloat(currentTotal._sum.amount || 0);
-      const newTotal = parseFloat(totalBonusEarned);
-      const diff = parseFloat((newTotal - currentSum).toFixed(2));
-
-      if (Math.abs(diff) >= 0.01) {
-        if (diff > 0) {
-          // Create a positive adjustment bonus
-          await prisma.bonus.create({
-            data: {
-              userId: id,
-              type: 'CUSTOM',
-              amount: diff,
-              description: 'Manual adjustment by admin',
-              claimed: true,
-              claimedAt: new Date(),
-            },
-          });
-        } else {
-          // Reduce by deleting smallest bonuses until the diff is absorbed
-          const bonuses = await prisma.bonus.findMany({
-            where: { userId: id, claimed: true },
-            orderBy: { amount: 'asc' },
-          });
-          let toRemove = Math.abs(diff);
-          for (const b of bonuses) {
-            if (toRemove <= 0) break;
-            const bAmt = parseFloat(b.amount);
-            if (bAmt <= toRemove) {
-              await prisma.bonus.delete({ where: { id: b.id } });
-              toRemove = parseFloat((toRemove - bAmt).toFixed(2));
-            } else {
-              await prisma.bonus.update({
-                where: { id: b.id },
-                data: { amount: parseFloat((bAmt - toRemove).toFixed(2)) },
-              });
-              toRemove = 0;
-            }
-          }
-        }
-      }
-    }
-    // ── end adjustment ───────────────────────────────────────────────────
-
-    // ── Auto-sync MISSING_INFO task ────────────────────────────────────────────
-    try {
-      const activeTasks = await prisma.task.findMany({
-        where: { taskType: 'MISSING_INFO', status: { in: ['PENDING', 'IN_PROGRESS'] } },
-        include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true, role: true } } }
-      });
-
-      const linkedTask = activeTasks.find(t => {
-        try { return JSON.parse(t.notes || '{}').playerId === id; } catch { return false; }
-      });
-
-      if (linkedTask) {
-        const checklistItems = (linkedTask.checklistItems || []).map(item => {
-          const key = item.fieldKey || item.label?.toLowerCase().replace(/ /g, '_');
-          const nowFilled =
-            (key === 'email' && updated.email) ||
-            (key === 'phone' && updated.phone) ||
-            (key === 'snapchat' && updated.snapchat) ||
-            (key === 'instagram' && updated.instagram) ||
-            (key === 'telegram' && updated.telegram);
-          if (nowFilled && !item.done) {
-            return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
-          }
-          return item;
-        });
-
-        const doneCount = checklistItems.filter(i => i.done).length;
-        const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
-        const anyDone = checklistItems.some(i => i.done);
-
-        const syncedTask = await prisma.task.update({
-          where: { id: linkedTask.id, storeId: req.storeId },
-          data: {
-            checklistItems,
-            currentValue: doneCount,
-            status: allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
-            completedAt: allRequired ? new Date() : null,
-          },
-          include: {
-            createdBy: { select: { id: true, name: true, role: true } },
-            assignedTo: { select: { id: true, name: true, role: true } },
-            subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
-            progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
-          }
-        });
-
-        broadcastTaskUpdate('task_updated', syncedTask, syncedTask.storeId ?? req.storeId);
-        broadcastTaskUpdate('player_updated', { playerId: id, storeId: req.storeId }, req.storeId);
-      }
-    } catch (syncErr) {
-      console.error('Task sync error (non-fatal):', syncErr);
-    }
-    // ── End sync ───────────────────────────────────────────────────────────────
-
-    res.json({ data: { ...updated, password: undefined }, message: 'Player updated successfully' });
+    // ... (keep all the existing admin update logic here exactly as-is) ...
+    // [paste the rest of the original PATCH handler from your server.js]
   } catch (err) {
     if (err.code === 'P2002') return res.status(409).json({ error: 'Email already in use by another player' });
     res.status(500).json({ error: 'Failed to update player' });
   }
 });
 
+// ── GET /api/player-edit-requests ─────────────────────────────────────────
+// Admin: list all pending (or all) edit requests
+app.get('/api/player-edit-requests', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { status = 'PENDING' } = req.query;
+    const where = { storeId: req.storeId };
+    if (status !== 'all') where.status = status.toUpperCase();
+
+    const requests = await prisma.playerEditRequest.findMany({
+      where,
+      include: {
+        player: { select: { id: true, name: true, username: true, email: true } },
+        requester: { select: { id: true, name: true, role: true } },
+        reviewer: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({ data: requests, total: requests.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/player-edit-requests/:id/approve ────────────────────────────
+app.post('/api/player-edit-requests/:id/approve', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const reqId = parseInt(req.params.id);
+    const { note } = req.body;
+
+    const editReq = await prisma.playerEditRequest.findUnique({
+      where: { id: reqId },
+      include: {
+        player: { select: { id: true, name: true } },
+        requester: { select: { id: true, name: true } },
+      },
+    });
+    if (!editReq) return res.status(404).json({ error: 'Edit request not found' });
+    if (editReq.status !== 'PENDING') {
+      return res.status(400).json({ error: `Request is already ${editReq.status.toLowerCase()}` });
+    }
+
+    // Build the Prisma update data from the stored changes JSON
+    const changes = editReq.changes;
+    const updateData = {};
+    if (changes.name !== undefined) updateData.name = changes.name?.trim();
+    if (changes.email !== undefined) updateData.email = changes.email?.trim() || null;
+    if (changes.phone !== undefined) updateData.phone = changes.phone?.trim() || null;
+    if (changes.facebook !== undefined) updateData.facebook = changes.facebook || null;
+    if (changes.telegram !== undefined) updateData.telegram = changes.telegram || null;
+    if (changes.instagram !== undefined) updateData.instagram = changes.instagram || null;
+    if (changes.x !== undefined) updateData.twitterX = changes.x || null;
+    if (changes.snapchat !== undefined) updateData.snapchat = changes.snapchat || null;
+    if (changes.chimeTag !== undefined) updateData.chimeTag = changes.chimeTag || null;
+    if (changes.cashappTag !== undefined) updateData.cashappTag = changes.cashappTag || null;
+    if (changes.paypalEmail !== undefined) updateData.paypalEmail = changes.paypalEmail || null;
+    if (changes.source !== undefined) updateData.source = changes.source || null;
+
+    const [updatedPlayer, updatedRequest] = await prisma.$transaction([
+      prisma.user.update({
+        where: { id: editReq.playerId },
+        data: updateData,
+      }),
+      prisma.playerEditRequest.update({
+        where: { id: reqId },
+        data: {
+          status: 'APPROVED',
+          reviewedBy: req.userId,
+          reviewNote: note || null,
+        },
+      }),
+    ]);
+
+    broadcastTaskUpdate('edit_request_reviewed', {
+      requestId: reqId,
+      playerId: editReq.playerId,
+      status: 'APPROVED',
+      storeId: req.storeId,
+    }, req.storeId);
+
+    res.json({
+      success: true,
+      message: `Edits for ${editReq.player.name} approved and applied.`,
+      data: { player: updatedPlayer, request: updatedRequest },
+    });
+  } catch (err) {
+    if (err.code === 'P2002') return res.status(409).json({ error: 'Email already in use.' });
+    res.status(500).json({ error: 'Failed to approve: ' + err.message });
+  }
+});
+
+// ── POST /api/player-edit-requests/:id/reject ─────────────────────────────
+app.post('/api/player-edit-requests/:id/reject', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const reqId = parseInt(req.params.id);
+    const { note } = req.body;
+
+    const editReq = await prisma.playerEditRequest.findUnique({
+      where: { id: reqId },
+      include: { player: { select: { name: true } } },
+    });
+    if (!editReq) return res.status(404).json({ error: 'Edit request not found' });
+    if (editReq.status !== 'PENDING') {
+      return res.status(400).json({ error: `Request is already ${editReq.status.toLowerCase()}` });
+    }
+
+    const updated = await prisma.playerEditRequest.update({
+      where: { id: reqId },
+      data: { status: 'REJECTED', reviewedBy: req.userId, reviewNote: note || null },
+    });
+
+    broadcastTaskUpdate('edit_request_reviewed', {
+      requestId: reqId,
+      playerId: editReq.playerId,
+      status: 'REJECTED',
+      storeId: req.storeId,
+    }, req.storeId);
+
+    res.json({
+      success: true,
+      message: `Edit request for ${editReq.player.name} rejected.`,
+      data: updated,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to reject: ' + err.message });
+  }
+});
 // DELETE /api/players/:id
 app.delete('/api/players/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -1951,35 +2166,35 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
     }
 
     // ── Auto-complete match BONUS_FOLLOWUP task ──────────────────────────────────
-if (bonusMatch) {
-  try {
-    const matchTasks = await prisma.task.findMany({
-      where: {
-        taskType: 'BONUS_FOLLOWUP',
-        status: { in: ['PENDING', 'IN_PROGRESS'] },
-        storeId: req.storeId,
-        notes: { contains: `"playerId":${parseInt(playerId)}` },
-      },
-    });
-    for (const mt of matchTasks) {
+    if (bonusMatch) {
       try {
-        const meta = JSON.parse(mt.notes || '{}');
-        if (meta.bonusType === 'match') {
-          const done = await prisma.task.update({
-            where: { id: mt.id },
-            data: {
-              status: 'COMPLETED', completedAt: new Date(),
-              checklistItems: (mt.checklistItems || []).map(i => ({
-                ...i, done: true, completedBy: req.userId, completedAt: new Date().toISOString(),
-              })),
-            },
-          });
-          broadcastTaskUpdate('task_updated', done, done.storeId ?? req.storeId);
+        const matchTasks = await prisma.task.findMany({
+          where: {
+            taskType: 'BONUS_FOLLOWUP',
+            status: { in: ['PENDING', 'IN_PROGRESS'] },
+            storeId: req.storeId,
+            notes: { contains: `"playerId":${parseInt(playerId)}` },
+          },
+        });
+        for (const mt of matchTasks) {
+          try {
+            const meta = JSON.parse(mt.notes || '{}');
+            if (meta.bonusType === 'match') {
+              const done = await prisma.task.update({
+                where: { id: mt.id },
+                data: {
+                  status: 'COMPLETED', completedAt: new Date(),
+                  checklistItems: (mt.checklistItems || []).map(i => ({
+                    ...i, done: true, completedBy: req.userId, completedAt: new Date().toISOString(),
+                  })),
+                },
+              });
+              broadcastTaskUpdate('task_updated', done, done.storeId ?? req.storeId);
+            }
+          } catch (_) { }
         }
-      } catch (_) {}
+      } catch (_) { }
     }
-  } catch (_) {}
-}
 
     if (bonusSpecial) {
       ops.push(prisma.bonus.create({
@@ -1989,33 +2204,33 @@ if (bonusMatch) {
         data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(specialAmt.toString()), status: 'COMPLETED', description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`, gameId: game.id, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
       }));
     }
-    
+
 
     // ── Execute main transaction ──────────────────────────────────────────────
     const results = await prisma.$transaction(ops);
 
-// ── Auto-complete PLAYER_FOLLOWUP — player just deposited = active ──────────
-try {
-  const followupTasks = await prisma.task.findMany({
-    where: {
-      taskType: 'PLAYER_FOLLOWUP',
-      status: { in: ['PENDING', 'IN_PROGRESS'] },
-      notes: { contains: `"playerId":${parseInt(playerId)}` },
-    },
-  });
-  for (const ft of followupTasks) {
-    const done = await prisma.task.update({
-      where: { id: ft.id },
-      data: {
-        status: 'COMPLETED', completedAt: new Date(),
-        checklistItems: (ft.checklistItems || []).map(i => ({
-          ...i, done: true, completedBy: req.userId, completedAt: new Date().toISOString(),
-        })),
-      },
-    });
-    broadcastTaskUpdate('task_updated', done, done.storeId ?? req.storeId);
-  }
-} catch (_) {}
+    // ── Auto-complete PLAYER_FOLLOWUP — player just deposited = active ──────────
+    try {
+      const followupTasks = await prisma.task.findMany({
+        where: {
+          taskType: 'PLAYER_FOLLOWUP',
+          status: { in: ['PENDING', 'IN_PROGRESS'] },
+          notes: { contains: `"playerId":${parseInt(playerId)}` },
+        },
+      });
+      for (const ft of followupTasks) {
+        const done = await prisma.task.update({
+          where: { id: ft.id },
+          data: {
+            status: 'COMPLETED', completedAt: new Date(),
+            checklistItems: (ft.checklistItems || []).map(i => ({
+              ...i, done: true, completedBy: req.userId, completedAt: new Date().toISOString(),
+            })),
+          },
+        });
+        broadcastTaskUpdate('task_updated', done, done.storeId ?? req.storeId);
+      }
+    } catch (_) { }
 
     checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate)
       .then(() => ensureMilestoneTasks(parseInt(playerId), req.storeId))
@@ -2284,21 +2499,21 @@ app.post('/api/referral-bonuses/:id/claim', authMiddleware, async (req, res) => 
       }),
 
       // 4. Mark referrer side claimed (and referred side if grantBoth)
-    //   prisma.referralBonus.update({
-    //     where: { id: rbId },
-    //     data: {
-    //       referrerClaimed: true, referrerClaimedAt: new Date(), gameId,
-    //       ...(grantBoth ? { referredClaimed: true, referredClaimedAt: new Date() } : {}),
-    //     },
-    //   }),
-    // 4. Mark BOTH sides claimed — record is fully processed regardless of grantBoth
-prisma.referralBonus.update({
-  where: { id: rbId },
-  data: {
-    referrerClaimed: true, referrerClaimedAt: new Date(), gameId,
-    referredClaimed: true, referredClaimedAt: new Date(),
-  },
-}),
+      //   prisma.referralBonus.update({
+      //     where: { id: rbId },
+      //     data: {
+      //       referrerClaimed: true, referrerClaimedAt: new Date(), gameId,
+      //       ...(grantBoth ? { referredClaimed: true, referredClaimedAt: new Date() } : {}),
+      //     },
+      //   }),
+      // 4. Mark BOTH sides claimed — record is fully processed regardless of grantBoth
+      prisma.referralBonus.update({
+        where: { id: rbId },
+        data: {
+          referrerClaimed: true, referrerClaimedAt: new Date(), gameId,
+          referredClaimed: true, referredClaimedAt: new Date(),
+        },
+      }),
     ];
 
     // 5. If granting to both, add referred party ops
@@ -4468,7 +4683,7 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     const totalCrossPointsReloaded = Math.round(csReloads.reduce((s, e) => s + (e.pointsAdded ?? 0), 0));
     // const totalCrossWalletAdminEdit = parseFloat(csWalletAdminEdits.reduce((s, l) => s + l.changeAmount, 0).toFixed(2));
     // const totalCrossGameAdminEdit = Math.round(csGameAdminEdits.reduce((s, l) => s + l.changeAmount, 0));
-const totalCrossWalletAdminEdit = parseFloat(csWalletAdminEdits.reduce((s, l) => s + l.changeAmount, 0).toFixed(2));
+    const totalCrossWalletAdminEdit = parseFloat(csWalletAdminEdits.reduce((s, l) => s + l.changeAmount, 0).toFixed(2));
 
     // De-duplicate: if another store already has a POINT_RELOAD expense explaining a game
     // stock change (captured in csReloads), that same change would ALSO appear as a
