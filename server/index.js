@@ -2231,14 +2231,22 @@ app.post('/api/referral-bonuses/:id/claim', authMiddleware, async (req, res) => 
       }),
 
       // 4. Mark referrer side claimed (and referred side if grantBoth)
-      prisma.referralBonus.update({
-        where: { id: rbId },
-        data: {
-          referrerClaimed: true, referrerClaimedAt: new Date(), gameId,
-          ...(grantBoth ? { referredClaimed: true, referredClaimedAt: new Date() } : {}),
-        },
-      }),
-    ];
+    //   prisma.referralBonus.update({
+    //     where: { id: rbId },
+    //     data: {
+    //       referrerClaimed: true, referrerClaimedAt: new Date(), gameId,
+    //       ...(grantBoth ? { referredClaimed: true, referredClaimedAt: new Date() } : {}),
+    //     },
+    //   }),
+    // ];
+    // 4. Mark BOTH sides claimed — record is fully processed regardless of grantBoth
+prisma.referralBonus.update({
+  where: { id: rbId },
+  data: {
+    referrerClaimed: true, referrerClaimedAt: new Date(), gameId,
+    referredClaimed: true, referredClaimedAt: new Date(),
+  },
+}),
 
     // 5. If granting to both, add referred party ops
     if (grantBoth) {
