@@ -1950,6 +1950,37 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
       }));
     }
 
+    // ── Auto-complete match BONUS_FOLLOWUP task ──────────────────────────────────
+if (bonusMatch) {
+  try {
+    const matchTasks = await prisma.task.findMany({
+      where: {
+        taskType: 'BONUS_FOLLOWUP',
+        status: { in: ['PENDING', 'IN_PROGRESS'] },
+        storeId: req.storeId,
+        notes: { contains: `"playerId":${parseInt(playerId)}` },
+      },
+    });
+    for (const mt of matchTasks) {
+      try {
+        const meta = JSON.parse(mt.notes || '{}');
+        if (meta.bonusType === 'match') {
+          const done = await prisma.task.update({
+            where: { id: mt.id },
+            data: {
+              status: 'COMPLETED', completedAt: new Date(),
+              checklistItems: (mt.checklistItems || []).map(i => ({
+                ...i, done: true, completedBy: req.userId, completedAt: new Date().toISOString(),
+              })),
+            },
+          });
+          broadcastTaskUpdate('task_updated', done, done.storeId ?? req.storeId);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
     if (bonusSpecial) {
       ops.push(prisma.bonus.create({
         data: { userId: parseInt(playerId), type: 'CUSTOM', amount: new Prisma.Decimal(specialAmt.toString()), description: `Special Bonus - 20% of $${depositAmt.toFixed(2)}`, claimed: true, claimedAt: now },
@@ -1958,11 +1989,33 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
         data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(specialAmt.toString()), status: 'COMPLETED', description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`, gameId: game.id, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
       }));
     }
+    
 
     // ── Execute main transaction ──────────────────────────────────────────────
     const results = await prisma.$transaction(ops);
 
-
+// ── Auto-complete PLAYER_FOLLOWUP — player just deposited = active ──────────
+try {
+  const followupTasks = await prisma.task.findMany({
+    where: {
+      taskType: 'PLAYER_FOLLOWUP',
+      status: { in: ['PENDING', 'IN_PROGRESS'] },
+      notes: { contains: `"playerId":${parseInt(playerId)}` },
+    },
+  });
+  for (const ft of followupTasks) {
+    const done = await prisma.task.update({
+      where: { id: ft.id },
+      data: {
+        status: 'COMPLETED', completedAt: new Date(),
+        checklistItems: (ft.checklistItems || []).map(i => ({
+          ...i, done: true, completedBy: req.userId, completedAt: new Date().toISOString(),
+        })),
+      },
+    });
+    broadcastTaskUpdate('task_updated', done, done.storeId ?? req.storeId);
+  }
+} catch (_) {}
 
     checkMilestoneBonuses(parseInt(playerId), prisma, broadcastTaskUpdate)
       .then(() => ensureMilestoneTasks(parseInt(playerId), req.storeId))
@@ -6728,6 +6781,45 @@ async function scheduleUnreachablePlayerCheck(prisma) {
   setInterval(runCheck, CHECK_INTERVAL_MS);
 }
 
+function scheduleDailyBonusTaskCleanup(prisma) {
+  async function runCleanup() {
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      // Remove incomplete match + milestone tasks created on a PREVIOUS day
+      const deleted = await prisma.task.deleteMany({
+        where: {
+          taskType: 'BONUS_FOLLOWUP',
+          status: { in: ['PENDING', 'IN_PROGRESS'] },
+          createdAt: { lt: todayStart },
+          OR: [
+            { notes: { contains: '"bonusType":"match"' } },
+            { notes: { contains: '"bonusType":"milestone"' } },
+          ],
+        },
+      });
+
+      if (deleted.count > 0) {
+        console.log(`🧹 Midnight cleanup: removed ${deleted.count} expired daily bonus tasks`);
+        broadcastTaskUpdate('tasks_cleanup', { count: deleted.count, reason: 'daily_reset' });
+      }
+    } catch (err) {
+      console.error('Daily bonus cleanup error (non-fatal):', err);
+    }
+  }
+
+  const now = new Date();
+  const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 1, 0);
+  const msUntilMidnight = nextMidnight - now;
+
+  console.log(`🧹 Daily bonus cleanup scheduled (in ${Math.round(msUntilMidnight / 60000)} min)`);
+  setTimeout(() => {
+    runCleanup();
+    setInterval(runCleanup, 24 * 60 * 60 * 1000);
+  }, msUntilMidnight);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════
@@ -6762,6 +6854,7 @@ app.listen(PORT, () => {
   schedulePlayerFollowupGeneration(prisma);
   scheduleBonusFollowupGeneration(prisma);
   scheduleUnreachablePlayerCheck(prisma);   // ← ADD
+  scheduleDailyBonusTaskCleanup(prisma);
 
 });
 
