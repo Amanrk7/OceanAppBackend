@@ -3116,22 +3116,67 @@ app.post('/api/games', authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
+// app.patch('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { pointStock, status } = req.body;
+//     const game = await prisma.game.findUnique({ where: { id } });
+//     if (!game) return res.status(404).json({ error: 'Game not found' });
+//     const updatedGame = await prisma.game.update({ where: { id }, data: { ...(pointStock !== undefined && { pointStock }), ...(status && { status }) } });
+//     checkThresholdsAndNotify({ gameId: id }, prisma);
+//     broadcastSharedResourceUpdate(id, null, prisma).catch(() => { });
+//     broadcastReconciliationUpdate(req.storeId);
+//     res.json({ data: updatedGame, message: 'Game updated successfully' });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to update game' });
+//   }
+// });
+
 app.patch('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { pointStock, status } = req.body;
+
     const game = await prisma.game.findUnique({ where: { id } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
-    const updatedGame = await prisma.game.update({ where: { id }, data: { ...(pointStock !== undefined && { pointStock }), ...(status && { status }) } });
+
+    const updatedGame = await prisma.game.update({
+      where: { id },
+      data: {
+        ...(pointStock !== undefined && { pointStock }),
+        ...(status !== undefined && { status }),
+      },
+    });
+
+    // ── FIX: Log direct stock edits ───────────────────────────────────────────
+    if (pointStock !== undefined && Math.round(pointStock) !== Math.round(game.pointStock)) {
+      const changeAmount = Math.round(pointStock) - Math.round(game.pointStock);
+      if (prisma.gameStockLog) {
+        await prisma.gameStockLog.create({
+          data: {
+            gameId: id,
+            storeId: req.storeId,
+            changeAmount,
+            reason: 'ADMIN_DIRECT_EDIT',
+            editedById: req.userId,
+          },
+        }).catch(() => {/* model not migrated yet */ });
+      }
+    }
+
     checkThresholdsAndNotify({ gameId: id }, prisma);
     broadcastSharedResourceUpdate(id, null, prisma).catch(() => { });
     broadcastReconciliationUpdate(req.storeId);
+
+    if (updatedGame.isShared) {
+      broadcastTaskUpdate('game_updated', { gameId: updatedGame.id, pointStock: updatedGame.pointStock, status: updatedGame.status });
+    }
+
     res.json({ data: updatedGame, message: 'Game updated successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update game' });
   }
 });
-
 app.delete('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
@@ -3238,47 +3283,132 @@ app.post('/api/expenses', authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
+// app.patch('/api/expenses/:id', authMiddleware, adminMiddleware, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { amount, category, notes, pointsAdded, paymentMade, walletId } = req.body;
+//     const expense = await prisma.expense.findUnique({ where: { id } });
+//     if (!expense) return res.status(404).json({ error: 'Expense not found' });
+
+//     if (paymentMade !== undefined && walletId) {
+//       const oldAmount = parseFloat(expense.paymentMade || 0);
+//       const newAmount = parseFloat(paymentMade);
+//       const diff = newAmount - oldAmount;
+//       const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(walletId) } });
+//       if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+//       if (diff > 0 && wallet.balance < diff) return res.status(400).json({ error: `Insufficient wallet balance. Available: $${wallet.balance.toFixed(2)}` });
+//       const [updatedExpense] = await prisma.$transaction([
+//         prisma.expense.update({
+//           where: { id },
+//           data: {
+//             paymentMade: newAmount,
+//             walletId: parseInt(walletId),           // ← ADD THIS
+//             ...(notes !== undefined && { notes }),
+//             ...(category && { category: category.toUpperCase().replace(' ', '_') })
+//           }
+//         }),
+//         prisma.wallet.update({
+//           where: { id: parseInt(walletId) },
+//           data: { balance: { decrement: diff } }
+//         }),
+//       ]);
+//       // server.js — PATCH /api/expenses/:id — add SSE broadcast for shared-wallet payments
+// // In the paymentMade branch, after the $transaction:
+// if (diff !== 0) {
+//   broadcastTaskUpdate('expense_updated', { id, storeId: req.storeId }, req.storeId);
+//   broadcastReconciliationUpdate(req.storeId);
+
+//   // If wallet is shared, broadcast to ALL stores
+//   const freshWallet = await prisma.wallet.findUnique({
+//     where: { id: parseInt(walletId) }, select: { isShared: true }
+//   }).catch(() => null);
+//   if (freshWallet?.isShared) {
+//     broadcastTaskUpdate('expense_updated', { id, storeId: req.storeId }); // no store filter = all stores
+//     broadcastTaskUpdate('reconciliation_changed', { timestamp: new Date().toISOString() });
+//   }
+// }
+//       broadcastReconciliationUpdate(req.storeId);   // ← ADD THIS (may already exist)
+//       // return res.json({ data: updatedExpense, message: 'Payment updated and wallet adjusted' });
+//       broadcastTaskUpdate('expense_updated', { id, storeId: req.storeId }, req.storeId);
+
+//       broadcastReconciliationUpdate(req.storeId);
+//       return res.json({ data: updatedExpense, message: 'Payment updated and wallet adjusted' });
+//     }
+
+//     const updated = await prisma.expense.update({ where: { id }, data: { ...(amount !== undefined && { amount: parseFloat(amount) }), ...(category && { category: category.toUpperCase().replace(' ', '_') }), ...(notes !== undefined && { notes }), ...(pointsAdded !== undefined && { pointsAdded: parseInt(pointsAdded, 10) }) } });
+//     // res.json({ data: updated, message: 'Expense updated' });
+//     broadcastReconciliationUpdate(req.storeId);
+//     res.json({ data: updated, message: 'Expense updated' });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to update expense' });
+//   }
+// });
+
 app.patch('/api/expenses/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { amount, category, notes, pointsAdded, paymentMade, walletId } = req.body;
+
     const expense = await prisma.expense.findUnique({ where: { id } });
     if (!expense) return res.status(404).json({ error: 'Expense not found' });
 
     if (paymentMade !== undefined && walletId) {
       const oldAmount = parseFloat(expense.paymentMade || 0);
       const newAmount = parseFloat(paymentMade);
-      const diff = newAmount - oldAmount;
+      const diff = parseFloat((newAmount - oldAmount).toFixed(2));
+
       const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(walletId) } });
       if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-      if (diff > 0 && wallet.balance < diff) return res.status(400).json({ error: `Insufficient wallet balance. Available: $${wallet.balance.toFixed(2)}` });
+      if (diff > 0 && wallet.balance < diff)
+        return res.status(400).json({ error: `Insufficient wallet balance. Available: $${wallet.balance.toFixed(2)}` });
+
       const [updatedExpense] = await prisma.$transaction([
         prisma.expense.update({
           where: { id },
           data: {
             paymentMade: newAmount,
-            walletId: parseInt(walletId),           // ← ADD THIS
+            walletId: parseInt(walletId),
             ...(notes !== undefined && { notes }),
-            ...(category && { category: category.toUpperCase().replace(' ', '_') })
-          }
+            ...(category !== undefined && { category: category.toUpperCase().replace(' ', '_') }),
+          },
         }),
         prisma.wallet.update({
           where: { id: parseInt(walletId) },
-          data: { balance: { decrement: diff } }
+          data: { balance: { decrement: diff } },
         }),
       ]);
-      broadcastReconciliationUpdate(req.storeId);   // ← ADD THIS (may already exist)
-      // return res.json({ data: updatedExpense, message: 'Payment updated and wallet adjusted' });
-      broadcastTaskUpdate('expense_updated', { id, storeId: req.storeId }, req.storeId);
 
-      broadcastReconciliationUpdate(req.storeId);
+      // ── Broadcasts ────────────────────────────────────────────────────────
+      if (diff !== 0) {
+        // Always notify this store
+        broadcastTaskUpdate('expense_updated', { id, storeId: req.storeId }, req.storeId);
+        broadcastReconciliationUpdate(req.storeId);
+
+        // If wallet is shared, also notify ALL other stores
+        if (wallet.isShared) {
+          broadcastTaskUpdate('expense_updated', { id, storeId: req.storeId });      // no storeId filter = all stores
+          broadcastTaskUpdate('reconciliation_changed', { timestamp: new Date().toISOString() }); // all stores refresh
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       return res.json({ data: updatedExpense, message: 'Payment updated and wallet adjusted' });
     }
 
-    const updated = await prisma.expense.update({ where: { id }, data: { ...(amount !== undefined && { amount: parseFloat(amount) }), ...(category && { category: category.toUpperCase().replace(' ', '_') }), ...(notes !== undefined && { notes }), ...(pointsAdded !== undefined && { pointsAdded: parseInt(pointsAdded, 10) }) } });
-    // res.json({ data: updated, message: 'Expense updated' });
+    // ── Non-payment field updates ─────────────────────────────────────────────
+    const updated = await prisma.expense.update({
+      where: { id },
+      data: {
+        ...(amount !== undefined && { amount: parseFloat(amount) }),
+        ...(category !== undefined && { category: category.toUpperCase().replace(' ', '_') }),
+        ...(notes !== undefined && { notes }),
+        ...(pointsAdded !== undefined && { pointsAdded: parseInt(pointsAdded, 10) }),
+      },
+    });
+
     broadcastReconciliationUpdate(req.storeId);
     res.json({ data: updated, message: 'Expense updated' });
+
   } catch (err) {
     res.status(500).json({ error: 'Failed to update expense' });
   }
@@ -3390,26 +3520,76 @@ app.get('/api/wallets', authMiddleware, async (req, res) => {
   }
 });
 
+// app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     // const { balance, name, identifier, isLive } = req.body;
+//     const { balance, name, identifier, isLive, isShared } = req.body;
+//     // ...
+//     const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(id) } });
+//     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+//     // const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), } });
+//     const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), ...(isShared !== undefined && { isShared: Boolean(isShared) }) } });
+//     checkThresholdsAndNotify({ walletId: parseInt(id) }, prisma);
+//     broadcastSharedResourceUpdate(null, parseInt(id), prisma).catch(() => { });
+//     broadcastReconciliationUpdate(req.storeId);
+
+//     res.json({ data: updated, message: 'Wallet updated' });
+//   } catch (err) {
+//     res.status(500).json({ error: 'Failed to update wallet' });
+//   }
+// });
+
 app.patch('/api/wallets/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    // const { balance, name, identifier, isLive } = req.body;
     const { balance, name, identifier, isLive, isShared } = req.body;
-    // ...
+
     const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(id) } });
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-    // const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), } });
-    const updated = await prisma.wallet.update({ where: { id: parseInt(id) }, data: { ...(balance !== undefined && { balance: parseFloat(balance) }), ...(name && { name }), ...(identifier !== undefined && { identifier }), ...(isLive !== undefined && { isLive: Boolean(isLive) }), ...(isShared !== undefined && { isShared: Boolean(isShared) }) } });
+
+    const updated = await prisma.wallet.update({
+      where: { id: parseInt(id) },
+      data: {
+        ...(balance !== undefined && { balance: parseFloat(balance) }),
+        ...(name !== undefined && { name }),
+        ...(identifier !== undefined && { identifier }),
+        ...(isLive !== undefined && { isLive: Boolean(isLive) }),
+        ...(isShared !== undefined && { isShared: Boolean(isShared) }),
+      },
+    });
+
+    // ── FIX: Log direct balance edits so reconciliation can detect them ───────
+    if (balance !== undefined && parseFloat(balance) !== parseFloat(wallet.balance)) {
+      const changeAmount = parseFloat((parseFloat(balance) - parseFloat(wallet.balance)).toFixed(2));
+      // Use prisma.walletBalanceLog if the model exists, else store in notes
+      if (prisma.walletBalanceLog) {
+        await prisma.walletBalanceLog.create({
+          data: {
+            walletId: parseInt(id),
+            storeId: req.storeId,
+            changeAmount,
+            reason: 'ADMIN_DIRECT_EDIT',
+            editedById: req.userId,
+          },
+        }).catch(() => {/* model not migrated yet */ });
+      }
+    }
+
     checkThresholdsAndNotify({ walletId: parseInt(id) }, prisma);
     broadcastSharedResourceUpdate(null, parseInt(id), prisma).catch(() => { });
     broadcastReconciliationUpdate(req.storeId);
+
+    // If shared, broadcast to ALL stores so their checkout modals refresh
+    if (updated.isShared) {
+      broadcastTaskUpdate('wallet_updated', { walletId: updated.id, balance: updated.balance });
+    }
 
     res.json({ data: updated, message: 'Wallet updated' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update wallet' });
   }
 });
-
 app.post('/api/wallets', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     // const { name, method, identifier, balance, isLive } = req.body;
@@ -3874,6 +4054,195 @@ async function getOrCreateTeam(teamRole, storeId) {
 // ─── GET /api/shifts/shared-resource-usage ──────────────────────────────────
 // Returns per-store breakdown of shared game/wallet usage during a time window.
 // Used by CheckoutModal to explain cross-store discrepancies.
+// app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) => {
+//   try {
+//     const { fromDate, toDate } = req.query;
+//     if (!fromDate) return res.status(400).json({ error: 'fromDate required' });
+
+//     const from = new Date(fromDate);
+//     const to = toDate ? new Date(toDate) : new Date();
+//     // ADD near top of handler (after `const to = ...`)
+//     const sharedGames = await prisma.game.findMany({ where: { isShared: true }, select: { id: true, name: true, pointStock: true } });
+//     const sharedWallets = await prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true, method: true } });
+
+//     // ── Shared games ───────────────────────────────────────────────────────────
+//     // const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
+
+//     const gameUsage = await Promise.all(sharedGames.map(async (game) => {
+//       // Pull ALL completed transactions for this game across ALL stores
+//       const txns = await prisma.transaction.findMany({
+//         where: {
+//           gameId: game.id,
+//           status: 'COMPLETED',
+//           createdAt: { gte: from, lte: to },
+//         },
+//         include: { user: { select: { storeId: true, id: true } } },
+//       });
+
+//       const byStore = {};
+
+//       txns.forEach(t => {
+//         const sid = t.user?.storeId ?? 1;
+//         if (!byStore[sid]) {
+//           byStore[sid] = { storeId: sid, deposits: 0, cashouts: 0, bonuses: 0, fees: 0, txnCount: 0 };
+//         }
+//         const s = byStore[sid];
+//         const amt = parseFloat(t.amount);
+//         const feeM = t.notes?.match(/fee:([\d.]+)/);
+//         const fee = feeM ? parseFloat(feeM[1]) : 0;
+
+//         if (t.type === 'DEPOSIT') {
+//           s.deposits += amt;
+//           s.fees += fee;
+//         } else if (t.type === 'WITHDRAWAL') {
+//           s.cashouts += amt;
+//         } else if (t.type === 'BONUS') {
+//           s.bonuses += amt;
+//           // bonus fees also came from game stock
+//           const bonusFeeM = t.notes?.match(/fee:([\d.]+)/);
+//           if (bonusFeeM) s.fees += parseFloat(bonusFeeM[1]);
+//         }
+//         s.txnCount++;
+//       });
+
+//       // netPtsDeducted per store = Deposits + Fees + Bonuses − Cashouts
+//       Object.values(byStore).forEach(s => {
+//         // s.netPtsDeducted = Math.round(s.deposits + s.fees + s.bonuses - s.cashouts);
+//         // CORRECT: fees only affect wallet, not game pts
+//         s.netPtsDeducted = Math.round(s.deposits + s.bonuses - s.cashouts);
+//       });
+
+//       const totalDeducted = Object.values(byStore)
+//         .reduce((sum, s) => sum + s.netPtsDeducted, 0);
+
+//       return {
+//         gameId: game.id,
+//         gameName: game.name,
+//         currentStock: game.pointStock,
+//         usageByStore: byStore,      // keyed by storeId string
+//         totalDeducted,              // global total pts removed
+//       };
+//     }));
+
+//     // ── Shared wallets ─────────────────────────────────────────────────────────
+//     // const sharedWallets = await prisma.wallet.findMany({
+//     //   where: { isShared: true, isLive: true },
+//     // });
+
+//     const walletUsage = await Promise.all(sharedWallets.map(async (wallet) => {
+//       // Match description pattern used by deposit/cashout handlers
+//       const pattern = `via ${wallet.method} - ${wallet.name}`;
+
+//       const txns = await prisma.transaction.findMany({
+//         where: {
+//           description: { contains: pattern },
+//           status: 'COMPLETED',
+//           createdAt: { gte: from, lte: to },
+//         },
+//         include: { user: { select: { storeId: true } } },
+//       });
+
+//       const byStore = {};
+
+//       txns.forEach(t => {
+//         const sid = t.user?.storeId ?? 1;
+//         if (!byStore[sid]) {
+//           byStore[sid] = { storeId: sid, depositsIn: 0, cashoutsOut: 0, fees: 0, txnCount: 0 };
+//         }
+//         const s = byStore[sid];
+//         const amt = parseFloat(t.amount);
+//         const feeM = t.notes?.match(/fee:([\d.]+)/);
+//         const fee = feeM ? parseFloat(feeM[1]) : 0;
+
+//         if (t.type === 'DEPOSIT') {
+//           s.depositsIn += amt - fee;   // wallet receives deposit minus fee
+//           s.fees += fee;
+//         } else if (t.type === 'WITHDRAWAL') {
+//           s.cashoutsOut += amt + fee;   // wallet pays out cashout + fee
+//         }
+//         s.txnCount++;
+//       });
+
+//       Object.values(byStore).forEach(s => {
+//         s.netWalletChange = parseFloat((s.depositsIn - s.cashoutsOut).toFixed(2));
+//       });
+
+//       const totalNetChange = parseFloat(
+//         Object.values(byStore).reduce((sum, s) => sum + s.netWalletChange, 0).toFixed(2)
+//       );
+
+//       return {
+//         walletId: wallet.id,
+//         walletName: wallet.name,
+//         method: wallet.method,
+//         currentBalance: wallet.balance,
+//         usageByStore: byStore,
+//         totalNetChange,
+//       };
+//     }));
+
+//     // res.json({ data: { games: gameUsage, wallets: walletUsage } });
+//     // Cross-store expense/takeout/reload totals (for frontend adjustment)
+//     const [csExpenses, csTakeouts, csReloads] = await Promise.all([
+//       prisma.expense.findMany({
+//         where: {
+//           storeId: { not: req.storeId },          // ← FIX 1: req.storeId
+//           walletId: { in: sharedWallets.map(w => w.id) },
+//           paymentMade: { gt: 0 },
+//           // createdAt: { gte: from, lte: to },
+//           updatedAt: { gte: from, lte: to },
+//         },
+//       }).catch(() => []),
+//       prisma.profitTakeout.findMany({
+//         where: {
+//           storeId: { not: req.storeId },          // ← FIX 1: req.storeId
+//           walletId: { in: sharedWallets.map(w => w.id) },
+//           takenAt: { gte: from, lte: to },
+//         },
+//       }).catch(() => []),
+//       prisma.expense.findMany({
+//         where: {
+//           storeId: { not: req.storeId },          // ← FIX 1: req.storeId
+//           gameId: { in: sharedGames.map(g => g.id) },
+//           pointsAdded: { gt: 0 },
+//           updatedAt: { gte: from, lte: to },
+//         },
+//       }).catch(() => []),
+//     ]);
+
+//     const crossWalletIds = [
+//       ...csExpenses.filter(e => e.walletId).map(e => e.walletId),   // ← FIX 2
+//       ...csTakeouts.filter(t => t.walletId).map(t => t.walletId),   // ← FIX 3
+//     ];
+
+//     const crossGameIds = csReloads                                   // ← FIX 2
+//       .filter(e => e.gameId && e.pointsAdded > 0)
+//       .map(e => e.gameId);
+
+//     res.json({
+//       data: {
+//         games: gameUsage,
+//         wallets: walletUsage,
+//         crossStoreSummary: {
+//           totalCrossWalletExpenses: parseFloat(csExpenses.reduce((s, e) => s + (parseFloat(e.paymentMade) || 0), 0).toFixed(2)),
+//           totalCrossWalletTakeouts: parseFloat(csTakeouts.reduce((s, t) => s + parseFloat(t.amount), 0).toFixed(2)),
+//           totalCrossPointsReloaded: Math.round(csReloads.reduce((s, e) => s + (e.pointsAdded ?? 0), 0)),
+//           affectedWalletIds: [...new Set(crossWalletIds)],
+//           affectedGameIds: [...new Set(crossGameIds)],
+//           expensesByStore: csExpenses.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (parseFloat(e.paymentMade) || 0); return acc; }, {}),
+//           takeoutsByStore: csTakeouts.reduce((acc, t) => { acc[t.storeId] = (acc[t.storeId] || 0) + parseFloat(t.amount); return acc; }, {}),
+//           reloadsByStore: csReloads.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (e.pointsAdded ?? 0); return acc; }, {}),
+//         },
+//       },
+//     });
+//   } catch (err) {
+//     console.error('shared-resource-usage error:', err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+// server.js — replace the shared-resource-usage handler body
+
 app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) => {
   try {
     const { fromDate, toDate } = req.query;
@@ -3881,78 +4250,48 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
 
     const from = new Date(fromDate);
     const to = toDate ? new Date(toDate) : new Date();
-    // ADD near top of handler (after `const to = ...`)
-    const sharedGames = await prisma.game.findMany({ where: { isShared: true }, select: { id: true, name: true, pointStock: true } });
-    const sharedWallets = await prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true, method: true } });
+    const storeId = req.storeId;
 
-    // ── Shared games ───────────────────────────────────────────────────────────
-    // const sharedGames = await prisma.game.findMany({ where: { isShared: true } });
+    const [sharedGames, sharedWallets] = await Promise.all([
+      prisma.game.findMany({ where: { isShared: true }, select: { id: true, name: true, pointStock: true } }),
+      prisma.wallet.findMany({ where: { isShared: true, isLive: true }, select: { id: true, name: true, method: true, balance: true } }),
+    ]);
 
+    const sharedGameIds = sharedGames.map(g => g.id);
+    const sharedWalletIds = sharedWallets.map(w => w.id);
+
+    // ── Game usage from transactions ──────────────────────────────────────────
     const gameUsage = await Promise.all(sharedGames.map(async (game) => {
-      // Pull ALL completed transactions for this game across ALL stores
       const txns = await prisma.transaction.findMany({
         where: {
           gameId: game.id,
           status: 'COMPLETED',
           createdAt: { gte: from, lte: to },
         },
-        include: { user: { select: { storeId: true, id: true } } },
+        include: { user: { select: { storeId: true } } },
       });
 
       const byStore = {};
-
       txns.forEach(t => {
         const sid = t.user?.storeId ?? 1;
-        if (!byStore[sid]) {
-          byStore[sid] = { storeId: sid, deposits: 0, cashouts: 0, bonuses: 0, fees: 0, txnCount: 0 };
-        }
+        if (!byStore[sid]) byStore[sid] = { storeId: sid, deposits: 0, cashouts: 0, bonuses: 0, txnCount: 0 };
         const s = byStore[sid];
         const amt = parseFloat(t.amount);
-        const feeM = t.notes?.match(/fee:([\d.]+)/);
-        const fee = feeM ? parseFloat(feeM[1]) : 0;
-
-        if (t.type === 'DEPOSIT') {
-          s.deposits += amt;
-          s.fees += fee;
-        } else if (t.type === 'WITHDRAWAL') {
-          s.cashouts += amt;
-        } else if (t.type === 'BONUS') {
-          s.bonuses += amt;
-          // bonus fees also came from game stock
-          const bonusFeeM = t.notes?.match(/fee:([\d.]+)/);
-          if (bonusFeeM) s.fees += parseFloat(bonusFeeM[1]);
-        }
+        if (t.type === 'DEPOSIT') s.deposits += amt;
+        else if (t.type === 'WITHDRAWAL') s.cashouts += amt;
+        else if (t.type === 'BONUS') s.bonuses += amt;
         s.txnCount++;
       });
-
-      // netPtsDeducted per store = Deposits + Fees + Bonuses − Cashouts
       Object.values(byStore).forEach(s => {
-        // s.netPtsDeducted = Math.round(s.deposits + s.fees + s.bonuses - s.cashouts);
-        // CORRECT: fees only affect wallet, not game pts
         s.netPtsDeducted = Math.round(s.deposits + s.bonuses - s.cashouts);
       });
-
-      const totalDeducted = Object.values(byStore)
-        .reduce((sum, s) => sum + s.netPtsDeducted, 0);
-
-      return {
-        gameId: game.id,
-        gameName: game.name,
-        currentStock: game.pointStock,
-        usageByStore: byStore,      // keyed by storeId string
-        totalDeducted,              // global total pts removed
-      };
+      const totalDeducted = Object.values(byStore).reduce((sum, s) => sum + s.netPtsDeducted, 0);
+      return { gameId: game.id, gameName: game.name, currentStock: game.pointStock, usageByStore: byStore, totalDeducted };
     }));
 
-    // ── Shared wallets ─────────────────────────────────────────────────────────
-    // const sharedWallets = await prisma.wallet.findMany({
-    //   where: { isShared: true, isLive: true },
-    // });
-
+    // ── Wallet usage from transactions ────────────────────────────────────────
     const walletUsage = await Promise.all(sharedWallets.map(async (wallet) => {
-      // Match description pattern used by deposit/cashout handlers
       const pattern = `via ${wallet.method} - ${wallet.name}`;
-
       const txns = await prisma.transaction.findMany({
         where: {
           description: { contains: pattern },
@@ -3963,95 +4302,146 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
       });
 
       const byStore = {};
-
       txns.forEach(t => {
         const sid = t.user?.storeId ?? 1;
-        if (!byStore[sid]) {
-          byStore[sid] = { storeId: sid, depositsIn: 0, cashoutsOut: 0, fees: 0, txnCount: 0 };
-        }
+        if (!byStore[sid]) byStore[sid] = { storeId: sid, depositsIn: 0, cashoutsOut: 0, fees: 0, txnCount: 0 };
         const s = byStore[sid];
         const amt = parseFloat(t.amount);
         const feeM = t.notes?.match(/fee:([\d.]+)/);
         const fee = feeM ? parseFloat(feeM[1]) : 0;
-
-        if (t.type === 'DEPOSIT') {
-          s.depositsIn += amt - fee;   // wallet receives deposit minus fee
-          s.fees += fee;
-        } else if (t.type === 'WITHDRAWAL') {
-          s.cashoutsOut += amt + fee;   // wallet pays out cashout + fee
-        }
+        if (t.type === 'DEPOSIT') { s.depositsIn += amt - fee; s.fees += fee; }
+        else if (t.type === 'WITHDRAWAL') { s.cashoutsOut += amt + fee; }
         s.txnCount++;
       });
-
       Object.values(byStore).forEach(s => {
         s.netWalletChange = parseFloat((s.depositsIn - s.cashoutsOut).toFixed(2));
       });
-
       const totalNetChange = parseFloat(
         Object.values(byStore).reduce((sum, s) => sum + s.netWalletChange, 0).toFixed(2)
       );
-
-      return {
-        walletId: wallet.id,
-        walletName: wallet.name,
-        method: wallet.method,
-        currentBalance: wallet.balance,
-        usageByStore: byStore,
-        totalNetChange,
-      };
+      return { walletId: wallet.id, walletName: wallet.name, method: wallet.method, currentBalance: wallet.balance, usageByStore: byStore, totalNetChange };
     }));
 
-    // res.json({ data: { games: gameUsage, wallets: walletUsage } });
-    // Cross-store expense/takeout/reload totals (for frontend adjustment)
-    const [csExpenses, csTakeouts, csReloads] = await Promise.all([
-      prisma.expense.findMany({
+    // ── FIX: Cross-store expenses paid via shared wallets ─────────────────────
+    // Use BOTH createdAt AND updatedAt to catch expenses created+paid in one step
+    // or patched during the shift window. Also fallback to pattern-matching
+    // description in case walletId was not stored on older records.
+    const csExpenses = sharedWalletIds.length > 0
+      ? await prisma.expense.findMany({
         where: {
-          storeId: { not: req.storeId },          // ← FIX 1: req.storeId
-          walletId: { in: sharedWallets.map(w => w.id) },
+          storeId: { not: storeId },
           paymentMade: { gt: 0 },
-          // createdAt: { gte: from, lte: to },
-          updatedAt: { gte: from, lte: to },
+          OR: [
+            // Preferred: walletId explicitly set on the expense
+            {
+              walletId: { in: sharedWalletIds },
+              OR: [
+                { updatedAt: { gte: from, lte: to } },
+                { createdAt: { gte: from, lte: to } },
+              ],
+            },
+            // Fallback: description contains the wallet name pattern
+            ...sharedWallets.map(w => ({
+              details: { contains: `(${w.method} - ${w.name})` },
+              OR: [
+                { updatedAt: { gte: from, lte: to } },
+                { createdAt: { gte: from, lte: to } },
+              ],
+            })),
+          ],
         },
-      }).catch(() => []),
-      prisma.profitTakeout.findMany({
+      }).catch(() => [])
+      : [];
+
+    // ── Cross-store takeouts via shared wallets ───────────────────────────────
+    const csTakeouts = sharedWalletIds.length > 0
+      ? await prisma.profitTakeout.findMany({
         where: {
-          storeId: { not: req.storeId },          // ← FIX 1: req.storeId
-          walletId: { in: sharedWallets.map(w => w.id) },
+          storeId: { not: storeId },
+          walletId: { in: sharedWalletIds },
           takenAt: { gte: from, lte: to },
         },
-      }).catch(() => []),
-      prisma.expense.findMany({
+      }).catch(() => [])
+      : [];
+
+    // ── Cross-store point reloads via shared games ────────────────────────────
+    const csReloads = sharedGameIds.length > 0
+      ? await prisma.expense.findMany({
         where: {
-          storeId: { not: req.storeId },          // ← FIX 1: req.storeId
-          gameId: { in: sharedGames.map(g => g.id) },
+          storeId: { not: storeId },
+          gameId: { in: sharedGameIds },
           pointsAdded: { gt: 0 },
-          updatedAt: { gte: from, lte: to },
+          OR: [
+            { updatedAt: { gte: from, lte: to } },
+            { createdAt: { gte: from, lte: to } },
+          ],
         },
-      }).catch(() => []),
-    ]);
+      }).catch(() => [])
+      : [];
 
-    const crossWalletIds = [
-      ...csExpenses.filter(e => e.walletId).map(e => e.walletId),   // ← FIX 2
-      ...csTakeouts.filter(t => t.walletId).map(t => t.walletId),   // ← FIX 3
-    ];
+    // ── FIX: Detect cross-store direct admin wallet edits ─────────────────────
+    // Query WalletBalanceLog if the model exists, else skip gracefully.
+    const csWalletAdminEdits = prisma.walletBalanceLog
+      ? await prisma.walletBalanceLog.findMany({
+        where: {
+          storeId: { not: storeId },
+          walletId: { in: sharedWalletIds },
+          createdAt: { gte: from, lte: to },
+        },
+      }).catch(() => [])
+      : [];
 
-    const crossGameIds = csReloads                                   // ← FIX 2
-      .filter(e => e.gameId && e.pointsAdded > 0)
-      .map(e => e.gameId);
+    // ── FIX: Detect cross-store direct admin game edits ───────────────────────
+    const csGameAdminEdits = prisma.gameStockLog
+      ? await prisma.gameStockLog.findMany({
+        where: {
+          storeId: { not: storeId },
+          gameId: { in: sharedGameIds },
+          createdAt: { gte: from, lte: to },
+        },
+      }).catch(() => [])
+      : [];
+
+    const totalCrossWalletExpenses = parseFloat(csExpenses.reduce((s, e) => s + (parseFloat(e.paymentMade) || 0), 0).toFixed(2));
+    const totalCrossWalletTakeouts = parseFloat(csTakeouts.reduce((s, t) => s + parseFloat(t.amount), 0).toFixed(2));
+    const totalCrossPointsReloaded = Math.round(csReloads.reduce((s, e) => s + (e.pointsAdded ?? 0), 0));
+    const totalCrossWalletAdminEdit = parseFloat(csWalletAdminEdits.reduce((s, l) => s + l.changeAmount, 0).toFixed(2));
+    const totalCrossGameAdminEdit = Math.round(csGameAdminEdits.reduce((s, l) => s + l.changeAmount, 0));
+
+    const affectedWalletIds = [...new Set([
+      ...csExpenses.filter(e => e.walletId).map(e => e.walletId),
+      ...csTakeouts.filter(t => t.walletId).map(t => t.walletId),
+      ...csWalletAdminEdits.map(l => l.walletId),
+    ])];
+    const affectedGameIds = [...new Set([
+      ...csReloads.filter(e => e.gameId).map(e => e.gameId),
+      ...csGameAdminEdits.map(l => l.gameId),
+    ])];
 
     res.json({
       data: {
         games: gameUsage,
         wallets: walletUsage,
         crossStoreSummary: {
-          totalCrossWalletExpenses: parseFloat(csExpenses.reduce((s, e) => s + (parseFloat(e.paymentMade) || 0), 0).toFixed(2)),
-          totalCrossWalletTakeouts: parseFloat(csTakeouts.reduce((s, t) => s + parseFloat(t.amount), 0).toFixed(2)),
-          totalCrossPointsReloaded: Math.round(csReloads.reduce((s, e) => s + (e.pointsAdded ?? 0), 0)),
-          affectedWalletIds: [...new Set(crossWalletIds)],
-          affectedGameIds: [...new Set(crossGameIds)],
+          totalCrossWalletExpenses,
+          totalCrossWalletTakeouts,
+          totalCrossPointsReloaded,
+          totalCrossWalletAdminEdit,  // NEW
+          totalCrossGameAdminEdit,    // NEW
+          affectedWalletIds,
+          affectedGameIds,
           expensesByStore: csExpenses.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (parseFloat(e.paymentMade) || 0); return acc; }, {}),
           takeoutsByStore: csTakeouts.reduce((acc, t) => { acc[t.storeId] = (acc[t.storeId] || 0) + parseFloat(t.amount); return acc; }, {}),
           reloadsByStore: csReloads.reduce((acc, e) => { acc[e.storeId] = (acc[e.storeId] || 0) + (e.pointsAdded ?? 0); return acc; }, {}),
+          // Per-wallet expense detail so frontend can show individual rows
+          expenseDetails: csExpenses.map(e => ({
+            id: e.id, storeId: e.storeId, walletId: e.walletId,
+            details: e.details, paymentMade: parseFloat(e.paymentMade),
+          })),
+          takeoutDetails: csTakeouts.map(t => ({
+            id: t.id, storeId: t.storeId, walletId: t.walletId,
+            takenBy: t.takenBy, amount: parseFloat(t.amount),
+          })),
         },
       },
     });
