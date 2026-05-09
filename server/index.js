@@ -3257,8 +3257,7 @@ app.patch('/api/expenses/:id', authMiddleware, adminMiddleware, async (req, res)
           where: { id },
           data: {
             paymentMade: newAmount,
-            walletId: parseInt(walletId),   
-             updatedAt: new Date(), // ← ADD THIS
+            walletId: parseInt(walletId),           // ← ADD THIS
             ...(notes !== undefined && { notes }),
             ...(category && { category: category.toUpperCase().replace(' ', '_') })
           }
@@ -4305,16 +4304,13 @@ app.get('/api/shifts/:id/live-reconciliation', authMiddleware, async (req, res) 
       // Requires walletId on Expense (Step 1). Safe to run before migration — returns [].
       sharedWalletIds.length > 0
         ? prisma.expense.findMany({
-  where: {
-    storeId: { not: storeId },
-    walletId: { in: sharedWalletIds },
-    paymentMade: { gt: 0 },
-    OR: [
-      { updatedAt: { gte: shiftStart, lte: now } },
-      { createdAt: { gte: shiftStart, lte: now } },
-    ],
-  },
-}).catch(() => [])
+          where: {
+            storeId: { not: storeId },
+            walletId: { in: sharedWalletIds },
+            paymentMade: { gt: 0 },
+            updatedAt: { gte: shiftStart, lte: now },
+          },
+        }).catch(() => [])
         : Promise.resolve([]),
 
       sharedWalletIds.length > 0
