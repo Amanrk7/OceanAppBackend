@@ -4405,9 +4405,19 @@ app.get('/api/shifts/shared-resource-usage', authMiddleware, async (req, res) =>
     const totalCrossWalletExpenses = parseFloat(csExpenses.reduce((s, e) => s + (parseFloat(e.paymentMade) || 0), 0).toFixed(2));
     const totalCrossWalletTakeouts = parseFloat(csTakeouts.reduce((s, t) => s + parseFloat(t.amount), 0).toFixed(2));
     const totalCrossPointsReloaded = Math.round(csReloads.reduce((s, e) => s + (e.pointsAdded ?? 0), 0));
-    const totalCrossWalletAdminEdit = parseFloat(csWalletAdminEdits.reduce((s, l) => s + l.changeAmount, 0).toFixed(2));
-    const totalCrossGameAdminEdit = Math.round(csGameAdminEdits.reduce((s, l) => s + l.changeAmount, 0));
+    // const totalCrossWalletAdminEdit = parseFloat(csWalletAdminEdits.reduce((s, l) => s + l.changeAmount, 0).toFixed(2));
+    // const totalCrossGameAdminEdit = Math.round(csGameAdminEdits.reduce((s, l) => s + l.changeAmount, 0));
+const totalCrossWalletAdminEdit = parseFloat(csWalletAdminEdits.reduce((s, l) => s + l.changeAmount, 0).toFixed(2));
 
+    // De-duplicate: if another store already has a POINT_RELOAD expense explaining a game
+    // stock change (captured in csReloads), that same change would ALSO appear as a
+    // GameStockLog when they patched the stock. Exclude those logs to avoid double-counting.
+    const csGameAdminEditsDeduped = csGameAdminEdits.filter(log =>
+      !csReloads.some(e =>
+        e.storeId === log.storeId && String(e.gameId) === String(log.gameId)
+      )
+    );
+    const totalCrossGameAdminEdit = Math.round(csGameAdminEditsDeduped.reduce((s, l) => s + l.changeAmount, 0));
     const affectedWalletIds = [...new Set([
       ...csExpenses.filter(e => e.walletId).map(e => e.walletId),
       ...csTakeouts.filter(t => t.walletId).map(t => t.walletId),
