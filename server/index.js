@@ -6962,6 +6962,16 @@ app.post('/api/profit-takeouts', authMiddleware, adminMiddleware, async (req, re
   try {
     const { amount, takenBy, method = 'Cash', walletId, notes, takenAt } = req.body;
     if (!amount || !takenBy) return res.status(400).json({ error: 'amount and takenBy are required' });
+     // ✅ ADD: Guard against negative wallet balance
+    if (walletId) {
+      const wallet = await prisma.wallet.findUnique({ where: { id: parseInt(walletId) } });
+      if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+      if (parseFloat(wallet.balance) < parseFloat(amount)) {
+        return res.status(400).json({
+          error: `Insufficient wallet balance. Available: $${parseFloat(wallet.balance).toFixed(2)}, requested: $${parseFloat(amount).toFixed(2)}`
+        });
+      }
+    }
     const record = await prisma.profitTakeout.create({
       data: {
         amount: parseFloat(amount),
