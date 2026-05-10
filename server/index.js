@@ -5779,7 +5779,9 @@ async function enrichShift(shift) {
   if (checkin?.userId) {
     performer = await prisma.user.findUnique({
       where: { id: checkin.userId },
-      select: { id: true, name: true, username: true, role: true, storeId: true },
+      // select: { id: true, name: true, username: true, role: true, storeId: true },
+      select: { id: true, name: true, username: true, role: true, storeId: true, storeAccess: true },
+
     }).catch(() => null);
   }
   // ─────────────────────────────────────────────────────────────
@@ -5938,7 +5940,11 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
         shifts: roleShifts.map(s => ({
           ...s,
           displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
-          isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
+          // isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
+          isGuestMember: !!(
+  s.performer &&
+  !(s.performer.storeAccess ?? [s.performer.storeId]).includes(req.storeId)
+),
         })),
       };
     });
