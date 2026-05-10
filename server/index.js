@@ -1224,7 +1224,6 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid player ID' });
 
-    // ── Determine who is making the request ──────────────────────────────
     const actor = await prisma.user.findUnique({
       where: { id: req.userId },
       select: { role: true, name: true },
@@ -1232,7 +1231,7 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
 
     const isTeamMember = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'].includes(actor?.role);
 
-    // ── TEAM MEMBERS: queue a pending edit request instead of applying ───
+    // ── TEAM MEMBERS: queue a pending edit request ───────────────────────
     if (isTeamMember) {
       const ALLOWED_TEAM_FIELDS = [
         'name', 'email', 'phone', 'facebook', 'telegram',
@@ -1240,7 +1239,6 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
         'paypalEmail', 'source',
       ];
 
-      // Only keep fields that are actually in ALLOWED_TEAM_FIELDS and are being changed
       const changes = {};
       for (const field of ALLOWED_TEAM_FIELDS) {
         if (req.body[field] !== undefined) changes[field] = req.body[field];
@@ -1250,12 +1248,11 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'No editable fields provided.' });
       }
 
-      // Check for a duplicate pending request from the same member
       const existing = await prisma.playerEditRequest.findFirst({
         where: { playerId: id, requestedBy: req.userId, status: 'PENDING' },
       });
+
       if (existing) {
-        // Merge new changes into the existing pending request
         const merged = { ...(existing.changes || {}), ...changes };
         const updated = await prisma.playerEditRequest.update({
           where: { id: existing.id },
@@ -1291,7 +1288,7 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       });
     }
 
-    // ── ADMINS: apply changes directly (existing logic unchanged) ────────
+    // ── ADMINS: apply changes directly ───────────────────────────────────
     const {
       name, email, phone, tier, status, balance, cashoutLimit,
       facebook, telegram, instagram, x, snapchat, source,
@@ -1299,8 +1296,113 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       chimeTag, cashappTag, paypalEmail, referredById, friendIds, noAccountOn,
     } = req.body;
 
-    // ... (keep all the existing admin update logic here exactly as-is) ...
-    // [paste the rest of the original PATCH handler from your server.js]
+    if (status === 'UNREACHABLE') {
+      if (!['ADMIN', 'SUPER_ADMIN'].includes(actor?.role)) {
+        return res.status(403).json({ error: 'Only admins can mark a player as Unreachable.' });
+      }
+    }
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name.trim();
+    if (email !== undefined) updateData.email = email?.trim() || null;
+    if (phone !== undefined) updateData.phone = phone?.trim() || null;
+    if (tier !== undefined) {
+      updateData.tier = tier;
+      if (cashoutLimit === undefined) updateData.cashoutLimit = TIER_CASHOUT[tier] ?? 250;
+    }
+    if (cashoutLimit !== undefined) updateData.cashoutLimit = parseFloat(cashoutLimit);
+    if (status !== undefined) updateData.status = status;
+    if (balance !== undefined) updateData.balance = parseFloat(balance);
+    if (facebook !== undefined) updateData.facebook = facebook || null;
+    if (telegram !== undefined) updateData.telegram = telegram || null;
+    if (instagram !== undefined) updateData.instagram = instagram || null;
+    if (x !== undefined) updateData.twitterX = x || null;
+    if (snapchat !== undefined) updateData.snapchat = snapchat || null;
+    if (source !== undefined) updateData.source = source || null;
+    if (currentStreak !== undefined) updateData.currentStreak = parseInt(currentStreak, 10);
+    if (lastPlayedDate !== undefined) updateData.lastPlayedDate = lastPlayedDate ? new Date(lastPlayedDate) : null;
+    if (chimeTag !== undefined) updateData.chimeTag = chimeTag || null;
+    if (cashappTag !== undefined) updateData.cashappTag = cashappTag || null;
+    if (paypalEmail !== undefined) updateData.paypalEmail = paypalEmail || null;
+    if (referredById !== undefined) updateData.referredBy = referredById ? parseInt(referredById) : null;
+    if (noAccountOn !== undefined && Array.isArray(noAccountOn)) {
+      const ALLOWED = ['email', 'phone', 'snapchat', 'instagram', 'telegram'];
+      updateData.noAccountOn = noAccountOn.filter(f => ALLOWED.includes(f));
+    }
+
+    const updated = await prisma.user.update({ where: { id, storeId: req.storeId }, data: updateData });
+
+    if (friendIds !== undefined && Array.isArray(friendIds)) {
+      const currentFriends = await prisma.user.findUnique({
+        where: { id },
+        select: { friends: { select: { id: true } }, friendOf: { select: { id: true } } },
+      });
+      const currentIds = [
+        ...(currentFriends?.friends || []).map(f => f.id),
+        ...(currentFriends?.friendOf || []).map(f => f.id),
+      ];
+      const toConnect = friendIds.filter(fid => !currentIds.includes(fid));
+      const toDisconnect = currentIds.filter(fid => !friendIds.includes(fid));
+      if (toDisconnect.length) {
+        await prisma.user.update({ where: { id }, data: { friends: { disconnect: toDisconnect.map(fid => ({ id: fid })) } } });
+        await Promise.all(toDisconnect.map(fid =>
+          prisma.user.update({ where: { id: fid }, data: { friends: { disconnect: [{ id }] } } })
+        ));
+      }
+      if (toConnect.length) {
+        await prisma.user.update({ where: { id }, data: { friends: { connect: toConnect.map(fid => ({ id: fid })) } } });
+        await Promise.all(toConnect.map(fid =>
+          prisma.user.update({ where: { id: fid }, data: { friends: { connect: [{ id }] } } })
+        ));
+      }
+    }
+
+    try {
+      const activeTasks = await prisma.task.findMany({
+        where: { taskType: 'MISSING_INFO', status: { in: ['PENDING', 'IN_PROGRESS'] } },
+        include: { assignedTo: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true, role: true } } }
+      });
+      const linkedTask = activeTasks.find(t => {
+        try { return JSON.parse(t.notes || '{}').playerId === id; } catch { return false; }
+      });
+      if (linkedTask) {
+        const checklistItems = (linkedTask.checklistItems || []).map(item => {
+          const key = item.fieldKey || item.label?.toLowerCase().replace(/ /g, '_');
+          const nowFilled =
+            (key === 'email' && updated.email) ||
+            (key === 'phone' && updated.phone) ||
+            (key === 'snapchat' && updated.snapchat) ||
+            (key === 'instagram' && updated.instagram) ||
+            (key === 'telegram' && updated.telegram);
+          if (nowFilled && !item.done) return { ...item, done: true, completedBy: req.userId, completedAt: new Date().toISOString() };
+          return item;
+        });
+        const doneCount = checklistItems.filter(i => i.done).length;
+        const allRequired = checklistItems.filter(i => i.required).every(i => i.done);
+        const anyDone = checklistItems.some(i => i.done);
+        const syncedTask = await prisma.task.update({
+          where: { id: linkedTask.id },
+          data: {
+            checklistItems, currentValue: doneCount,
+            status: allRequired ? 'COMPLETED' : anyDone ? 'IN_PROGRESS' : 'PENDING',
+            completedAt: allRequired ? new Date() : null,
+          },
+          include: {
+            createdBy: { select: { id: true, name: true, role: true } },
+            assignedTo: { select: { id: true, name: true, role: true } },
+            subTasks: { include: { assignedTo: { select: { id: true, name: true } } } },
+            progressLogs: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 20 },
+          }
+        });
+        broadcastTaskUpdate('task_updated', syncedTask, syncedTask.storeId ?? req.storeId);
+        broadcastTaskUpdate('player_updated', { playerId: id, storeId: req.storeId }, req.storeId);
+      }
+    } catch (syncErr) {
+      console.error('Task sync error (non-fatal):', syncErr);
+    }
+
+    res.json({ data: { ...updated, password: undefined }, message: 'Player updated successfully' });
+
   } catch (err) {
     if (err.code === 'P2002') return res.status(409).json({ error: 'Email already in use by another player' });
     res.status(500).json({ error: 'Failed to update player' });
