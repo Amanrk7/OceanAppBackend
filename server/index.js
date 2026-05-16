@@ -59,7 +59,9 @@ const app = express();
 // ═══════════════════════════════════════════════════════════════
 
 app.use(cors({
-  origin: 'https://ocean-app-h1o3.vercel.app',
+  // origin: 'https://ocean-app-h1o3.vercel.app',
+    origin: ['https://ocean-app-h1o3.vercel.app', 'http://161.35.226.60'],
+
   credentials: true,
   optionsSuccessStatus: 200
 }));
