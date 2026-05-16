@@ -19,6 +19,10 @@ enum UserRole {
   TEAM2
   TEAM3
   TEAM4
+  TEAM5
+  TEAM6
+  TEAM7
+  TEAM8
   SUPER_ADMIN
 }
 
