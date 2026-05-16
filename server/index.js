@@ -1231,7 +1231,9 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
       select: { role: true, name: true },
     });
 
-    const isTeamMember = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'].includes(actor?.role);
+    // const isTeamMember = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'].includes(actor?.role);
+    const isTeamMember = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'].includes(actor?.role);
+
 
     // ── TEAM MEMBERS: queue a pending edit request ───────────────────────
     if (isTeamMember) {
@@ -5696,7 +5698,9 @@ app.get('/api/members/:userId/ratings', authMiddleware, async (req, res) => {
 
 app.get('/api/members/all-ratings', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const teamRoles = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    // const teamRoles = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    const teamRoles = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
+
     const members = await prisma.user.findMany({
       where: { role: { in: teamRoles }, storeId: req.storeId, },
       select: { id: true, name: true, username: true, role: true },
@@ -6047,7 +6051,9 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
 
     // ── Replace the teams builder section in GET /api/reports/daily ──
 
-    const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    // const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    const roles = teamRole ? [teamRole] : ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
+
     const teamUsers = await prisma.user.findMany({
       where: { role: { in: roles }, storeId: req.storeId },
       select: { id: true, name: true, username: true, role: true },
@@ -7045,7 +7051,8 @@ app.get('/api/tasks/followup-summary', authMiddleware, adminMiddleware, async (r
 app.get('/api/team-members', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const members = await prisma.user.findMany({
-      where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] }, storeId: req.storeId },
+      // where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] }, storeId: req.storeId },
+      where: { role: { in: ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'] }, storeId: req.storeId },
       select: { id: true, name: true, username: true, role: true, email: true },
       orderBy: { name: 'asc' },
     });
