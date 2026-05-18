@@ -164,6 +164,10 @@ async function solveCaptcha(page, loginFrame) {
     const frameToSearch = loginFrame || page;
 
     const selectors = [
+        // Add to the top of selectors in solveCaptcha():
+'img[src*="CheckCode"]',
+'img[src*="checkcode"]',
+'input[placeholder="Code"] ~ img',  // sibling of the code input
         'img[src*="aptcha"]', 'img[id*="aptcha"]',
         'img[id*="Image"]',   'img[src*="Verify"]',
         'img[src*="verify"]', 'img[src*="code"]',
@@ -224,10 +228,15 @@ async function solveCaptcha(page, loginFrame) {
             const img = await Jimp.read(captchaPath);
             p.fn(img);
             await img.writeAsync(out);
-            const res  = await Tesseract.recognize(out, 'eng', {
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
-                tessedit_pageseg_mode:   '7',
-            });
+            // const res  = await Tesseract.recognize(out, 'eng', {
+            //     tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+            //     tessedit_pageseg_mode:   '7',
+            // });
+            // in solveCaptcha(), replace the Tesseract config:
+const res = await Tesseract.recognize(out, 'eng', {
+  tessedit_char_whitelist: '0123456789',  // digits only
+  tessedit_pageseg_mode: '7',             // single line
+});
             const conf = res.data.confidence || 0;
             const code = res.data.text.replace(/[^A-Za-z0-9]/g, '').trim();
             if (conf > bestConf && code.length >= 3) { bestConf = conf; bestCode = code; }
