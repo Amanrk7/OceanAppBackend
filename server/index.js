@@ -461,7 +461,7 @@ app.get('/api/players', authMiddleware, storeAccessMiddleware, async (req, res) 
         twitterX: true, snapchat: true, createdAt: true, lastLoginAt: true,
         bonuses: { where: { claimed: false }, select: { amount: true } },
         referrals: { select: { id: true } }, chimeTag: true, cashappTag: true, paypalEmail: true,
-        performedBy: { select: { id: true, name: true, role: true } },
+        // performedBy: { select: { id: true, name: true, role: true } },
         addedBy: { select: { id: true, name: true, role: true } } // in user select
 
       },
