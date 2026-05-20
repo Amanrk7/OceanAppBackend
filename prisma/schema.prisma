@@ -263,6 +263,11 @@ model User {
   editRequestsReviewed PlayerEditRequest[] @relation("EditReviewer")
   playerEditRequests   PlayerEditRequest[] @relation("PlayerEditRequests")
 
+  addedById            Int?
+  addedBy              User?          @relation("AddedByUser", fields: [addedById], references: [id])
+  addedPlayers         User[]         @relation("AddedByUser")
+  performedTransactions Transaction[] @relation("PerformedTransactions")
+
   @@unique([storeId, username])
   @@index([role, storeId])           // "all players in store X"
   @@index([storeId, status])         // "active players in store X"  
@@ -338,6 +343,8 @@ model Transaction {
   user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   paidAmount      Decimal           @default(0) @db.Decimal(10, 2)
+  performedById   Int?
+  performedBy     User?  @relation("PerformedTransactions", fields: [performedById], references: [id])
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
