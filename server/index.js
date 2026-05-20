@@ -2316,7 +2316,7 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
 
     const player = await prisma.user.findUnique({
       where: { id: parseInt(playerId) },
-      select: { id: true, name: true, balance: true, tier: true, currentStreak: true, lastPlayedDate: true, referredBy: true },
+      select: { id: true, name: true, username: true, balance: true, tier: true, currentStreak: true, lastPlayedDate: true, referredBy: true },
     });
     if (!player) return res.status(404).json({ error: 'Player not found' });
 
