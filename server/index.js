@@ -541,6 +541,7 @@ app.get('/api/players', authMiddleware, storeAccessMiddleware, async (req, res) 
           { currentStreak: p.currentStreak || 0, lastPlayedDate: p.lastPlayedDate },
           freezeMap[p.id] || null
         ),
+        addedBy: p.addedBy || null,
       };
     });
 
