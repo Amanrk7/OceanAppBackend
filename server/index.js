@@ -431,6 +431,7 @@ function shapePlayer(user) {
         gameName: t.game?.name || null,
         createdAt: fmtTXDate(t.createdAt),
       })),
+    addedBy: user.addedBy || null, 
   };
 }
 
@@ -988,6 +989,7 @@ app.get('/api/players/:id', authMiddleware, async (req, res) => {
           referrer: { select: { id: true, name: true, username: true } },
           friends: { select: { id: true, name: true, username: true } },
           friendOf: { select: { id: true, name: true, username: true } },
+          addedBy: { select: { id: true, name: true, role: true } },
         },
       }),
       // ── Real all-time aggregates — no take limit ──────────────────────
