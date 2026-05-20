@@ -461,6 +461,9 @@ app.get('/api/players', authMiddleware, storeAccessMiddleware, async (req, res) 
         twitterX: true, snapchat: true, createdAt: true, lastLoginAt: true,
         bonuses: { where: { claimed: false }, select: { amount: true } },
         referrals: { select: { id: true } }, chimeTag: true, cashappTag: true, paypalEmail: true,
+        performedBy: { select: { id: true, name: true, role: true } },
+        addedBy: { select: { id: true, name: true, role: true } } // in user select
+
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -715,6 +718,7 @@ app.post('/api/create-new-player', authMiddleware, storeAccessMiddleware, async 
         chimeTag: chimeTag || null,   // ← ADD
         cashappTag: cashappTag || null,   // ← ADD
         paypalEmail: paypalEmail || null,
+        addedById: req.userId,
       },
     });
 
@@ -2102,7 +2106,7 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
           description: playerDesc,
           paymentMethod: null,
           gameId: gameId,
-          notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|streakBefore:${player.currentStreak || 0}|lastPlayedDateBefore:${player.lastPlayedDate?.toISOString() || ''}|${notes?.trim() || ''}`
+          notes: `balanceBefore:${playerBalanceBefore}|balanceAfter:${playerBalanceAfter}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|streakBefore:${player.currentStreak || 0}|lastPlayedDateBefore:${player.lastPlayedDate?.toISOString() || ''}|${notes?.trim() || ''}`, performedById: req.userId
 
         }
       }),
@@ -2126,7 +2130,7 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
           claimedAt: new Date(),
         }
       }));
-      ops.push(prisma.transaction.create({ data: { userId: referrer.id, type: 'BONUS', amount: bonusAmount, status: 'COMPLETED', description: referrerDesc, paymentMethod: null, notes: `balanceBefore:${referrerBalanceBefore}|balanceAfter:${referrerBalanceAfter}` } }));
+      ops.push(prisma.transaction.create({ data: { userId: referrer.id, type: 'BONUS', amount: bonusAmount, status: 'COMPLETED', description: referrerDesc, paymentMethod: null, notes: `balanceBefore:${referrerBalanceBefore}|balanceAfter:${referrerBalanceAfter}`, performedById: req.userId } }));
     }
 
     const results = await prisma.$transaction(ops);
@@ -2381,17 +2385,17 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
         status: 'COMPLETED',
         description: `Deposit via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
         notes: `fee:${feeAmt.toFixed(2)}|walletCredit:${walletCredit.toFixed(2)}|amt:${depositAmt.toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
-        gameId: game.id, paymentMethod: null,
+        gameId: game.id, paymentMethod: null, performedById: req.userId
       },
     }));
     ops.push(prisma.game.update({ where: { id: gameId }, data: { pointStock: newStock, status: newStatus } }));
 
     if (bonusMatch) {
       ops.push(prisma.bonus.create({
-        data: { userId: parseInt(playerId), type: 'DEPOSIT_MATCH', amount: new Prisma.Decimal(matchAmt.toString()), description: `Match Bonus - 50% of $${depositAmt.toFixed(2)}`, claimed: true, claimedAt: now },
+        data: { userId: parseInt(playerId), type: 'DEPOSIT_MATCH', amount: new Prisma.Decimal(matchAmt.toString()), description: `Match Bonus - 50% of $${depositAmt.toFixed(2)}`, claimed: true, claimedAt: now},
       }));
       ops.push(prisma.transaction.create({
-        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(matchAmt.toString()), status: 'COMPLETED', description: `Match Bonus from ${game.name} - 50% of $${depositAmt.toFixed(2)}`, gameId: game.id, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
+        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(matchAmt.toString()), status: 'COMPLETED', description: `Match Bonus from ${game.name} - 50% of $${depositAmt.toFixed(2)}`, gameId: game.id, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}`, performedById: req.userId },
       }));
     }
 
@@ -2431,7 +2435,7 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
         data: { userId: parseInt(playerId), type: 'CUSTOM', amount: new Prisma.Decimal(specialAmt.toString()), description: `Special Bonus - 20% of $${depositAmt.toFixed(2)}`, claimed: true, claimedAt: now },
       }));
       ops.push(prisma.transaction.create({
-        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(specialAmt.toString()), status: 'COMPLETED', description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`, gameId: game.id, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}` },
+        data: { userId: parseInt(playerId), type: 'BONUS', amount: new Prisma.Decimal(specialAmt.toString()), status: 'COMPLETED', description: `Special Bonus from ${game.name} - 20% of $${depositAmt.toFixed(2)}`, gameId: game.id, notes: `gameId:${game.id}|From game: ${game.name}|balanceBefore:${balanceBefore}|balanceAfter:${balanceAfter}`, performedById: req.userId },
       }));
     }
 
@@ -2909,7 +2913,7 @@ app.post('/api/transactions/cashout', authMiddleware, async (req, res) => {
           description: `Cashout via ${walletMethod || wallet.method} - ${walletName || wallet.name}`,
           notes: `fee:${feeAmt.toFixed(2)}|walletDeducted:${(cashoutAmt + feeAmt).toFixed(2)}|gameStockBefore:${game.pointStock.toFixed(2)}|gameStockAfter:${newStock.toFixed(2)}|${notes || ''}`,
           paymentMethod: null,
-          gameId: game.id,
+          gameId: game.id, performedById: req.userId
         }
       }),
     ]);
@@ -2970,6 +2974,7 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         include: {
           user: { select: { id: true, name: true, email: true } },
           game: { select: { id: true, name: true } },
+          performedBy: { select: { id: true, name: true, role: true } },
         },
         skip,
         take: parseInt(limit),
@@ -3035,6 +3040,7 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         date: fmtTXDate(t.createdAt),
         gameStockBefore, gameStockAfter,
         createdAtISO: t.createdAt.toISOString(),   // ← NEW — used by CheckoutModal date filter
+        performedBy: t.performedBy ? { id: t.performedBy.id, name: t.performedBy.name, role: t.performedBy.role } : null,
       };
     });
 
