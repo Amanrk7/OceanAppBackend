@@ -19,7 +19,14 @@ import {
   runPeriodicThresholdCheck,
   notify,
 } from './discord-notifications.js';
-import { syncCreatePlayer, warmMilkywaySession } from '../milkyway-test.js';
+// import { syncCreatePlayer, warmMilkywaySession } from '../milkyway-test.js';
+import {
+  syncCreatePlayer,
+  warmMilkywaySession,
+  syncDeposit,
+  syncCashout,
+  startMilkywayKeepAlive,
+} from '../milkyway-test.js';
 import {
   schedulePlayerStatusCheck,
   scheduleTaskDeadlineCheck,
@@ -2512,6 +2519,16 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
       const bonusAmt = parseFloat((depositAmt / 2).toFixed(2));
       bonusesApplied.push(`Referral eligibility recorded — $${bonusAmt.toFixed(2)} available for both parties (grant from Bonus page)`);
     }
+
+     // ── Sync deposit to MilkyWay (non-blocking) ──────────────────
+    if (player.username) {
+      syncDeposit(player.username, depositAmt).then(result => {
+        if (!result.ok) {
+          console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
+        }
+      }).catch(() => {});
+    }
+    
     broadcastReconciliationUpdate(req.storeId);
 
     res.status(201).json({
@@ -3482,6 +3499,21 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req
     broadcastSharedResourceUpdate(tx.gameId || null, wallet?.id || null, prisma).catch(() => { });
     broadcastReconciliationUpdate(req.storeId);
 
+// ── Sync cashout to MilkyWay on approval ─────────────────────
+    const cashoutPlayer = await prisma.user.findUnique({
+      where: { id: tx.userId },
+      select: { username: true },
+    }).catch(() => null);
+
+    if (cashoutPlayer?.username) {
+      syncCashout(cashoutPlayer.username, remaining).then(result => {
+        if (!result.ok) {
+          console.error(`⚠️  [MW Sync] Cashout sync failed for "${cashoutPlayer.username}": ${result.error}`);
+        }
+      }).catch(() => {});
+    }
+    // ─────────────────────────────────────────────────────────────
+    
     res.json({
       success: true,
       message: `Cashout #${transactionId} approved and marked as completed. Wallet debited $${(cashoutAmt + feeAmt).toFixed(2)}.`,
@@ -7295,6 +7327,33 @@ function scheduleDailyBonusTaskCleanup(prisma) {
   }, msUntilMidnight);
 }
 
+// POST /api/milkyway/relogin — force a fresh MilkyWay login (admin only)
+app.post('/api/milkyway/relogin', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { warmMilkywaySession } = await import('../milkyway-test.js');
+    await warmMilkywaySession();
+    res.json({ success: true, message: 'MilkyWay session refreshed.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/milkyway/test-sync — test a manual sync (admin only)
+app.post('/api/milkyway/test-sync', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { type, username, amount } = req.body;
+    if (!username || !amount) return res.status(400).json({ error: 'username and amount required' });
+
+    const result = type === 'cashout'
+      ? await syncCashout(username, parseFloat(amount))
+      : await syncDeposit(username, parseFloat(amount));
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ═══════════════════════════════════════════════════════════════
@@ -7317,6 +7376,7 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
   warmMilkywaySession();
+  startMilkywayKeepAlive(); 
 
   // Existing startup checks (keep these)
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
