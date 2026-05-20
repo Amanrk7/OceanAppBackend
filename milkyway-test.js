@@ -672,6 +672,435 @@ export async function warmMilkywaySession() {
   }
 }
 
+// ─── Search for player and open their row ─────────────────────
+async function findAndSelectPlayer(page, username) {
+  console.log(`   🔍 [MW Sync] Searching for player: ${username}`);
+
+  // Navigate directly to AccountsList
+  try {
+    await page.goto(`${MW_BASE}/AccountsList.aspx`, {
+      waitUntil: 'load',
+      timeout: 20_000,
+    });
+  } catch (_) {
+    await page.waitForLoadState('domcontentloaded', { timeout: 10_000 });
+  }
+
+  // Check session still valid
+  if (page.url().toLowerCase().includes('default.aspx')) {
+    throw new Error('SESSION_EXPIRED');
+  }
+
+  await page.waitForTimeout(2000);
+
+  // Find search box and type username — search all frames
+  const searchSelectors = [
+    'input[placeholder="ID or Account"]',
+    'input[placeholder*="Account" i]',
+    'input[placeholder*="Search" i]',
+    'input[type="text"]',
+  ];
+
+  let searchFilled = false;
+  for (const frame of page.frames()) {
+    for (const sel of searchSelectors) {
+      try {
+        const el = frame.locator(sel).first();
+        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+          await el.fill(username);
+          searchFilled = true;
+          break;
+        }
+      } catch (_) {}
+    }
+    if (searchFilled) break;
+  }
+
+  if (!searchFilled) throw new Error(`[MW Sync] Could not find search box`);
+
+  // Click the Search button
+  for (const frame of page.frames()) {
+    try {
+      const btn = frame.locator('input[value="Search"], button:has-text("Search")').first();
+      if (await btn.count() > 0) {
+        await btn.click();
+        break;
+      }
+    } catch (_) {}
+  }
+
+  await page.waitForTimeout(2000);
+
+  // Find the Update button for this specific user row
+  // The table has rows: ID | Account | NickName | Balance | ...
+  // We need the row where Account === username
+  let updateClicked = false;
+
+  for (const frame of page.frames()) {
+    try {
+      // Find all table rows
+      const rows = frame.locator('table tr');
+      const count = await rows.count();
+
+      for (let i = 0; i < count; i++) {
+        const row = rows.nth(i);
+        const text = await row.textContent().catch(() => '');
+
+        // Check if this row contains our username
+        if (text.toLowerCase().includes(username.toLowerCase())) {
+          const updateBtn = row.locator('input[value="Update"], button:has-text("Update")').first();
+          if (await updateBtn.count() > 0) {
+            await updateBtn.click({ force: true });
+            updateClicked = true;
+            console.log(`   ✅ [MW Sync] Clicked Update for ${username}`);
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+    if (updateClicked) break;
+  }
+
+  if (!updateClicked) {
+    // Fallback: click first Update button visible after search
+    for (const frame of page.frames()) {
+      try {
+        const btn = frame.locator('input[value="Update"]').first();
+        if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+          await btn.click({ force: true });
+          updateClicked = true;
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (!updateClicked) throw new Error(`[MW Sync] Player "${username}" not found or Update button missing`);
+
+  // Wait for action buttons row to appear (Recharge, Redeem, etc.)
+  await page.waitForTimeout(1500);
+  await saveDebugSnapshot(page, `player-selected-${username}`);
+}
+
+// ─── Perform a Recharge (deposit) ─────────────────────────────
+async function performRecharge(page, amount) {
+  console.log(`   💰 [MW Sync] Opening Recharge dialog for amount: ${amount}`);
+
+  // Click the Recharge button
+  let rechargeClicked = false;
+  for (const frame of page.frames()) {
+    try {
+      const btn = frame.locator('input[value="Recharge"], button:has-text("Recharge")').first();
+      if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+        await btn.click({ force: true });
+        rechargeClicked = true;
+        break;
+      }
+    } catch (_) {}
+  }
+
+  if (!rechargeClicked) throw new Error('[MW Sync] Recharge button not found');
+
+  // Wait for the Recharge modal to appear
+  await page.waitForTimeout(2000);
+  await saveDebugSnapshot(page, 'recharge-dialog');
+
+  // Fill the Recharge Amount field
+  // The dialog has: ID, Account, Customer Balance, Available Balance, Recharge Amount, Note
+  const amountSelectors = [
+    'input[placeholder*="Amount" i]',
+    'input[name*="Amount" i]',
+    'input[id*="Amount" i]',
+    'input[name*="Recharge" i]',
+    // Fallback: last visible number input in dialog
+  ];
+
+  let amountFilled = false;
+
+  // Try to find the dialog frame first
+  let dialogFrame = page.frames().find(f =>
+    f.url().includes('Recharge') || f.url().includes('recharge')
+  ) || null;
+
+  // Search all frames for the amount input
+  const framesToSearch = dialogFrame ? [dialogFrame, ...page.frames()] : page.frames();
+
+  for (const frame of framesToSearch) {
+    for (const sel of amountSelectors) {
+      try {
+        const el = frame.locator(sel).first();
+        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+          await el.triple_click?.() || await el.click();
+          await el.fill(String(amount));
+          amountFilled = true;
+          console.log(`   ✏️  [MW Sync] Recharge amount filled: ${amount}`);
+          break;
+        }
+      } catch (_) {}
+    }
+    if (amountFilled) break;
+  }
+
+  // Fallback: find input next to "Recharge Amount:" label
+  if (!amountFilled) {
+    for (const frame of page.frames()) {
+      try {
+        const filled = await frame.evaluate((amt) => {
+          const rows = document.querySelectorAll('tr');
+          for (const row of rows) {
+            if (row.textContent.includes('Recharge Amount')) {
+              const inp = row.querySelector('input[type="text"], input:not([type="hidden"])');
+              if (inp) {
+                inp.value = '';
+                inp.focus();
+                inp.value = String(amt);
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+              }
+            }
+          }
+          return false;
+        }, amount);
+        if (filled) { amountFilled = true; break; }
+      } catch (_) {}
+    }
+  }
+
+  if (!amountFilled) throw new Error('[MW Sync] Could not fill Recharge Amount');
+
+  // Submit the dialog by clicking the Recharge confirm button
+  // The dialog has a "Recharge" submit button separate from the list Recharge button
+  await page.waitForTimeout(500);
+
+  let submitted = false;
+  for (const frame of page.frames()) {
+    try {
+      // The confirm button is inside the modal/dialog
+      const btns = frame.locator('input[value="Recharge"], button:has-text("Recharge")');
+      const count = await btns.count();
+      // Take the LAST one (the one inside the dialog, not the action row)
+      for (let i = count - 1; i >= 0; i--) {
+        const btn = btns.nth(i);
+        if (await btn.isVisible().catch(() => false)) {
+          await btn.click({ force: true });
+          submitted = true;
+          break;
+        }
+      }
+    } catch (_) {}
+    if (submitted) break;
+  }
+
+  if (!submitted) throw new Error('[MW Sync] Recharge confirm button not found');
+
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 10_000 });
+  } catch (_) {
+    await page.waitForTimeout(2000);
+  }
+
+  // Check for success — page should reload the user list or show confirmation
+  const bodyText = await page.evaluate(() => document.body?.textContent || '').catch(() => '');
+  if (bodyText.toLowerCase().includes('error') || bodyText.toLowerCase().includes('failed')) {
+    throw new Error('[MW Sync] Recharge may have failed — check MilkyWay manually');
+  }
+
+  console.log(`   ✅ [MW Sync] Recharge of ${amount} completed.`);
+}
+
+// ─── Perform a Redeem (cashout) ────────────────────────────────
+async function performRedeem(page, amount) {
+  console.log(`   💸 [MW Sync] Opening Redeem dialog for amount: ${amount}`);
+
+  let redeemClicked = false;
+  for (const frame of page.frames()) {
+    try {
+      const btn = frame.locator('input[value="Redeem"], button:has-text("Redeem")').first();
+      if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+        await btn.click({ force: true });
+        redeemClicked = true;
+        break;
+      }
+    } catch (_) {}
+  }
+
+  if (!redeemClicked) throw new Error('[MW Sync] Redeem button not found');
+
+  await page.waitForTimeout(2000);
+  await saveDebugSnapshot(page, 'redeem-dialog');
+
+  // Fill the Redeem Amount field — same logic as Recharge
+  const amountSelectors = [
+    'input[placeholder*="Amount" i]',
+    'input[name*="Amount" i]',
+    'input[id*="Amount" i]',
+    'input[name*="Redeem" i]',
+  ];
+
+  let amountFilled = false;
+  for (const frame of page.frames()) {
+    for (const sel of amountSelectors) {
+      try {
+        const el = frame.locator(sel).first();
+        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+          await el.click();
+          await el.fill(String(amount));
+          amountFilled = true;
+          break;
+        }
+      } catch (_) {}
+    }
+    if (amountFilled) break;
+  }
+
+  if (!amountFilled) {
+    for (const frame of page.frames()) {
+      try {
+        const filled = await frame.evaluate((amt) => {
+          const rows = document.querySelectorAll('tr');
+          for (const row of rows) {
+            if (row.textContent.includes('Redeem Amount')) {
+              const inp = row.querySelector('input[type="text"], input:not([type="hidden"])');
+              if (inp) {
+                inp.value = String(amt);
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+              }
+            }
+          }
+          return false;
+        }, amount);
+        if (filled) { amountFilled = true; break; }
+      } catch (_) {}
+    }
+  }
+
+  if (!amountFilled) throw new Error('[MW Sync] Could not fill Redeem Amount');
+
+  await page.waitForTimeout(500);
+
+  let submitted = false;
+  for (const frame of page.frames()) {
+    try {
+      const btns = frame.locator('input[value="Redeem"], button:has-text("Redeem")');
+      const count = await btns.count();
+      for (let i = count - 1; i >= 0; i--) {
+        const btn = btns.nth(i);
+        if (await btn.isVisible().catch(() => false)) {
+          await btn.click({ force: true });
+          submitted = true;
+          break;
+        }
+      }
+    } catch (_) {}
+    if (submitted) break;
+  }
+
+  if (!submitted) throw new Error('[MW Sync] Redeem confirm button not found');
+
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 10_000 });
+  } catch (_) {
+    await page.waitForTimeout(2000);
+  }
+
+  console.log(`   ✅ [MW Sync] Redeem of ${amount} completed.`);
+}
+
+// ─── Public: sync a deposit to MilkyWay ───────────────────────
+export async function syncDeposit(username, amount) {
+  if (!MW_USER || !MW_PASS) return { ok: false, error: 'MW credentials not configured' };
+  if (!username || !amount || parseFloat(amount) <= 0) {
+    return { ok: false, error: 'Invalid username or amount' };
+  }
+
+  try {
+    const page = await getBrowser();
+
+    if (!loggedIn || page.url().toLowerCase().includes('default.aspx')) {
+      loggedIn = false;
+      await login(page);
+    }
+
+    await findAndSelectPlayer(page, username);
+    await performRecharge(page, parseFloat(amount).toFixed(2));
+
+    return { ok: true, username, amount };
+  } catch (err) {
+    console.error(`❌ [MW Sync] syncDeposit("${username}", ${amount}) failed: ${err.message}`);
+
+    if (err.message === 'SESSION_EXPIRED' || err.message.includes('login')) {
+      loggedIn = false;
+      mwPage = null;
+    }
+
+    return { ok: false, error: err.message };
+  }
+}
+
+// ─── Public: sync a cashout to MilkyWay ───────────────────────
+export async function syncCashout(username, amount) {
+  if (!MW_USER || !MW_PASS) return { ok: false, error: 'MW credentials not configured' };
+  if (!username || !amount || parseFloat(amount) <= 0) {
+    return { ok: false, error: 'Invalid username or amount' };
+  }
+
+  try {
+    const page = await getBrowser();
+
+    if (!loggedIn || page.url().toLowerCase().includes('default.aspx')) {
+      loggedIn = false;
+      await login(page);
+    }
+
+    await findAndSelectPlayer(page, username);
+    await performRedeem(page, parseFloat(amount).toFixed(2));
+
+    return { ok: true, username, amount };
+  } catch (err) {
+    console.error(`❌ [MW Sync] syncCashout("${username}", ${amount}) failed: ${err.message}`);
+
+    if (err.message === 'SESSION_EXPIRED' || err.message.includes('login')) {
+      loggedIn = false;
+      mwPage = null;
+    }
+
+    return { ok: false, error: err.message };
+  }
+}
+
+// ─── Session keep-alive (call on server start) ─────────────────
+export function startMilkywayKeepAlive() {
+  if (!MW_USER || !MW_PASS) return;
+
+  // Ping every 25 minutes to keep session alive
+  setInterval(async () => {
+    try {
+      const page = await getBrowser();
+      if (!loggedIn) return;
+
+      // Navigate to a lightweight page to reset session timeout
+      await page.goto(`${MW_BASE}/AccountsList.aspx`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15_000,
+      });
+
+      if (page.url().toLowerCase().includes('default.aspx')) {
+        console.warn('⚠️  [MW KeepAlive] Session expired — will re-login on next sync');
+        loggedIn = false;
+        mwPage = null;
+      } else {
+        console.log('🔄 [MW KeepAlive] Session refreshed');
+      }
+    } catch (err) {
+      console.warn(`⚠️  [MW KeepAlive] Ping failed: ${err.message}`);
+      loggedIn = false;
+    }
+  }, 25 * 60 * 1000); // every 25 minutes
+}
+
 /*
  ─── RENDER ENV VARS ─────────────────────────────────────────────
    MW_BASE = https://milkywayapp.xyz:8781
