@@ -429,53 +429,39 @@ if (!loginFrame) {
 
 // ─── Navigate directly to User Management ─────────────────────
 async function goToUserManagement(page) {
-    console.log('   📂 [MW Sync] Navigating to User Management…');
+  console.log('   📂 [MW Sync] Loading Store.aspx…');
+  await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
 
-    try {
-        await page.goto(`${MW_BASE}/AccountsList.aspx`, { waitUntil: 'load', timeout: 20_000 });
-        if (page.url().toLowerCase().includes('default.aspx')) {
-            throw new Error('Redirected to login — session expired');
+  if (page.url().toLowerCase().includes('default.aspx')) {
+    throw new Error('SESSION_EXPIRED');
+  }
+
+  await page.waitForTimeout(3000);
+
+  // Click "User Management" in the left sidebar iframe
+  let clicked = false;
+  for (let i = 0; i < 20; i++) {
+    const leftFrame = page.frames().find(f => f.url().includes('Left.aspx'));
+    if (leftFrame) {
+      try {
+        const link = leftFrame.locator('a').filter({ hasText: 'User Management' }).first();
+        if (await link.count() > 0) {
+          await link.click();
+          clicked = true;
+          break;
         }
-        console.log('   ✅ [MW Sync] Reached AccountsList directly.');
-        return;
-    } catch (directErr) {
-        console.warn(`   ⚠️  [MW Sync] Direct nav failed (${directErr.message}), trying frameset…`);
+      } catch (_) {}
     }
+    await page.waitForTimeout(500);
+  }
 
-    await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
-    await page.waitForTimeout(2000);
+  if (!clicked) throw new Error('[MW Sync] Could not find User Management link');
 
-    let leftFrame;
-    try {
-        leftFrame = await waitForFrame(page, 'Left.aspx', 8_000);
-    } catch {
-        leftFrame = page.mainFrame();
-    }
-
-    const navSelectors = [
-        'a:has-text("User Management")',
-        'span:has-text("User Management")',
-        'li:has-text("User Management")',
-        'td:has-text("User Management")',
-    ];
-    let clicked = false;
-    for (const sel of navSelectors) {
-        try {
-            const el = leftFrame.locator(sel).first();
-            if (await el.count() > 0) {
-                await el.click();
-                clicked = true;
-                break;
-            }
-        } catch { /* continue */ }
-    }
-    if (!clicked) throw new Error('[MW Sync] Could not find "User Management" link in sidebar');
-
-    try { await page.waitForLoadState('networkidle', { timeout: 15_000 }); }
-    catch { await page.waitForTimeout(2000); }
-
-    console.log('   ✅ [MW Sync] Navigated to User Management via sidebar.');
+  // Wait for AccountsList to load in frm_main_content
+  await page.waitForTimeout(3000);
+  console.log('   ✅ [MW Sync] User Management loaded.');
 }
+
 
 // ─── Create player once on the User Management page ───────────
 async function createPlayerOnMW(page, username, password) {
@@ -676,305 +662,194 @@ export async function warmMilkywaySession() {
 async function findAndSelectPlayer(page, username) {
   console.log(`   🔍 [MW Sync] Searching for player: ${username}`);
 
-  // Navigate directly to AccountsList
-  try {
-    await page.goto(`${MW_BASE}/AccountsList.aspx`, {
-      waitUntil: 'load',
-      timeout: 20_000,
-    });
-  } catch (_) {
-    await page.waitForLoadState('domcontentloaded', { timeout: 10_000 });
+  // Get the main content iframe
+  let listFrame = null;
+  for (let i = 0; i < 20; i++) {
+    listFrame = page.frames().find(f =>
+      f.url().includes('AccountsList') || f.name() === 'frm_main_content'
+    );
+    if (listFrame) break;
+    await page.waitForTimeout(500);
   }
+  if (!listFrame) throw new Error('[MW Sync] AccountsList frame not found');
 
-  // Check session still valid
-  if (page.url().toLowerCase().includes('default.aspx')) {
-    throw new Error('SESSION_EXPIRED');
-  }
+  // Fill the search box — id="txtSearch"
+  await listFrame.locator('#txtSearch').fill(username);
 
-  await page.waitForTimeout(2000);
+  // Click the Search <a> tag (it's a postback link)
+  await listFrame.locator('a').filter({ hasText: 'Search' }).first().click();
+  await page.waitForTimeout(2500);
 
-  // Find search box and type username — search all frames
-  const searchSelectors = [
-    'input[placeholder="ID or Account"]',
-    'input[placeholder*="Account" i]',
-    'input[placeholder*="Search" i]',
-    'input[type="text"]',
-  ];
+  await saveDebugSnapshot(page, `search-results-${username}`);
 
-  let searchFilled = false;
-  for (const frame of page.frames()) {
-    for (const sel of searchSelectors) {
-      try {
-        const el = frame.locator(sel).first();
-        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-          await el.fill(username);
-          searchFilled = true;
-          break;
-        }
-      } catch (_) {}
-    }
-    if (searchFilled) break;
-  }
+  // Find the row containing this username and click its Update <a>
+  // Each row has: <a onclick="updateSelect('USERID,GAMEID')">Update</a>
+  let updateClicked = false;
+  const rows = listFrame.locator('table#item tr');
+  const rowCount = await rows.count();
 
-  if (!searchFilled) throw new Error(`[MW Sync] Could not find search box`);
+  for (let i = 0; i < rowCount; i++) {
+    const row = rows.nth(i);
+    const text = await row.textContent().catch(() => '');
 
-  // Click the Search button
-  for (const frame of page.frames()) {
-    try {
-      const btn = frame.locator('input[value="Search"], button:has-text("Search")').first();
-      if (await btn.count() > 0) {
-        await btn.click();
+    if (text.toLowerCase().includes(username.toLowerCase())) {
+      // The Update button is an <a> tag
+      const updateLink = row.locator('a').filter({ hasText: 'Update' }).first();
+      if (await updateLink.count() > 0) {
+        await updateLink.click({ force: true });
+        updateClicked = true;
+        console.log(`   ✅ [MW Sync] Clicked Update for ${username}`);
         break;
       }
-    } catch (_) {}
-  }
-
-  await page.waitForTimeout(2000);
-
-  // Find the Update button for this specific user row
-  // The table has rows: ID | Account | NickName | Balance | ...
-  // We need the row where Account === username
-  let updateClicked = false;
-
-  for (const frame of page.frames()) {
-    try {
-      // Find all table rows
-      const rows = frame.locator('table tr');
-      const count = await rows.count();
-
-      for (let i = 0; i < count; i++) {
-        const row = rows.nth(i);
-        const text = await row.textContent().catch(() => '');
-
-        // Check if this row contains our username
-        if (text.toLowerCase().includes(username.toLowerCase())) {
-          const updateBtn = row.locator('input[value="Update"], button:has-text("Update")').first();
-          if (await updateBtn.count() > 0) {
-            await updateBtn.click({ force: true });
-            updateClicked = true;
-            console.log(`   ✅ [MW Sync] Clicked Update for ${username}`);
-            break;
-          }
-        }
-      }
-    } catch (_) {}
-    if (updateClicked) break;
-  }
-
-  if (!updateClicked) {
-    // Fallback: click first Update button visible after search
-    for (const frame of page.frames()) {
-      try {
-        const btn = frame.locator('input[value="Update"]').first();
-        if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
-          await btn.click({ force: true });
-          updateClicked = true;
-          break;
-        }
-      } catch (_) {}
     }
   }
 
-  if (!updateClicked) throw new Error(`[MW Sync] Player "${username}" not found or Update button missing`);
+  if (!updateClicked) throw new Error(`[MW Sync] Player "${username}" not found or Update not clickable`);
 
-  // Wait for action buttons row to appear (Recharge, Redeem, etc.)
+  // Wait for the action row (Recharge/Redeem buttons) to populate
   await page.waitForTimeout(1500);
   await saveDebugSnapshot(page, `player-selected-${username}`);
 }
 
 // ─── Perform a Recharge (deposit) ─────────────────────────────
 async function performRecharge(page, amount) {
-  console.log(`   💰 [MW Sync] Opening Recharge dialog for amount: ${amount}`);
+  console.log(`   💰 [MW Sync] Clicking Recharge for amount: ${amount}`);
 
-  // Click the Recharge button
-  let rechargeClicked = false;
-  for (const frame of page.frames()) {
-    try {
-      const btn = frame.locator('input[value="Recharge"], button:has-text("Recharge")').first();
-      if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
-        await btn.click({ force: true });
-        rechargeClicked = true;
-        break;
-      }
-    } catch (_) {}
-  }
+  const listFrame = page.frames().find(f =>
+    f.url().includes('AccountsList') || f.name() === 'frm_main_content'
+  );
+  if (!listFrame) throw new Error('[MW Sync] AccountsList frame not found');
 
-  if (!rechargeClicked) throw new Error('[MW Sync] Recharge button not found');
+  // The Recharge button is an <a> tag in the action row
+  const rechargeLink = listFrame.locator('a').filter({ hasText: 'Recharge' }).first();
+  if (await rechargeLink.count() === 0) throw new Error('[MW Sync] Recharge button not found');
+  await rechargeLink.click({ force: true });
 
-  // Wait for the Recharge modal to appear
-  await page.waitForTimeout(2000);
+  // The dialog is injected into Store.aspx's DOM via $.DialogBySHF.Dialog
+  // Wait for the dialog iframe to appear in the MAIN page
+  await page.waitForTimeout(3000);
   await saveDebugSnapshot(page, 'recharge-dialog');
 
-  // Fill the Recharge Amount field
-  // The dialog has: ID, Account, Customer Balance, Available Balance, Recharge Amount, Note
-  const amountSelectors = [
-    'input[placeholder*="Amount" i]',
-    'input[name*="Amount" i]',
-    'input[id*="Amount" i]',
-    'input[name*="Recharge" i]',
-    // Fallback: last visible number input in dialog
-  ];
-
-  let amountFilled = false;
-
-  // Try to find the dialog frame first
-  let dialogFrame = page.frames().find(f =>
-    f.url().includes('Recharge') || f.url().includes('recharge')
-  ) || null;
-
-  // Search all frames for the amount input
-  const framesToSearch = dialogFrame ? [dialogFrame, ...page.frames()] : page.frames();
-
-  for (const frame of framesToSearch) {
-    for (const sel of amountSelectors) {
-      try {
-        const el = frame.locator(sel).first();
-        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-          await el.triple_click?.() || await el.click();
-          await el.fill(String(amount));
-          amountFilled = true;
-          console.log(`   ✏️  [MW Sync] Recharge amount filled: ${amount}`);
-          break;
-        }
-      } catch (_) {}
-    }
-    if (amountFilled) break;
+  // Find the dialog iframe in the top-level page
+  let dialogFrame = null;
+  for (let i = 0; i < 20; i++) {
+    dialogFrame = page.frames().find(f =>
+      f.url().includes('Recharge') || f.url().includes('recharge')
+    );
+    if (dialogFrame) break;
+    await page.waitForTimeout(500);
   }
 
-  // Fallback: find input next to "Recharge Amount:" label
-  if (!amountFilled) {
-    for (const frame of page.frames()) {
-      try {
-        const filled = await frame.evaluate((amt) => {
-          const rows = document.querySelectorAll('tr');
-          for (const row of rows) {
-            if (row.textContent.includes('Recharge Amount')) {
-              const inp = row.querySelector('input[type="text"], input:not([type="hidden"])');
-              if (inp) {
-                inp.value = '';
-                inp.focus();
-                inp.value = String(amt);
-                inp.dispatchEvent(new Event('input', { bubbles: true }));
-                inp.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-              }
+  if (!dialogFrame) {
+    // Fallback: try to find the amount input in any frame
+    console.warn('   ⚠️  [MW Sync] Recharge dialog frame not found — trying all frames');
+  }
+
+  // Fill the Recharge Amount field
+  // From the HTML: input labeled "Recharge Amount:"
+  const framesToTry = dialogFrame
+    ? [dialogFrame, ...page.frames()]
+    : page.frames();
+
+  let amountFilled = false;
+  for (const frame of framesToTry) {
+    try {
+      // Try by label proximity
+      const filled = await frame.evaluate((amt) => {
+        const rows = document.querySelectorAll('tr');
+        for (const row of rows) {
+          if (row.innerText.includes('Recharge Amount')) {
+            const inp = row.querySelector('input[type="text"], input:not([type="hidden"]):not([type="submit"])');
+            if (inp) {
+              inp.value = String(amt);
+              inp.dispatchEvent(new Event('input', { bubbles: true }));
+              inp.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
             }
           }
-          return false;
-        }, amount);
-        if (filled) { amountFilled = true; break; }
-      } catch (_) {}
-    }
+        }
+        return false;
+      }, amount);
+      if (filled) { amountFilled = true; console.log(`   ✏️  [MW Sync] Recharge amount filled: ${amount}`); break; }
+    } catch (_) {}
   }
 
   if (!amountFilled) throw new Error('[MW Sync] Could not fill Recharge Amount');
 
-  // Submit the dialog by clicking the Recharge confirm button
-  // The dialog has a "Recharge" submit button separate from the list Recharge button
   await page.waitForTimeout(500);
 
+  // Click the Recharge submit button inside the dialog
+  // It's <input type="submit" value="Recharge"> or similar
   let submitted = false;
-  for (const frame of page.frames()) {
+  for (const frame of framesToTry) {
     try {
-      // The confirm button is inside the modal/dialog
-      const btns = frame.locator('input[value="Recharge"], button:has-text("Recharge")');
-      const count = await btns.count();
-      // Take the LAST one (the one inside the dialog, not the action row)
-      for (let i = count - 1; i >= 0; i--) {
-        const btn = btns.nth(i);
-        if (await btn.isVisible().catch(() => false)) {
-          await btn.click({ force: true });
-          submitted = true;
-          break;
-        }
-      }
-    } catch (_) {}
-    if (submitted) break;
-  }
-
-  if (!submitted) throw new Error('[MW Sync] Recharge confirm button not found');
-
-  try {
-    await page.waitForLoadState('networkidle', { timeout: 10_000 });
-  } catch (_) {
-    await page.waitForTimeout(2000);
-  }
-
-  // Check for success — page should reload the user list or show confirmation
-  const bodyText = await page.evaluate(() => document.body?.textContent || '').catch(() => '');
-  if (bodyText.toLowerCase().includes('error') || bodyText.toLowerCase().includes('failed')) {
-    throw new Error('[MW Sync] Recharge may have failed — check MilkyWay manually');
-  }
-
-  console.log(`   ✅ [MW Sync] Recharge of ${amount} completed.`);
-}
-
-// ─── Perform a Redeem (cashout) ────────────────────────────────
-async function performRedeem(page, amount) {
-  console.log(`   💸 [MW Sync] Opening Redeem dialog for amount: ${amount}`);
-
-  let redeemClicked = false;
-  for (const frame of page.frames()) {
-    try {
-      const btn = frame.locator('input[value="Redeem"], button:has-text("Redeem")').first();
-      if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
-        await btn.click({ force: true });
-        redeemClicked = true;
+      // Look for submit button
+      const submitBtn = frame.locator('input[type="submit"], input[value="Recharge"], button:has-text("Recharge")').first();
+      if (await submitBtn.count() > 0 && await submitBtn.isVisible().catch(() => false)) {
+        await submitBtn.click({ force: true });
+        submitted = true;
         break;
       }
     } catch (_) {}
   }
 
-  if (!redeemClicked) throw new Error('[MW Sync] Redeem button not found');
+  if (!submitted) throw new Error('[MW Sync] Recharge submit button not found');
 
-  await page.waitForTimeout(2000);
+  try { await page.waitForLoadState('networkidle', { timeout: 8_000 }); } catch (_) { await page.waitForTimeout(2000); }
+
+  console.log(`   ✅ [MW Sync] Recharge of ${amount} submitted.`);
+}
+
+
+// ─── Perform a Redeem (cashout) ────────────────────────────────
+async function performRedeem(page, amount) {
+  console.log(`   💸 [MW Sync] Clicking Redeem for amount: ${amount}`);
+
+  const listFrame = page.frames().find(f =>
+    f.url().includes('AccountsList') || f.name() === 'frm_main_content'
+  );
+  if (!listFrame) throw new Error('[MW Sync] AccountsList frame not found');
+
+  const redeemLink = listFrame.locator('a').filter({ hasText: 'Redeem' }).first();
+  if (await redeemLink.count() === 0) throw new Error('[MW Sync] Redeem button not found');
+  await redeemLink.click({ force: true });
+
+  await page.waitForTimeout(3000);
   await saveDebugSnapshot(page, 'redeem-dialog');
 
-  // Fill the Redeem Amount field — same logic as Recharge
-  const amountSelectors = [
-    'input[placeholder*="Amount" i]',
-    'input[name*="Amount" i]',
-    'input[id*="Amount" i]',
-    'input[name*="Redeem" i]',
-  ];
-
-  let amountFilled = false;
-  for (const frame of page.frames()) {
-    for (const sel of amountSelectors) {
-      try {
-        const el = frame.locator(sel).first();
-        if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-          await el.click();
-          await el.fill(String(amount));
-          amountFilled = true;
-          break;
-        }
-      } catch (_) {}
-    }
-    if (amountFilled) break;
+  let dialogFrame = null;
+  for (let i = 0; i < 20; i++) {
+    dialogFrame = page.frames().find(f =>
+      f.url().includes('Redeem') || f.url().includes('redeem')
+    );
+    if (dialogFrame) break;
+    await page.waitForTimeout(500);
   }
 
-  if (!amountFilled) {
-    for (const frame of page.frames()) {
-      try {
-        const filled = await frame.evaluate((amt) => {
-          const rows = document.querySelectorAll('tr');
-          for (const row of rows) {
-            if (row.textContent.includes('Redeem Amount')) {
-              const inp = row.querySelector('input[type="text"], input:not([type="hidden"])');
-              if (inp) {
-                inp.value = String(amt);
-                inp.dispatchEvent(new Event('input', { bubbles: true }));
-                inp.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-              }
+  const framesToTry = dialogFrame
+    ? [dialogFrame, ...page.frames()]
+    : page.frames();
+
+  let amountFilled = false;
+  for (const frame of framesToTry) {
+    try {
+      const filled = await frame.evaluate((amt) => {
+        const rows = document.querySelectorAll('tr');
+        for (const row of rows) {
+          if (row.innerText.includes('Redeem Amount')) {
+            const inp = row.querySelector('input[type="text"], input:not([type="hidden"]):not([type="submit"])');
+            if (inp) {
+              inp.value = String(amt);
+              inp.dispatchEvent(new Event('input', { bubbles: true }));
+              inp.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
             }
           }
-          return false;
-        }, amount);
-        if (filled) { amountFilled = true; break; }
-      } catch (_) {}
-    }
+        }
+        return false;
+      }, amount);
+      if (filled) { amountFilled = true; break; }
+    } catch (_) {}
   }
 
   if (!amountFilled) throw new Error('[MW Sync] Could not fill Redeem Amount');
@@ -982,31 +857,22 @@ async function performRedeem(page, amount) {
   await page.waitForTimeout(500);
 
   let submitted = false;
-  for (const frame of page.frames()) {
+  for (const frame of framesToTry) {
     try {
-      const btns = frame.locator('input[value="Redeem"], button:has-text("Redeem")');
-      const count = await btns.count();
-      for (let i = count - 1; i >= 0; i--) {
-        const btn = btns.nth(i);
-        if (await btn.isVisible().catch(() => false)) {
-          await btn.click({ force: true });
-          submitted = true;
-          break;
-        }
+      const submitBtn = frame.locator('input[type="submit"], input[value="Redeem"], button:has-text("Redeem")').first();
+      if (await submitBtn.count() > 0 && await submitBtn.isVisible().catch(() => false)) {
+        await submitBtn.click({ force: true });
+        submitted = true;
+        break;
       }
     } catch (_) {}
-    if (submitted) break;
   }
 
-  if (!submitted) throw new Error('[MW Sync] Redeem confirm button not found');
+  if (!submitted) throw new Error('[MW Sync] Redeem submit button not found');
 
-  try {
-    await page.waitForLoadState('networkidle', { timeout: 10_000 });
-  } catch (_) {
-    await page.waitForTimeout(2000);
-  }
+  try { await page.waitForLoadState('networkidle', { timeout: 8_000 }); } catch (_) { await page.waitForTimeout(2000); }
 
-  console.log(`   ✅ [MW Sync] Redeem of ${amount} completed.`);
+  console.log(`   ✅ [MW Sync] Redeem of ${amount} submitted.`);
 }
 
 // ─── Public: sync a deposit to MilkyWay ───────────────────────
