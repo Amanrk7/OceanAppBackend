@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
-const MW_URL        = 'http://milkywayapp.xyz:8781';
+const MW_URL        = 'https://milkywayapp.xyz:8781/default.aspx';
 const MW_USERNAME   = 'lilymilkyy7';
 const MW_PASSWORD   = 'Vegas123';
 const SESSION_FILE  = path.join(__dirname, 'mw-session.json');
