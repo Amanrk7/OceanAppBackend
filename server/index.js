@@ -7376,7 +7376,10 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
   warmMilkywaySession();
-  startMilkywayKeepAlive(); 
+  // startMilkywayKeepAlive(); 
+  warmMilkywaySession().catch(err => {
+  console.error('⚠️  MilkyWay session warm-up failed (non-fatal):', err.message);
+});
 
   // Existing startup checks (keep these)
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
