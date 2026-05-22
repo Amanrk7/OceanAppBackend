@@ -7376,13 +7376,18 @@ app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
 
   // MilkyWay: warm session non-fatally, then start keep-alive only if it succeeds
+  // warmMilkywaySession()
+  //   .then(() => startMilkywayKeepAlive())
+  //   .catch(err => {
+  //     console.error('⚠️  MilkyWay warm-up failed (non-fatal):', err.message);
+  //     console.error('   Deposits/cashouts will not sync to MilkyWay until session is restored.');
+  //     console.error('   Use POST /api/milkyway/relogin to retry.');
+  //   });
   warmMilkywaySession()
-    .then(() => startMilkywayKeepAlive())
-    .catch(err => {
-      console.error('⚠️  MilkyWay warm-up failed (non-fatal):', err.message);
-      console.error('   Deposits/cashouts will not sync to MilkyWay until session is restored.');
-      console.error('   Use POST /api/milkyway/relogin to retry.');
-    });
+  .then(() => startMilkywayKeepAlive())
+  .catch(err => {
+    console.error('⚠️  [MilkyWay] Startup failed:', err.message);
+  });
 
   // Rest of startup...
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
