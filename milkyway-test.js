@@ -1,986 +1,450 @@
-/**
- * milkyway-sync.js
- * ─────────────────────────────────────────────────────────────
- * ROOT CAUSE FIX: The MilkyWay login form lives inside an IFRAME,
- * not in the main page frame. Previous versions only searched
- * page.mainFrame() — inputs returned empty every time.
- * This version searches ALL frames on the page.
- */
+// milkyway-test.js
+// Playwright automation for milkywayapp.xyz:8781
+// Handles image CAPTCHA via 2captcha, session persistence, deposit/cashout sync
 
 import { chromium } from 'playwright';
-import path from 'path';
 import fs from 'fs';
-import Jimp from 'jimp';
-import Tesseract from 'tesseract.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// ─── Config ───────────────────────────────────────────────────
-const MW_BASE  = process.env.MW_BASE || 'https://milkywayapp.xyz:8781';
-const MW_USER  = process.env.MW_USER;
-const MW_PASS  = process.env.MW_PASS;
-const OUTPUT   = './mw-output';
-const HEADLESS = process.env.MW_HEADLESS !== 'false';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-if (!MW_USER || !MW_PASS) {
-    console.warn('⚠️  MW_USER / MW_PASS not set — MilkyWay sync is disabled');
-}
-if (!fs.existsSync(OUTPUT)) fs.mkdirSync(OUTPUT, { recursive: true });
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+const MW_URL        = 'http://milkywayapp.xyz:8781';
+const MW_USERNAME   = 'lilymilkyy7';
+const MW_PASSWORD   = 'Vegas123';
+const SESSION_FILE  = path.join(__dirname, 'mw-session.json');
+const CAPTCHA_KEY   = process.env.TWOCAPTCHA_KEY || '';   // set in your .env
+const HEADLESS      = process.env.MW_HEADLESS !== 'false'; // set MW_HEADLESS=false to debug visually
 
-// ─── Singleton browser / page ─────────────────────────────────
-let browser  = null;
-let mwPage   = null;
-let loggedIn = false;
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let browser   = null;
+let context   = null;
+let page      = null;
+let isReady   = false;   // true once logged in and page is usable
 
-async function getBrowser() {
-    if (!browser || !browser.isConnected()) {
-        browser = await chromium.launch({
-            headless: HEADLESS,
-            args: [
-                '--ignore-certificate-errors',
-                '--disable-web-security',
-                '--no-sandbox',
-                '--disable-blink-features=AutomationControlled',
-            ],
-        });
-        mwPage   = null;
-        loggedIn = false;
+// ─── CAPTCHA SOLVER (2captcha image CAPTCHA) ─────────────────────────────────
+/**
+ * Sends a base64 image to 2captcha and returns the solved text.
+ * Docs: https://2captcha.com/api-docs/normal-captcha
+ */
+async function solve2captcha(base64Image) {
+  if (!CAPTCHA_KEY) throw new Error('TWOCAPTCHA_KEY env var not set');
+
+  // 1. Submit the image
+  const submitRes = await fetch('https://2captcha.com/in.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      key:    CAPTCHA_KEY,
+      method: 'base64',
+      body:   base64Image,
+      json:   '1',
+    }),
+  });
+  const submitJson = await submitRes.json();
+  if (submitJson.status !== 1) throw new Error(`2captcha submit failed: ${submitJson.request}`);
+
+  const captchaId = submitJson.request;
+
+  // 2. Poll for result (up to 60 s, checking every 5 s)
+  for (let i = 0; i < 12; i++) {
+    await sleep(5000);
+    const pollRes  = await fetch(
+      `https://2captcha.com/res.php?key=${CAPTCHA_KEY}&action=get&id=${captchaId}&json=1`
+    );
+    const pollJson = await pollRes.json();
+    if (pollJson.status === 1) return pollJson.request;        // solved text
+    if (pollJson.request !== 'CAPCHA_NOT_READY') {
+      throw new Error(`2captcha poll error: ${pollJson.request}`);
     }
-
-    if (!mwPage || mwPage.isClosed()) {
-        const ctx = await browser.newContext({
-            ignoreHTTPSErrors: true,
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            viewport: { width: 1280, height: 900 },
-            javaScriptEnabled: true,
-        });
-        mwPage = await ctx.newPage();
-
-        // ← THIS IS THE CRITICAL MISSING PIECE
-        await mwPage.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        });
-
-        loggedIn = false;
-    }
-    return mwPage;
-}
-
-// ─── Deep debug snapshot — scans ALL frames ───────────────────
-async function saveDebugSnapshot(page, label) {
-    try {
-        await page.screenshot({ path: path.join(OUTPUT, `${label}.png`), fullPage: true });
-        await page.waitForTimeout(1000);
-
-        // ← ADD THIS: dump the actual HTML so you can see what's being served
-        const html = await page.content();
-        fs.writeFileSync(path.join(OUTPUT, `${label}.html`), html);
-        console.log(`   📄 [MW Sync] [${label}] HTML length: ${html.length} chars`);
-        console.log(`   📄 [MW Sync] [${label}] HTML preview: ${html.slice(0, 300).replace(/\n/g, ' ')}`);
-
-        const allFrames = page.frames();
-
-        console.log(`   🖼️  [MW Sync] [${label}] Total frames: ${allFrames.length}`);
-
-        for (let i = 0; i < allFrames.length; i++) {
-            const frame = allFrames[i];
-            const frameUrl = frame.url();
-            let inputs = [];
-            try {
-                inputs = await frame.evaluate(() =>
-                    Array.from(document.querySelectorAll('input')).map(el => ({
-                        id:          el.id          || '(none)',
-                        name:        el.name        || '(none)',
-                        type:        el.type        || 'text',
-                        placeholder: el.placeholder || '(none)',
-                        visible:     el.offsetParent !== null,
-                    }))
-                );
-            } catch (_) { /* cross-origin frame — skip */ }
-
-            console.log(`   🔍 [MW Sync] [${label}] Frame[${i}] url="${frameUrl}" inputs=${inputs.length}`);
-            if (inputs.length > 0) {
-                inputs.forEach(inp =>
-                    console.log(`      → id="${inp.id}" name="${inp.name}" type="${inp.type}" placeholder="${inp.placeholder}" visible=${inp.visible}`)
-                );
-            }
-        }
-    } catch (e) {
-        console.warn(`   ⚠️  [MW Sync] saveDebugSnapshot("${label}") error: ${e.message}`);
-    }
-}
-
-// ─── Wait for a frame whose URL contains a given string ───────
-async function waitForFrame(page, urlFragment, timeoutMs = 15_000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        const frame = page.frames().find(f => f.url().includes(urlFragment));
-        if (frame) return frame;
-        await page.waitForTimeout(300);
-    }
-    throw new Error(`Frame containing "${urlFragment}" not found within ${timeoutMs}ms`);
-}
-
-// ─── Find input across ALL frames ────────────────────────────
-// This is the key fix — MilkyWay login form is in an iframe.
-async function findInputAcrossFrames(page, selectorList) {
-    const frames = page.frames();
-    for (const frame of frames) {
-        for (const sel of selectorList) {
-            try {
-                const el = frame.locator(sel).first();
-                if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-                    console.log(`   ✅ [MW Sync] Found input via selector "${sel}" in frame: ${frame.url()}`);
-                    return { el, frame };
-                }
-            } catch { /* try next */ }
-        }
-    }
-    return null;
-}
-
-// ─── Wait until ANY frame on the page has visible inputs ──────
-async function waitForLoginForm(page, timeoutMs = 20_000) {
-    const deadline = Date.now() + timeoutMs;
-    console.log('   ⏳ [MW Sync] Waiting for login form to appear in any frame…');
-    while (Date.now() < deadline) {
-        for (const frame of page.frames()) {
-            try {
-                const count = await frame.evaluate(() =>
-                    document.querySelectorAll('input[type="text"], input[type="password"]').length
-                );
-                if (count >= 2) {
-                    console.log(`   ✅ [MW Sync] Login form found in frame: ${frame.url()} (${count} inputs)`);
-                    return frame;
-                }
-            } catch { /* cross-origin or not ready yet */ }
-        }
-        await page.waitForTimeout(500);
-    }
-    return null;
-}
-
-// ─── CAPTCHA solver ───────────────────────────────────────────
-async function solveCaptcha(page, loginFrame) {
-    const captchaPath = path.join(OUTPUT, 'captcha-raw.png');
-    const frameToSearch = loginFrame || page;
-
-    const selectors = [
-        // Add to the top of selectors in solveCaptcha():
-'img[src*="CheckCode"]',
-'img[src*="checkcode"]',
-'input[placeholder="Code"] ~ img',  // sibling of the code input
-        'img[src*="aptcha"]', 'img[id*="aptcha"]',
-        'img[id*="Image"]',   'img[src*="Verify"]',
-        'img[src*="verify"]', 'img[src*="code"]',
-        'img[src*="Code"]',   'img[id*="imgCode"]',
-        'img[id*="imgVerify"]',
-    ];
-
-    let captchaEl = null;
-    // Search in the login frame first, then all frames
-    const searchFrames = loginFrame ? [loginFrame, ...page.frames()] : page.frames();
-    for (const frame of searchFrames) {
-        for (const sel of selectors) {
-            try {
-                const el = frame.locator(sel).first();
-                if (await el.count() > 0) {
-                    captchaEl = el;
-                    break;
-                }
-            } catch { /* continue */ }
-        }
-        if (captchaEl) break;
-    }
-
-    if (!captchaEl) {
-        // Last resort — last img anywhere
-        captchaEl = page.locator('img').last();
-    }
-
-    try { await captchaEl.waitFor({ state: 'visible', timeout: 8_000 }); }
-    catch { return ''; }
-
-    let imageBuffer;
-    try {
-        const imgSrc = await captchaEl.evaluate(el => el.src);
-        const resp   = await page.context().request.get(imgSrc);
-        imageBuffer  = await resp.body();
-        fs.writeFileSync(captchaPath, imageBuffer);
-    } catch {
-        try {
-            await captchaEl.screenshot({ path: captchaPath });
-            imageBuffer = fs.readFileSync(captchaPath);
-        } catch { return ''; }
-    }
-
-    if (!imageBuffer || imageBuffer.length < 500) return '';
-
-    const pipelines = [
-        { name: 'gs-maxc-4x',  fn: img => img.greyscale().contrast(1).scale(4) },
-        { name: 'gs-c0.5-4x',  fn: img => img.greyscale().contrast(0.5).scale(4) },
-        { name: 'inv-gs-4x',   fn: img => img.invert().greyscale().contrast(1).scale(4) },
-        { name: 'gs-norm-4x',  fn: img => img.greyscale().normalize().scale(4) },
-    ];
-
-    let bestCode = '', bestConf = 0;
-    for (const p of pipelines) {
-        try {
-            const out = path.join(OUTPUT, `cap-${p.name}.png`);
-            const img = await Jimp.read(captchaPath);
-            p.fn(img);
-            await img.writeAsync(out);
-            // const res  = await Tesseract.recognize(out, 'eng', {
-            //     tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
-            //     tessedit_pageseg_mode:   '7',
-            // });
-            // in solveCaptcha(), replace the Tesseract config:
-const res = await Tesseract.recognize(out, 'eng', {
-  tessedit_char_whitelist: '0123456789',  // digits only
-  tessedit_pageseg_mode: '7',             // single line
-});
-            const conf = res.data.confidence || 0;
-            const code = res.data.text.replace(/[^A-Za-z0-9]/g, '').trim();
-            if (conf > bestConf && code.length >= 3) { bestConf = conf; bestCode = code; }
-        } catch { /* skip bad pipeline */ }
-    }
-    console.log(`   🔡 [MW Sync] CAPTCHA: "${bestCode}" (confidence: ${bestConf.toFixed(0)})`);
-    return bestCode;
-}
-
-// ─── Login ────────────────────────────────────────────────────
-async function login(page) {
-    console.log('🔐 [MW Sync] Navigating to login page…');
-    try {
-        await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'networkidle', timeout: 45_000 });
-    } catch {
-        await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
-    }
-
-    // Extra wait — ASP.NET pages often load frames after the initial load event
-    await page.waitForTimeout(5000);
-
-    // Dump ALL frames and ALL inputs (including inside iframes)
-    await saveDebugSnapshot(page, 'login-page');
-
-    // Check if already logged in
-    const url = page.url().toLowerCase();
-    if (!url.includes('default.aspx') && !url.includes('login')) {
-        loggedIn = true;
-        console.log('✅ [MW Sync] Already logged in — skipping.');
-        return;
-    }
-
-    const userSelectors = [
-        // Placeholder-based
-        'input[placeholder="Enter your username"]',
-        'input[placeholder*="username" i]',
-        'input[placeholder*="user" i]',
-        'input[placeholder*="account" i]',
-        // Name/ID based — ASP.NET WebForms common patterns
-        'input[name*="UserName"]',
-        'input[name*="txtUser"]',
-        'input[name*="Account"]',
-        'input[name*="user"]',
-        'input[name*="login"]',
-        'input[id*="UserName"]',
-        'input[id*="txtUser"]',
-        'input[id*="Account"]',
-        'input[id*="user"]',
-        // Generic: first visible text input
-        'input[type="text"]:visible',
-        'input[type="text"]',
-    ];
-
-    const passSelectors = [
-        'input[placeholder="Enter your password"]',
-        'input[placeholder*="password" i]',
-        'input[type="password"]',
-        'input[name*="Password"]',
-        'input[name*="txtPass"]',
-        'input[id*="Password"]',
-        'input[id*="txtPass"]',
-    ];
-
-    const captchaInputSelectors = [
-        'input[placeholder="Code"]',
-        'input[placeholder*="code" i]',
-        'input[placeholder*="captcha" i]',
-        'input[placeholder*="verify" i]',
-        'input[name*="Code"]',
-        'input[name*="captcha"]',
-        'input[name*="verify"]',
-        'input[id*="Code"]',
-        'input[id*="txtCode"]',
-        'input[id*="captcha"]',
-        'input[id*="verify"]',
-    ];
-
-    const loginBtnSelectors = [
-        'input[value="Login in"]',
-        'button:has-text("Login in")',
-        'input[value="Login"]',
-        'button:has-text("Login")',
-        'input[value="Sign in"]',
-        'button:has-text("Sign in")',
-        'input[type="submit"]',
-        'button[type="submit"]',
-    ];
-
-    for (let attempt = 1; attempt <= 8; attempt++) {
-        console.log(`   🔑 [MW Sync] Login attempt ${attempt}/8…`);
-
-        // ── KEY FIX: wait for login form to appear in any frame ──
-        const loginFrame = await waitForLoginForm(page, 15_000);
-        // if (!loginFrame) {
-        //     console.warn('   ⚠️  [MW Sync] Login form not found in any frame — reloading…');
-        //     await saveDebugSnapshot(page, `login-attempt-${attempt}-no-form`);
-        //     await page.reload({ waitUntil: 'load' });
-        //     await page.waitForTimeout(3000);
-        //     continue;
-        // }
-        // Inside the login loop, replace the "no form" block:
-if (!loginFrame) {
-  const html = await page.content();
-  const isRuntimeError = html.includes('Runtime Error') || html.includes('<title>Runtime Error');
-  
-  console.warn('   ⚠️  [MW Sync] Login form not found — reloading…');
-  await saveDebugSnapshot(page, `login-attempt-${attempt}-no-form`);
-  
-  if (isRuntimeError) {
-    // Full context reset — stale session cookie is causing the server error
-    console.warn('   🔄 [MW Sync] Runtime Error detected — resetting browser context…');
-    mwPage = null;
-    loggedIn = false;
-    const page = await getBrowser(); // gets a fresh context
-    await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'networkidle', timeout: 45_000 });
-  } else {
-    await page.reload({ waitUntil: 'load' });
   }
-  
-  await page.waitForTimeout(3000);
-  continue;
+  throw new Error('2captcha timeout — CAPTCHA not solved in 60 s');
 }
 
-        // Fill username — search across all frames
-        const userResult = await findInputAcrossFrames(page, userSelectors);
-        if (!userResult) {
-            console.warn('   ⚠️  [MW Sync] Username input not found — reloading…');
-            await page.reload({ waitUntil: 'load' });
-            await page.waitForTimeout(3000);
-            continue;
-        }
-        await userResult.el.fill(MW_USER);
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-        // Fill password — search in the same frame first
-        const passResult = await findInputAcrossFrames(page, passSelectors);
-        if (!passResult) {
-            console.warn('   ⚠️  [MW Sync] Password input not found — reloading…');
-            await page.reload({ waitUntil: 'load' });
-            await page.waitForTimeout(3000);
-            continue;
-        }
-        await passResult.el.fill(MW_PASS);
+function log(msg) { console.log(`[MilkyWay] ${new Date().toISOString()} — ${msg}`); }
 
-        // Solve CAPTCHA
-        const captchaCode = await solveCaptcha(page, loginFrame);
-        if (captchaCode) {
-            const capResult = await findInputAcrossFrames(page, captchaInputSelectors);
-            if (capResult) {
-                await capResult.el.fill(captchaCode);
-                console.log(`   ✅ [MW Sync] CAPTCHA filled: "${captchaCode}"`);
-            } else {
-                console.warn('   ⚠️  [MW Sync] CAPTCHA input not found — proceeding anyway…');
-            }
-        } else {
-            console.warn('   ⚠️  [MW Sync] CAPTCHA solve failed — proceeding anyway…');
-        }
-
-        // Click login button
-        const btnResult = await findInputAcrossFrames(page, loginBtnSelectors);
-        if (btnResult) {
-            await btnResult.el.click();
-        } else {
-            // Try submitting the form inside the login frame directly
-            console.warn('   ⚠️  [MW Sync] Login button not found — submitting form…');
-            await loginFrame.evaluate(() => {
-                const form = document.querySelector('form');
-                if (form) form.submit();
-            });
-        }
-
-        try { await page.waitForLoadState('networkidle', { timeout: 20_000 }); }
-        catch { await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }); }
-
-        const newUrl = page.url().toLowerCase();
-        console.log(`   🔗 [MW Sync] URL after attempt ${attempt}: ${newUrl}`);
-
-        if (!newUrl.includes('default.aspx') && !newUrl.includes('login')) {
-            loggedIn = true;
-            console.log('✅ [MW Sync] Login successful!');
-            return;
-        }
-
-        console.warn(`   ⚠️  [MW Sync] Still on login page after attempt ${attempt}`);
-        await saveDebugSnapshot(page, `login-failed-attempt-${attempt}`);
-        await page.reload({ waitUntil: 'load' });
-        await page.waitForTimeout(2000);
-    }
-    throw new Error('[MW Sync] Login failed after 8 attempts');
-}
-
-// ─── Navigate directly to User Management ─────────────────────
-async function goToUserManagement(page) {
-  console.log('   📂 [MW Sync] Loading Store.aspx…');
-  await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
-
-  if (page.url().toLowerCase().includes('default.aspx')) {
-    throw new Error('SESSION_EXPIRED');
+/** Load saved cookies into the browser context */
+async function loadSession() {
+  try {
+    if (!fs.existsSync(SESSION_FILE)) return false;
+    const cookies = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    await context.addCookies(cookies);
+    log('Session loaded from disk.');
+    return true;
+  } catch {
+    return false;
   }
-
-  await page.waitForTimeout(3000);
-
-  // Click "User Management" in the left sidebar iframe
-  let clicked = false;
-  for (let i = 0; i < 20; i++) {
-    const leftFrame = page.frames().find(f => f.url().includes('Left.aspx'));
-    if (leftFrame) {
-      try {
-        const link = leftFrame.locator('a').filter({ hasText: 'User Management' }).first();
-        if (await link.count() > 0) {
-          await link.click();
-          clicked = true;
-          break;
-        }
-      } catch (_) {}
-    }
-    await page.waitForTimeout(500);
-  }
-
-  if (!clicked) throw new Error('[MW Sync] Could not find User Management link');
-
-  // Wait for AccountsList to load in frm_main_content
-  await page.waitForTimeout(3000);
-  console.log('   ✅ [MW Sync] User Management loaded.');
 }
 
+/** Persist current cookies to disk */
+async function saveSession() {
+  const cookies = await context.cookies();
+  fs.writeFileSync(SESSION_FILE, JSON.stringify(cookies, null, 2));
+  log('Session saved to disk.');
+}
 
-// ─── Create player once on the User Management page ───────────
-async function createPlayerOnMW(page, username, password) {
-    await goToUserManagement(page);
+/** Returns true if we're already logged in (checks for a post-login element) */
+async function checkLoggedIn() {
+  try {
+    await page.goto(MW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    // After login, MilkyWay shows a search / management UI — NOT the login form.
+    // Adjust this selector once you've observed the logged-in page.
+    const loggedInEl = await page.$('input[type="text"][placeholder], .search-box, #searchInput, .main-content');
+    if (loggedInEl) {
+      log('Session still valid — skipping login.');
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Perform a fresh login, solving the image CAPTCHA via 2captcha.
+ * Retries up to `maxAttempts` times in case of wrong CAPTCHA answer.
+ */
+async function doLogin(maxAttempts = 3) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    log(`Login attempt ${attempt}/${maxAttempts}…`);
+
+    await page.goto(MW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
+
+    // ── Fill username ──────────────────────────────────────────────────────
+    // The first .login-input-box input is username
+    const inputs = await page.$$('.login-input-box input');
+    if (inputs.length < 2) throw new Error('Could not find username/password fields');
+    await inputs[0].fill(MW_USERNAME);
+    await inputs[1].fill(MW_PASSWORD);
+
+    // ── Solve CAPTCHA ──────────────────────────────────────────────────────
+    // The CAPTCHA image is rendered by VerifyImagePage.aspx
+    // It appears as an <img> inside .login-input-box-code
+    const captchaImg = await page.$('.login-input-box-code img');
+    if (!captchaImg) throw new Error('CAPTCHA image element not found');
+
+    // Screenshot just the CAPTCHA image element → base64
+    const captchaBuffer = await captchaImg.screenshot();
+    const captchaBase64 = captchaBuffer.toString('base64');
+
+    let captchaText;
+    try {
+      captchaText = await solve2captcha(captchaBase64);
+      log(`CAPTCHA solved: "${captchaText}"`);
+    } catch (err) {
+      log(`CAPTCHA solver error: ${err.message}`);
+      throw err;
+    }
+
+    // ── Enter CAPTCHA code ─────────────────────────────────────────────────
+    const codeInput = await page.$('.login-input-box-code input');
+    if (!codeInput) throw new Error('CAPTCHA input field not found');
+    await codeInput.fill(captchaText);
+
+    // ── Click login ────────────────────────────────────────────────────────
+    await page.click('.login-button-box');
     await page.waitForTimeout(2000);
 
-    let listFrame;
-    try {
-        listFrame = await waitForFrame(page, 'AccountsList', 10_000);
-        console.log('   🖼️  [MW Sync] AccountsList frame found.');
-    } catch {
-        console.warn('   ⚠️  [MW Sync] AccountsList frame not found — using main frame.');
-        listFrame = page.mainFrame();
+    // ── Check result ───────────────────────────────────────────────────────
+    const stillOnLogin = await page.$('.login-button-box');
+    if (!stillOnLogin) {
+      log('Login successful.');
+      await saveSession();
+      return true;
     }
 
-    await saveDebugSnapshot(page, 'user-management');
+    log(`Login failed (attempt ${attempt}) — wrong CAPTCHA or credentials?`);
+    // Loop: the page will show a fresh CAPTCHA on reload
+  }
 
-    console.log('   🖱️  [MW Sync] Looking for Create Player button…');
-    const createBtnSelectors = [
-        'input[value="Create Player"]',
-        'button:has-text("Create Player")',
-        'a:has-text("Create Player")',
-        'input[value*="Create" i]',
-        'button:has-text("Create")',
-    ];
-
-    let btnClicked = false;
-
-    // Search all frames
-    for (const frame of page.frames()) {
-        for (const sel of createBtnSelectors) {
-            try {
-                const el = frame.locator(sel).first();
-                if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-                    await el.click({ force: true });
-                    btnClicked = true;
-                    console.log(`   ✅ [MW Sync] Clicked Create Player (frame: ${frame.url()}) (${sel})`);
-                    break;
-                }
-            } catch { /* continue */ }
-        }
-        if (btnClicked) break;
-    }
-
-    if (!btnClicked) {
-        console.warn('   ⚠️  [MW Sync] Button not found — trying JS showDialog…');
-        const triggered = await listFrame.evaluate(() => {
-            if (typeof showDialog === 'function') {
-                showDialog('6', 'Create Account', 900, 400, 1);
-                return true;
-            }
-            return false;
-        });
-        if (!triggered) throw new Error('[MW Sync] Could not open Create Player dialog');
-    }
-
-    console.log('   ⏳ [MW Sync] Waiting for Create Account form…');
-    let createFrame = null;
-    for (let i = 0; i < 30; i++) {
-        await page.waitForTimeout(500);
-        createFrame = page.frames().find(
-            f => f.url().includes('CreateAccount') || f.url().includes('create')
-        );
-        if (createFrame) break;
-
-        const inDialog = await listFrame.evaluate(() => {
-            const d = document.getElementById('DialogBySHFLayer');
-            return d ? d.querySelectorAll('input[type="text"],input:not([type="hidden"]):not([type="submit"]):not([type="button"])').length : 0;
-        }).catch(() => 0);
-        if (inDialog >= 2) { createFrame = listFrame; break; }
-    }
-
-    if (!createFrame) {
-        await saveDebugSnapshot(page, 'debug-no-dialog');
-        throw new Error('[MW Sync] Create Player dialog did not appear (snapshot saved)');
-    }
-    console.log('   ✅ [MW Sync] Create Account form found.');
-
-    const fill = async (hints, value, label) => {
-        const strategies = [
-            ...hints.map(h => `tr:has(td:has-text("${h}")) input`),
-            ...hints.map(h => `input[placeholder*="${h}" i]`),
-            ...hints.map(h => `input[name*="${h}" i]`),
-            ...hints.map(h => `input[id*="${h}" i]`),
-            ...hints.map(h => `label:has-text("${h}") + input`),
-            'input[type="text"]:visible',
-            'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="radio"]):not([type="checkbox"]):visible',
-        ];
-        for (const frame of [createFrame, ...page.frames()]) {
-            for (const sel of strategies) {
-                try {
-                    const el = frame.locator(sel).first();
-                    if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-                        await el.fill(value);
-                        console.log(`   ✏️  [MW Sync] Filled "${label}" field`);
-                        return;
-                    }
-                } catch { /* try next */ }
-            }
-        }
-        console.warn(`   ⚠️  [MW Sync] Could not fill "${label}" — skipping`);
-    };
-
-    await fill(['Account', 'Username', 'User Name', 'Login name'], username, 'Account');
-    await fill(['Login password', 'Password', 'Pass'],             password,  'Password');
-    await fill(['Confirm password', 'Confirm Password', 'Re-enter'], password, 'Confirm Password');
-
-    console.log('   📤 [MW Sync] Submitting Create Player form…');
-    const submitSelectors = [
-        'input[value="Create Player"]',
-        'button:has-text("Create Player")',
-        'input[value="Submit"]',
-        'button:has-text("Submit")',
-        'input[value="Save"]',
-        'input[value="OK"]',
-    ];
-    let submitted = false;
-    for (const sel of submitSelectors) {
-        try {
-            const el = createFrame.locator(sel).first();
-            if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-                await el.click({ force: true });
-                submitted = true;
-                console.log(`   ✅ [MW Sync] Submitted via "${sel}"`);
-                break;
-            }
-        } catch { /* continue */ }
-    }
-    if (!submitted) {
-        await createFrame.evaluate(() => { const f = document.querySelector('form'); if (f) f.submit(); });
-        console.warn('   ⚠️  [MW Sync] Used form.submit() fallback');
-    }
-
-    try { await page.waitForLoadState('networkidle', { timeout: 10_000 }); } catch { /**/ }
-    await page.evaluate(() => {
-        if (typeof CloseDiaLog === 'function') CloseDiaLog();
-        const ov = document.getElementById('DialogBySHFLayer');
-        if (ov) ov.style.display = 'none';
-    }).catch(() => { });
-
-    console.log(`✅ [MW Sync] Player "${username}" created on MilkyWay.`);
+  throw new Error(`Login failed after ${maxAttempts} attempts`);
 }
 
-// ─── Public API ───────────────────────────────────────────────
+// ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
-export async function syncCreatePlayer(username, password = 'Players@123') {
-    if (!MW_USER || !MW_PASS) {
-        console.log('ℹ️  [MW Sync] Skipped — MW_USER / MW_PASS not configured.');
-        return { ok: false, error: 'MW credentials not configured' };
-    }
-
-    try {
-        const page = await getBrowser();
-        if (!loggedIn) await login(page);
-
-        const currentUrl = page.url().toLowerCase();
-        if (currentUrl.includes('default.aspx') || !currentUrl.startsWith('http')) {
-            console.log('   🔄 [MW Sync] Session expired — re-logging in…');
-            loggedIn = false;
-            await login(page);
-        }
-
-        await createPlayerOnMW(page, username, password);
-        return { ok: true };
-
-    } catch (err) {
-        console.error(`❌ [MW Sync] syncCreatePlayer("${username}") failed: ${err.message}`);
-        loggedIn = false;
-        mwPage   = null;
-        return { ok: false, error: err.message };
-    }
-}
-
+/**
+ * warmMilkywaySession()
+ * Call once on server start. Launches browser, tries saved cookies, logs in if needed.
+ */
 export async function warmMilkywaySession() {
-  if (!MW_USER || !MW_PASS) return;
+  log('Warming session…');
   try {
-    const page = await getBrowser();
-    await page.goto(`${MW_BASE}/default.aspx`, { waitUntil: 'networkidle', timeout: 45_000 });
-    
-    // Don't attempt login if server is already erroring
-    const html = await page.content();
-    if (html.includes('Runtime Error')) {
-      console.warn('⚠️  [MW Sync] Server returned Runtime Error on warm-up — skipping login attempt.');
-      return;
+    browser = await chromium.launch({ headless: HEADLESS });
+    context = await browser.newContext({
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    });
+    page = await context.newPage();
+
+    const loaded = await loadSession();
+    if (loaded) {
+      const valid = await checkLoggedIn();
+      if (valid) { isReady = true; return; }
+      log('Saved session expired — doing fresh login.');
     }
-    
-    await login(page);
-    await page.goto(`${MW_BASE}/Store.aspx`, { waitUntil: 'load', timeout: 30_000 });
-    console.log('🔥 [MW Sync] Session pre-warmed.');
+
+    await doLogin();
+    isReady = true;
+    log('Session warmed and ready.');
   } catch (err) {
-    console.warn(`⚠️  [MW Sync] Warm-up failed (will retry on first use): ${err.message}`);
-    loggedIn = false;
-    mwPage = null;
+    log(`warmMilkywaySession error: ${err.message}`);
+    isReady = false;
+    throw err;
   }
 }
 
-// ─── Search for player and open their row ─────────────────────
-async function findAndSelectPlayer(page, username) {
-  console.log(`   🔍 [MW Sync] Searching for player: ${username}`);
-
-  // Get the main content iframe
-  let listFrame = null;
-  for (let i = 0; i < 20; i++) {
-    listFrame = page.frames().find(f =>
-      f.url().includes('AccountsList') || f.name() === 'frm_main_content'
-    );
-    if (listFrame) break;
-    await page.waitForTimeout(500);
-  }
-  if (!listFrame) throw new Error('[MW Sync] AccountsList frame not found');
-
-  // Fill the search box — id="txtSearch"
-  await listFrame.locator('#txtSearch').fill(username);
-
-  // Click the Search <a> tag (it's a postback link)
-  await listFrame.locator('a').filter({ hasText: 'Search' }).first().click();
-  await page.waitForTimeout(2500);
-
-  await saveDebugSnapshot(page, `search-results-${username}`);
-
-  // Find the row containing this username and click its Update <a>
-  // Each row has: <a onclick="updateSelect('USERID,GAMEID')">Update</a>
-  let updateClicked = false;
-  const rows = listFrame.locator('table#item tr');
-  const rowCount = await rows.count();
-
-  for (let i = 0; i < rowCount; i++) {
-    const row = rows.nth(i);
-    const text = await row.textContent().catch(() => '');
-
-    if (text.toLowerCase().includes(username.toLowerCase())) {
-      // The Update button is an <a> tag
-      const updateLink = row.locator('a').filter({ hasText: 'Update' }).first();
-      if (await updateLink.count() > 0) {
-        await updateLink.click({ force: true });
-        updateClicked = true;
-        console.log(`   ✅ [MW Sync] Clicked Update for ${username}`);
-        break;
-      }
-    }
-  }
-
-  if (!updateClicked) throw new Error(`[MW Sync] Player "${username}" not found or Update not clickable`);
-
-  // Wait for the action row (Recharge/Redeem buttons) to populate
-  await page.waitForTimeout(1500);
-  await saveDebugSnapshot(page, `player-selected-${username}`);
-}
-
-// ─── Perform a Recharge (deposit) ─────────────────────────────
-async function performRecharge(page, amount) {
-  console.log(`   💰 [MW Sync] Clicking Recharge for amount: ${amount}`);
-
-  const listFrame = page.frames().find(f =>
-    f.url().includes('AccountsList') || f.name() === 'frm_main_content'
-  );
-  if (!listFrame) throw new Error('[MW Sync] AccountsList frame not found');
-
-  // The Recharge button is an <a> tag in the action row
-  const rechargeLink = listFrame.locator('a').filter({ hasText: 'Recharge' }).first();
-  if (await rechargeLink.count() === 0) throw new Error('[MW Sync] Recharge button not found');
-  await rechargeLink.click({ force: true });
-
-  // The dialog is injected into Store.aspx's DOM via $.DialogBySHF.Dialog
-  // Wait for the dialog iframe to appear in the MAIN page
-  await page.waitForTimeout(3000);
-  await saveDebugSnapshot(page, 'recharge-dialog');
-
-  // Find the dialog iframe in the top-level page
-  let dialogFrame = null;
-  for (let i = 0; i < 20; i++) {
-    dialogFrame = page.frames().find(f =>
-      f.url().includes('Recharge') || f.url().includes('recharge')
-    );
-    if (dialogFrame) break;
-    await page.waitForTimeout(500);
-  }
-
-  if (!dialogFrame) {
-    // Fallback: try to find the amount input in any frame
-    console.warn('   ⚠️  [MW Sync] Recharge dialog frame not found — trying all frames');
-  }
-
-  // Fill the Recharge Amount field
-  // From the HTML: input labeled "Recharge Amount:"
-  const framesToTry = dialogFrame
-    ? [dialogFrame, ...page.frames()]
-    : page.frames();
-
-  let amountFilled = false;
-  for (const frame of framesToTry) {
-    try {
-      // Try by label proximity
-      const filled = await frame.evaluate((amt) => {
-        const rows = document.querySelectorAll('tr');
-        for (const row of rows) {
-          if (row.innerText.includes('Recharge Amount')) {
-            const inp = row.querySelector('input[type="text"], input:not([type="hidden"]):not([type="submit"])');
-            if (inp) {
-              inp.value = String(amt);
-              inp.dispatchEvent(new Event('input', { bubbles: true }));
-              inp.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
-            }
-          }
-        }
-        return false;
-      }, amount);
-      if (filled) { amountFilled = true; console.log(`   ✏️  [MW Sync] Recharge amount filled: ${amount}`); break; }
-    } catch (_) {}
-  }
-
-  if (!amountFilled) throw new Error('[MW Sync] Could not fill Recharge Amount');
-
-  await page.waitForTimeout(500);
-
-  // Click the Recharge submit button inside the dialog
-  // It's <input type="submit" value="Recharge"> or similar
-  let submitted = false;
-  for (const frame of framesToTry) {
-    try {
-      // Look for submit button
-      const submitBtn = frame.locator('input[type="submit"], input[value="Recharge"], button:has-text("Recharge")').first();
-      if (await submitBtn.count() > 0 && await submitBtn.isVisible().catch(() => false)) {
-        await submitBtn.click({ force: true });
-        submitted = true;
-        break;
-      }
-    } catch (_) {}
-  }
-
-  if (!submitted) throw new Error('[MW Sync] Recharge submit button not found');
-
-  try { await page.waitForLoadState('networkidle', { timeout: 8_000 }); } catch (_) { await page.waitForTimeout(2000); }
-
-  console.log(`   ✅ [MW Sync] Recharge of ${amount} submitted.`);
-}
-
-
-// ─── Perform a Redeem (cashout) ────────────────────────────────
-async function performRedeem(page, amount) {
-  console.log(`   💸 [MW Sync] Clicking Redeem for amount: ${amount}`);
-
-  const listFrame = page.frames().find(f =>
-    f.url().includes('AccountsList') || f.name() === 'frm_main_content'
-  );
-  if (!listFrame) throw new Error('[MW Sync] AccountsList frame not found');
-
-  const redeemLink = listFrame.locator('a').filter({ hasText: 'Redeem' }).first();
-  if (await redeemLink.count() === 0) throw new Error('[MW Sync] Redeem button not found');
-  await redeemLink.click({ force: true });
-
-  await page.waitForTimeout(3000);
-  await saveDebugSnapshot(page, 'redeem-dialog');
-
-  let dialogFrame = null;
-  for (let i = 0; i < 20; i++) {
-    dialogFrame = page.frames().find(f =>
-      f.url().includes('Redeem') || f.url().includes('redeem')
-    );
-    if (dialogFrame) break;
-    await page.waitForTimeout(500);
-  }
-
-  const framesToTry = dialogFrame
-    ? [dialogFrame, ...page.frames()]
-    : page.frames();
-
-  let amountFilled = false;
-  for (const frame of framesToTry) {
-    try {
-      const filled = await frame.evaluate((amt) => {
-        const rows = document.querySelectorAll('tr');
-        for (const row of rows) {
-          if (row.innerText.includes('Redeem Amount')) {
-            const inp = row.querySelector('input[type="text"], input:not([type="hidden"]):not([type="submit"])');
-            if (inp) {
-              inp.value = String(amt);
-              inp.dispatchEvent(new Event('input', { bubbles: true }));
-              inp.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
-            }
-          }
-        }
-        return false;
-      }, amount);
-      if (filled) { amountFilled = true; break; }
-    } catch (_) {}
-  }
-
-  if (!amountFilled) throw new Error('[MW Sync] Could not fill Redeem Amount');
-
-  await page.waitForTimeout(500);
-
-  let submitted = false;
-  for (const frame of framesToTry) {
-    try {
-      const submitBtn = frame.locator('input[type="submit"], input[value="Redeem"], button:has-text("Redeem")').first();
-      if (await submitBtn.count() > 0 && await submitBtn.isVisible().catch(() => false)) {
-        await submitBtn.click({ force: true });
-        submitted = true;
-        break;
-      }
-    } catch (_) {}
-  }
-
-  if (!submitted) throw new Error('[MW Sync] Redeem submit button not found');
-
-  try { await page.waitForLoadState('networkidle', { timeout: 8_000 }); } catch (_) { await page.waitForTimeout(2000); }
-
-  console.log(`   ✅ [MW Sync] Redeem of ${amount} submitted.`);
-}
-
-// ─── Public: sync a deposit to MilkyWay ───────────────────────
-export async function syncDeposit(username, amount) {
-  if (!MW_USER || !MW_PASS) return { ok: false, error: 'MW credentials not configured' };
-  if (!username || !amount || parseFloat(amount) <= 0) {
-    return { ok: false, error: 'Invalid username or amount' };
-  }
-
-  try {
-    const page = await getBrowser();
-
-    if (!loggedIn || page.url().toLowerCase().includes('default.aspx')) {
-      loggedIn = false;
-      await login(page);
-    }
-
-    await findAndSelectPlayer(page, username);
-    await performRecharge(page, parseFloat(amount).toFixed(2));
-
-    return { ok: true, username, amount };
-  } catch (err) {
-    console.error(`❌ [MW Sync] syncDeposit("${username}", ${amount}) failed: ${err.message}`);
-
-    if (err.message === 'SESSION_EXPIRED' || err.message.includes('login')) {
-      loggedIn = false;
-      mwPage = null;
-    }
-
-    return { ok: false, error: err.message };
-  }
-}
-
-// ─── Public: sync a cashout to MilkyWay ───────────────────────
-export async function syncCashout(username, amount) {
-  if (!MW_USER || !MW_PASS) return { ok: false, error: 'MW credentials not configured' };
-  if (!username || !amount || parseFloat(amount) <= 0) {
-    return { ok: false, error: 'Invalid username or amount' };
-  }
-
-  try {
-    const page = await getBrowser();
-
-    if (!loggedIn || page.url().toLowerCase().includes('default.aspx')) {
-      loggedIn = false;
-      await login(page);
-    }
-
-    await findAndSelectPlayer(page, username);
-    await performRedeem(page, parseFloat(amount).toFixed(2));
-
-    return { ok: true, username, amount };
-  } catch (err) {
-    console.error(`❌ [MW Sync] syncCashout("${username}", ${amount}) failed: ${err.message}`);
-
-    if (err.message === 'SESSION_EXPIRED' || err.message.includes('login')) {
-      loggedIn = false;
-      mwPage = null;
-    }
-
-    return { ok: false, error: err.message };
-  }
-}
-
-// ─── Session keep-alive (call on server start) ─────────────────
+/**
+ * startMilkywayKeepAlive()
+ * Pings the site every 20 min so the session doesn't expire.
+ * Call once after warmMilkywaySession() resolves.
+ */
 export function startMilkywayKeepAlive() {
-  if (!MW_USER || !MW_PASS) return;
-
-  // Ping every 25 minutes to keep session alive
+  const INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
   setInterval(async () => {
+    if (!page) return;
     try {
-      const page = await getBrowser();
-      if (!loggedIn) return;
-
-      // Navigate to a lightweight page to reset session timeout
-      await page.goto(`${MW_BASE}/AccountsList.aspx`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15_000,
-      });
-
-      if (page.url().toLowerCase().includes('default.aspx')) {
-        console.warn('⚠️  [MW KeepAlive] Session expired — will re-login on next sync');
-        loggedIn = false;
-        mwPage = null;
+      log('Keep-alive ping…');
+      await page.goto(MW_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
+      const stillIn = !(await page.$('.login-button-box'));
+      if (!stillIn) {
+        log('Keep-alive: session expired — re-logging in.');
+        isReady = false;
+        await doLogin();
+        isReady = true;
       } else {
-        console.log('🔄 [MW KeepAlive] Session refreshed');
+        log('Keep-alive: session OK.');
       }
     } catch (err) {
-      console.warn(`⚠️  [MW KeepAlive] Ping failed: ${err.message}`);
-      loggedIn = false;
+      log(`Keep-alive error: ${err.message}`);
     }
-  }, 25 * 60 * 1000); // every 25 minutes
+  }, INTERVAL_MS);
+  log('Keep-alive started (every 20 min).');
 }
 
-/*
- ─── RENDER ENV VARS ─────────────────────────────────────────────
-   MW_BASE = https://milkywayapp.xyz:8781
-   MW_USER = your_milkyway_username
-   MW_PASS = your_milkyway_password
+/**
+ * ensureReady()
+ * Internal guard — re-warms session if browser crashed or was never started.
+ */
+async function ensureReady() {
+  if (!browser || !page || !isReady) {
+    log('Session not ready — re-warming…');
+    await warmMilkywaySession();
+  }
+}
 
- ─── WHAT TO LOOK FOR IN LOGS AFTER DEPLOYING ────────────────────
- The saveDebugSnapshot now scans EVERY frame. You should see:
+/**
+ * syncCreatePlayer(username)
+ * Searches for the player on MilkyWay to verify they exist.
+ * MilkyWay auto-creates players on first search in most configurations,
+ * but this at minimum confirms the account is reachable.
+ */
+export async function syncCreatePlayer(username) {
+  try {
+    await ensureReady();
+    log(`syncCreatePlayer: ${username}`);
+    await searchPlayer(username);
+    log(`syncCreatePlayer OK: ${username}`);
+    return { ok: true };
+  } catch (err) {
+    log(`syncCreatePlayer error: ${err.message}`);
+    isReady = false;
+    return { ok: false, error: err.message };
+  }
+}
 
-    Frame[0] url="https://milkywayapp.xyz:8781/default.aspx" inputs=0
-    Frame[1] url="https://milkywayapp.xyz:8781/Login.aspx"   inputs=3
-       → id="txtUserName" name="txtUserName" type="text" ...
-       → id="txtPassword" name="txtPassword" type="password" ...
-       → id="txtCode"     name="txtCode"     type="text" ...
+/**
+ * syncDeposit(username, amount)
+ * Search player → Update → Recharge → enter amount → confirm.
+ */
+export async function syncDeposit(username, amount) {
+  try {
+    await ensureReady();
+    log(`syncDeposit: ${username} $${amount}`);
 
- If you still see 0 inputs in all frames, paste the logs here.
-*/
+    await searchPlayer(username);
+    await clickUpdate();
+    await clickRecharge();
+    await enterAmount(amount);
+    await confirmAction();
+
+    log(`syncDeposit OK: ${username} $${amount}`);
+    return { ok: true };
+  } catch (err) {
+    log(`syncDeposit error (${username} $${amount}): ${err.message}`);
+    isReady = false;
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * syncCashout(username, amount)
+ * Search player → Update → Redeem → enter amount → confirm.
+ */
+export async function syncCashout(username, amount) {
+  try {
+    await ensureReady();
+    log(`syncCashout: ${username} $${amount}`);
+
+    await searchPlayer(username);
+    await clickUpdate();
+    await clickRedeem();
+    await enterAmount(amount);
+    await confirmAction();
+
+    log(`syncCashout OK: ${username} $${amount}`);
+    return { ok: true };
+  } catch (err) {
+    log(`syncCashout error (${username} $${amount}): ${err.message}`);
+    isReady = false;
+    return { ok: false, error: err.message };
+  }
+}
+
+// ─── PAGE ACTION HELPERS ──────────────────────────────────────────────────────
+// ⚠️  The selectors below are BEST-GUESS from the login CSS structure.
+//     Run with MW_HEADLESS=false once to visually confirm each step,
+//     then replace any wrong selectors.
+
+/**
+ * Navigate to home and search for a player by username.
+ */
+async function searchPlayer(username) {
+  // Go to main page if not already there
+  const url = page.url();
+  if (!url.startsWith(MW_URL) || url.includes('login') || url.includes('Login')) {
+    await page.goto(MW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  }
+
+  // ── Search box ─────────────────────────────────────────────────────────────
+  // Common selectors on MilkyWay management panels — adjust as needed:
+  const SEARCH_SELECTOR = [
+    'input[placeholder*="username" i]',
+    'input[placeholder*="search" i]',
+    'input[placeholder*="player" i]',
+    'input[name="username"]',
+    'input[name="search"]',
+    '#searchInput',
+    '.search-input input',
+  ].join(', ');
+
+  const searchBox = await page.waitForSelector(SEARCH_SELECTOR, { timeout: 10000 });
+  await searchBox.fill('');
+  await searchBox.type(username, { delay: 60 });
+
+  // ── Submit search ──────────────────────────────────────────────────────────
+  // Try pressing Enter first; if the site has a search button, click it instead
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(1500);
+
+  // Verify a result row appeared
+  const resultRow = await page.$(
+    `tr:has-text("${username}"), .player-row:has-text("${username}"), td:has-text("${username}")`
+  );
+  if (!resultRow) throw new Error(`Player "${username}" not found in search results`);
+}
+
+/**
+ * Click the "Update" button that appears next to the player row.
+ */
+async function clickUpdate() {
+  const UPDATE_SELECTOR = [
+    'button:has-text("Update")',
+    'a:has-text("Update")',
+    'input[value="Update"]',
+    '.btn-update',
+    'td button',          // fallback: first button in result row
+  ].join(', ');
+
+  const btn = await page.waitForSelector(UPDATE_SELECTOR, { timeout: 8000 });
+  await btn.click();
+  await page.waitForTimeout(1000);
+}
+
+/**
+ * Click "Recharge" in the Update modal/panel.
+ */
+async function clickRecharge() {
+  const RECHARGE_SELECTOR = [
+    'button:has-text("Recharge")',
+    'a:has-text("Recharge")',
+    'input[value="Recharge"]',
+    'label:has-text("Recharge")',
+    'option[value*="recharge" i]',
+    '.btn-recharge',
+  ].join(', ');
+
+  const btn = await page.waitForSelector(RECHARGE_SELECTOR, { timeout: 8000 });
+  await btn.click();
+  await page.waitForTimeout(800);
+}
+
+/**
+ * Click "Redeem" in the Update modal/panel.
+ */
+async function clickRedeem() {
+  const REDEEM_SELECTOR = [
+    'button:has-text("Redeem")',
+    'a:has-text("Redeem")',
+    'input[value="Redeem"]',
+    'label:has-text("Redeem")',
+    'option[value*="redeem" i]',
+    '.btn-redeem',
+  ].join(', ');
+
+  const btn = await page.waitForSelector(REDEEM_SELECTOR, { timeout: 8000 });
+  await btn.click();
+  await page.waitForTimeout(800);
+}
+
+/**
+ * Enter the dollar amount in the amount field.
+ */
+async function enterAmount(amount) {
+  const AMOUNT_SELECTOR = [
+    'input[name="amount"]',
+    'input[placeholder*="amount" i]',
+    'input[placeholder*="credit" i]',
+    'input[type="number"]',
+    '.amount-input',
+  ].join(', ');
+
+  const amountField = await page.waitForSelector(AMOUNT_SELECTOR, { timeout: 8000 });
+  await amountField.fill('');
+  await amountField.type(String(amount), { delay: 50 });
+}
+
+/**
+ * Click the final confirm/submit button.
+ */
+async function confirmAction() {
+  const CONFIRM_SELECTOR = [
+    'button:has-text("Confirm")',
+    'button:has-text("Submit")',
+    'button:has-text("OK")',
+    'input[value="Confirm"]',
+    'input[value="Submit"]',
+    '.btn-confirm',
+    '.btn-submit',
+  ].join(', ');
+
+  const btn = await page.waitForSelector(CONFIRM_SELECTOR, { timeout: 8000 });
+  await btn.click();
+  await page.waitForTimeout(1500);
+
+  // Optional: check for a success toast/message
+  try {
+    await page.waitForSelector(
+      '.success, .alert-success, :has-text("success"), :has-text("Success")',
+      { timeout: 5000 }
+    );
+    log('Confirmation success message detected.');
+  } catch {
+    // No explicit success message — proceed anyway
+    log('No success toast detected (may still have worked).');
+  }
+}
