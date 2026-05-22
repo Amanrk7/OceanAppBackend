@@ -7372,29 +7372,51 @@ app.use((err, req, res, next) => {
 // ═══════════════════════════════════════════════════════════════
 // START SERVER
 // ═══════════════════════════════════════════════════════════════
-
 app.listen(PORT, () => {
   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
-  warmMilkywaySession();
-  // startMilkywayKeepAlive(); 
-  warmMilkywaySession().catch(err => {
-  console.error('⚠️  MilkyWay session warm-up failed (non-fatal):', err.message);
-});
 
-  // Existing startup checks (keep these)
+  // MilkyWay: warm session non-fatally, then start keep-alive only if it succeeds
+  warmMilkywaySession()
+    .then(() => startMilkywayKeepAlive())
+    .catch(err => {
+      console.error('⚠️  MilkyWay warm-up failed (non-fatal):', err.message);
+      console.error('   Deposits/cashouts will not sync to MilkyWay until session is restored.');
+      console.error('   Use POST /api/milkyway/relogin to retry.');
+    });
+
+  // Rest of startup...
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
-
-  // ── NEW: Scheduled notification jobs ──────────────────────
-  schedulePlayerStatusCheck(prisma);    // player status PDF → #alerts
-  scheduleTaskDeadlineCheck(prisma);    // task deadline alerts → #shifts
-  scheduleBonusEligibilityCheck(prisma); // bonus reminders → #alerts
+  schedulePlayerStatusCheck(prisma);
+  scheduleTaskDeadlineCheck(prisma);
+  scheduleBonusEligibilityCheck(prisma);
   schedulePlayerFollowupGeneration(prisma);
   scheduleBonusFollowupGeneration(prisma);
-  scheduleUnreachablePlayerCheck(prisma);   // ← ADD
+  scheduleUnreachablePlayerCheck(prisma);
   scheduleDailyBonusTaskCleanup(prisma);
-
 });
+// app.listen(PORT, () => {
+//   console.log(`✅ OceanBets server running at http://localhost:${PORT}`);
+//   warmMilkywaySession();
+//   // startMilkywayKeepAlive(); 
+//   warmMilkywaySession().catch(err => {
+//   console.error('⚠️  MilkyWay session warm-up failed (non-fatal):', err.message);
+// });
+
+//   // Existing startup checks (keep these)
+//   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
+//   setInterval(() => runPeriodicThresholdCheck(prisma), 60 * 60 * 1000);
+
+//   // ── NEW: Scheduled notification jobs ──────────────────────
+//   schedulePlayerStatusCheck(prisma);    // player status PDF → #alerts
+//   scheduleTaskDeadlineCheck(prisma);    // task deadline alerts → #shifts
+//   scheduleBonusEligibilityCheck(prisma); // bonus reminders → #alerts
+//   schedulePlayerFollowupGeneration(prisma);
+//   scheduleBonusFollowupGeneration(prisma);
+//   scheduleUnreachablePlayerCheck(prisma);   // ← ADD
+//   scheduleDailyBonusTaskCleanup(prisma);
+
+// });
 
 process.on('SIGINT', async () => {
   console.log('\n👋 Shutting down gracefully...');
