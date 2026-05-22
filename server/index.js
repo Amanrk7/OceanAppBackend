@@ -2522,11 +2522,21 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
 
      // ── Sync deposit to MilkyWay (non-blocking) ──────────────────
     if (player.username) {
-      syncDeposit(player.username, depositAmt).then(result => {
-        if (!result.ok) {
-          console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
-        }
-      }).catch(() => {});
+      // syncDeposit(player.username, depositAmt).then(result => {
+      //   if (!result.ok) {
+      //     console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
+      //   }
+      // }).catch(() => {});
+      // console.log(`[MW Sync] Attempting deposit sync for "${player.username}" $${depositAmt}`);
+syncDeposit(player.username, depositAmt).then(result => {
+  if (result.ok) {
+    console.log(`✅ [MW Sync] Deposit synced for "${player.username}"`);
+  } else {
+    console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
+  }
+}).catch(err => {
+  console.error(`⚠️  [MW Sync] Deposit sync threw for "${player.username}":`, err.message);
+});
     }
     
     broadcastReconciliationUpdate(req.storeId);
