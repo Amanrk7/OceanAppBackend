@@ -1246,7 +1246,9 @@ app.patch('/api/players/:id', authMiddleware, async (req, res) => {
     });
 
     // const isTeamMember = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'].includes(actor?.role);
-    const isTeamMember = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'].includes(actor?.role);
+    // const isTeamMember = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'].includes(actor?.role);
+    const isTeamMember = actor?.role === 'TEAM_MEMBER';
+
 
 
     // ── TEAM MEMBERS: queue a pending edit request ───────────────────────
@@ -5043,7 +5045,13 @@ app.get('/api/shifts/active/:role', authMiddleware, async (req, res) => {
 
 app.post('/api/shifts/start', authMiddleware, async (req, res) => {
   try {
-    const { teamRole } = req.body;
+    // const { teamRole } = req.body;
+    // In POST /api/shifts/start:
+// BEFORE: teamRole comes from req.body as "TEAM1"
+// AFTER: store something like "TEAM_MEMBER" + slot number derived from the user
+
+const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { teamSlot: true, name: true } });
+const teamRole = `SLOT_${user.teamSlot}`; // or just user.name
     if (!teamRole) return res.status(400).json({ error: 'teamRole is required' });
 
     // ✅ 1. Get/create team FIRST
@@ -5750,12 +5758,17 @@ app.get('/api/members/:userId/ratings', authMiddleware, async (req, res) => {
 app.get('/api/members/all-ratings', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     // const teamRoles = ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
-    const teamRoles = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
+    // const teamRoles = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
+
+    // const members = await prisma.user.findMany({
+    //   where: { role: { in: teamRoles }, storeId: req.storeId, },
+    //   select: { id: true, name: true, username: true, role: true },
+    // });
 
     const members = await prisma.user.findMany({
-      where: { role: { in: teamRoles }, storeId: req.storeId, },
-      select: { id: true, name: true, username: true, role: true },
-    });
+  where: { role: 'TEAM_MEMBER', storeId: req.storeId },
+  orderBy: { teamSlot: 'asc' },
+});
 
     const result = await Promise.all(members.map(async (m) => {
       const ratings = await prisma.shiftRating.findMany({
@@ -7103,7 +7116,8 @@ app.get('/api/team-members', authMiddleware, adminMiddleware, async (req, res) =
   try {
     const members = await prisma.user.findMany({
       // where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] }, storeId: req.storeId },
-      where: { role: { in: ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'] }, storeId: req.storeId },
+      // where: { role: { in: ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'] }, storeId: req.storeId },
+      where: { role: 'TEAM_MEMBER', storeId: req.storeId }
       select: { id: true, name: true, username: true, role: true, email: true },
       orderBy: { name: 'asc' },
     });
@@ -7208,14 +7222,23 @@ app.get('/api/members/available-roles', authMiddleware, async (req, res) => {
     const actor = await prisma.user.findUnique({ where: { id: req.userId }, select: { role: true } });
     if (actor?.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Super admin only' });
 
-    const ALL_TEAM_ROLES = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
-    const existingTeam = await prisma.user.findMany({
-      where: { role: { in: ALL_TEAM_ROLES }, storeId: req.storeId },
-      select: { role: true, name: true, username: true },
-    });
-    const usedRoles = existingTeam.map(u => u.role);
-    const availableSlots = ALL_TEAM_ROLES.filter(r => !usedRoles.includes(r));
-    const nextSlot = availableSlots[0] || null;
+    // const ALL_TEAM_ROLES = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
+    // const existingTeam = await prisma.user.findMany({
+    //   where: { role: { in: ALL_TEAM_ROLES }, storeId: req.storeId },
+    //   select: { role: true, name: true, username: true },
+    // });
+    // const usedRoles = existingTeam.map(u => u.role);
+    // const availableSlots = ALL_TEAM_ROLES.filter(r => !usedRoles.includes(r));
+    // AFTER — slot-based:
+const existingTeam = await prisma.user.findMany({
+  where: { role: 'TEAM_MEMBER', storeId: req.storeId },
+  select: { teamSlot: true },
+  orderBy: { teamSlot: 'asc' },
+});
+const usedSlots = existingTeam.map(u => u.teamSlot);
+let nextSlot = 1;
+while (usedSlots.includes(nextSlot)) nextSlot++;
+    // const nextSlot = availableSlots[0] || null;
     const slotNumber = nextSlot ? parseInt(nextSlot.replace('TEAM', ''), 10) : null;
 
     res.json({
@@ -7287,7 +7310,8 @@ app.post('/api/create-member', authMiddleware, async (req, res) => {
         email: email?.trim() || null,
         phone: phone?.trim() || null,
         password: hashedPassword,
-        role: assignedRole,
+        // role: assignedRole,
+        role: 'TEAM_MEMBER', teamSlot: nextSlot,
         status: 'ACTIVE',
         storeId: req.storeId,
         storeAccess: resolvedStoreAccess,
