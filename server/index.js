@@ -7079,13 +7079,18 @@ app.get('/api/tasks/followup-summary', authMiddleware, adminMiddleware, async (r
 // ── GET /api/team-members ────────────────────────────────────────
 app.get('/api/team-members', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const members = await prisma.user.findMany({
-      // where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] }, storeId: req.storeId },
-      // where: { role: { in: ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'] }, storeId: req.storeId },
-      where: { role: 'TEAM_MEMBER', storeId: req.storeId }
-      select: { id: true, name: true, username: true, role: true, email: true },
-      orderBy: { name: 'asc' },
-    });
+    // const members = await prisma.user.findMany({
+    //   // where: { role: { in: ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'] }, storeId: req.storeId },
+    //   // where: { role: { in: ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'] }, storeId: req.storeId },
+    //   where: { role: 'TEAM_MEMBER', storeId: req.storeId }
+    //   select: { id: true, name: true, username: true, role: true, email: true },
+    //   orderBy: { name: 'asc' },
+    // });
+const members = await prisma.user.findMany({
+  where: { role: 'TEAM_MEMBER', storeId: req.storeId },  // ← ADD COMMA
+  select: { id: true, name: true, username: true, role: true, email: true, teamSlot: true },
+  orderBy: { teamSlot: 'asc' },
+});
     res.json({ data: members });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch team members' });
@@ -7204,7 +7209,7 @@ const usedSlots = existingTeam.map(u => u.teamSlot);
 let nextSlot = 1;
 while (usedSlots.includes(nextSlot)) nextSlot++;
     // const nextSlot = availableSlots[0] || null;
-    const slotNumber = nextSlot ? parseInt(nextSlot.replace('TEAM', ''), 10) : null;
+    // const slotNumber = nextSlot ? parseInt(nextSlot.replace('TEAM', ''), 10) : null;
 
     // res.json({
     //   data: {
@@ -7217,11 +7222,20 @@ while (usedSlots.includes(nextSlot)) nextSlot++;
     //     members: existingTeam,
     //   },
     // });
+//     res.json({
+//   data: {
+//     nextSlot,
+//     nextSlotNumber: nextSlot,
+//     totalSlots: null,       // no limit anymore
+//     usedCount: existingTeam.length,
+//     members: existingTeam,
+//   },
+// });
     res.json({
   data: {
     nextSlot,
-    nextSlotNumber: nextSlot,
-    totalSlots: null,       // no limit anymore
+    nextSlotNumber: nextSlot,  // already a number, no conversion needed
+    totalSlots: null,
     usedCount: existingTeam.length,
     members: existingTeam,
   },
