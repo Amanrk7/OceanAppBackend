@@ -7197,6 +7197,123 @@ app.patch('/api/profit-takeouts/:id', authMiddleware, adminMiddleware, async (re
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+// ═══════════════════════════════════════════════════════════════
+// CREATE MEMBER / ADMIN (SUPER_ADMIN only)
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/members/available-roles — returns which TEAM slots are free in this store
+app.get('/api/members/available-roles', authMiddleware, async (req, res) => {
+  try {
+    const actor = await prisma.user.findUnique({ where: { id: req.userId }, select: { role: true } });
+    if (actor?.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Super admin only' });
+
+    const ALL_TEAM_ROLES = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
+    const existingTeam = await prisma.user.findMany({
+      where: { role: { in: ALL_TEAM_ROLES }, storeId: req.storeId },
+      select: { role: true, name: true, username: true },
+    });
+    const usedRoles = existingTeam.map(u => u.role);
+    const availableSlots = ALL_TEAM_ROLES.filter(r => !usedRoles.includes(r));
+    const nextSlot = availableSlots[0] || null;
+    const slotNumber = nextSlot ? parseInt(nextSlot.replace('TEAM', ''), 10) : null;
+
+    res.json({
+      data: {
+        usedRoles,
+        availableSlots,
+        nextSlot,
+        nextSlotNumber: slotNumber,
+        totalSlots: ALL_TEAM_ROLES.length,
+        usedCount: usedRoles.length,
+        members: existingTeam,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/create-member — create a team member or admin (SUPER_ADMIN only)
+app.post('/api/create-member', authMiddleware, async (req, res) => {
+  try {
+    const actor = await prisma.user.findUnique({ where: { id: req.userId }, select: { role: true } });
+    if (actor?.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Super admin only' });
+
+    const { username, name, email, phone, password, roleType, storeAccess } = req.body;
+    // roleType: 'ADMIN' | 'TEAM_MEMBER'
+
+    if (!username || !name || !password) {
+      return res.status(400).json({ error: 'Username, name, and password are required' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const ALL_TEAM_ROLES = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
+
+    let assignedRole;
+    if (roleType === 'ADMIN') {
+      assignedRole = 'ADMIN';
+    } else {
+      // Auto-assign next available TEAM slot in this store
+      const existingTeam = await prisma.user.findMany({
+        where: { role: { in: ALL_TEAM_ROLES }, storeId: req.storeId },
+        select: { role: true },
+      });
+      const usedRoles = existingTeam.map(u => u.role);
+      assignedRole = ALL_TEAM_ROLES.find(r => !usedRoles.includes(r));
+      if (!assignedRole) {
+        return res.status(400).json({ error: 'All 8 team slots are filled for this store. Remove a member first.' });
+      }
+    }
+
+    // Check username uniqueness within store
+    const existing = await prisma.user.findFirst({
+      where: { storeId: req.storeId, username: username.trim() },
+    });
+    if (existing) return res.status(409).json({ error: 'Username already exists in this store' });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const resolvedStoreAccess = Array.isArray(storeAccess) && storeAccess.length > 0
+      ? storeAccess.map(Number).filter(Boolean)
+      : [req.storeId];
+
+    const member = await prisma.user.create({
+      data: {
+        username: username.trim(),
+        name: name.trim(),
+        email: email?.trim() || null,
+        phone: phone?.trim() || null,
+        password: hashedPassword,
+        role: assignedRole,
+        status: 'ACTIVE',
+        storeId: req.storeId,
+        storeAccess: resolvedStoreAccess,
+      },
+    });
+
+    const slotNumber = assignedRole.startsWith('TEAM')
+      ? parseInt(assignedRole.replace('TEAM', ''), 10)
+      : null;
+
+    res.status(201).json({
+      data: { ...member, password: undefined },
+      message: assignedRole === 'ADMIN'
+        ? `Admin "${member.name}" created successfully`
+        : `Team Member "${member.name}" created — assigned to Team Slot ${slotNumber}`,
+      assignedRole,
+      slotNumber,
+    });
+  } catch (err) {
+    console.error('Create member error:', err);
+    if (err.code === 'P2002') return res.status(409).json({ error: 'Username or email already in use' });
+    res.status(500).json({ error: 'Failed to create member: ' + err.message });
+  }
+});
+
+
 app.delete('/api/profit-takeouts/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const delRecord = await prisma.profitTakeout.findUnique({ where: { id: parseInt(req.params.id) } });
