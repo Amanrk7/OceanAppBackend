@@ -3006,7 +3006,8 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         include: {
           user: { select: { id: true, name: true, email: true } },
           game: { select: { id: true, name: true } },
-          performedBy: { select: { id: true, name: true, role: true } },
+          // performedBy: { select: { id: true, name: true, role: true } },
+          performedBy: { select: { id: true, name: true, role: true, teamSlot: true } },
         },
         skip,
         take: parseInt(limit),
@@ -5586,10 +5587,17 @@ app.get('/api/shifts/my-status', authMiddleware, async (req, res) => {
 
     const results = {};
     for (const storeId of (user.storeAccess || [1])) {
+      // const shift = await prisma.shift.findFirst({
+      //   where: { teamRole: user.role, isActive: true, team: { storeId } },
+      //   include: { checkin: true }
+      // });
       const shift = await prisma.shift.findFirst({
-        where: { teamRole: user.role, isActive: true, team: { storeId } },
-        include: { checkin: true }
-      });
+  where: {
+    checkin: { userId: req.userId },
+    isActive: true,
+    team: { storeId }
+  },
+});
       results[storeId] = shift || null;
     }
 
@@ -6048,102 +6056,50 @@ app.get('/api/reports/daily', authMiddleware, adminMiddleware, async (req, res) 
     const shifts = await prisma.shift.findMany({ where: shiftWhere, orderBy: { startTime: 'asc' } });
     const enrichedShifts = await Promise.all(shifts.map(enrichShift));
 
-    // const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
+    // const roles = teamRole ? [teamRole] : ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
     // const teamUsers = await prisma.user.findMany({
-    //   where: { role: { in: roles }, storeId: req.storeId, },
+    //   where: { role: { in: roles }, storeId: req.storeId },
     //   select: { id: true, name: true, username: true, role: true },
     // });
 
-    //     const teams = roles.map((role, idx) => {
-    //   const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
-    //   const storeOffset = (req.storeId - 1) * 4;
-    //   const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
+    const members = await prisma.user.findMany({
+  where: { role: 'TEAM_MEMBER', storeId: req.storeId },
+  select: { id: true, name: true, username: true, role: true, teamSlot: true },
+  orderBy: { teamSlot: 'asc' },
+});
 
-    //   return {
-    //     role,
-    //     storeLabel,
-    //     member: teamUsers.find(u => u.role === role) || null,
-    //     shifts: roleShifts.map(s => ({
-    //       ...s,
-    //       displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
-    //       isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
-    //     })),
-    //   };
-    // });
-
-    // const teams = roles.map(role => ({
-    //   role,
-    //   member: teamUsers.find(u => u.role === role) || null,
-    //   shifts: enrichedShifts.filter(s => s.teamRole === role),
-    // }));
-
-    // Replace the existing teams builder:
-    // const teams = roles.map(role => {
-    //   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
-    //   const roleShifts = enrichedShifts.filter(s => s.teamRole === role);
-
-    //   return {
-    //     role,
-    //     member: storeLocalMember,
-    //     shifts: roleShifts.map(s => ({
-    //       ...s,
-    //       // Override: show actual performer if different from store-local member
-    //       displayMember: s.performer || storeLocalMember,
-    //       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
-    //     })),
-    //   };
-    // });
-    // In GET /api/reports/daily, update the teams builder further:
-    // const teams = roles.map(role => {
-    //   const storeLocalMember = teamUsers.find(u => u.role === role) || null;
-    //   const roleIndex = roles.indexOf(role) + 1;
-    //   // Store 1 → "Team 1-4", Store 2 → "Team 5-8", etc.
-    //   const storeOffset = (req.storeId - 1) * 4;
-    //   const storeLabel = `Team ${roleIndex + storeOffset}`;
-
-    //   return {
-    //     role,
-    //     storeLabel,            // ← "Team 5", "Team 6", ... for store 2
-    //     member: storeLocalMember,
-    //     shifts: roleShifts.map(s => ({
-    //       ...s,
-    //       displayMember: s.performer || storeLocalMember,
-    //       isGuestMember: s.performer && s.performer.storeId !== req.storeId,
-    //     })),
-    //   };
-    // });
-
-    // ── Replace the teams builder section in GET /api/reports/daily ──
-
-    // const roles = teamRole ? [teamRole] : ['TEAM1', 'TEAM2', 'TEAM3', 'TEAM4'];
-    const roles = teamRole ? [teamRole] : ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
-
-    const teamUsers = await prisma.user.findMany({
-      where: { role: { in: roles }, storeId: req.storeId },
-      select: { id: true, name: true, username: true, role: true },
-    });
+// Then build teams from members, not from a roles array
+const teams = members.map(member => {
+  const memberShifts = enrichedShifts.filter(s => s.checkin?.userId === member.id);
+  return {
+    role: `SLOT_${member.teamSlot}`,
+    storeLabel: `Team ${member.teamSlot}`,
+    member,
+    shifts: memberShifts,
+  };
+});
 
     // ✅ CORRECT: roleShifts and roleIndex defined BEFORE use
-    const teams = roles.map((role, idx) => {
-      const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
-      const storeOffset = (req.storeId - 1) * 4;
-      const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
+//     const teams = roles.map((role, idx) => {
+//       const roleShifts = enrichedShifts.filter(s => s.teamRole === role); // ← defined first
+//       const storeOffset = (req.storeId - 1) * 4;
+//       const storeLabel = `Team ${idx + 1 + storeOffset}`; // Store 1 → "Team 1–4", Store 2 → "Team 5–8"
 
-      return {
-        role,
-        storeLabel,
-        member: teamUsers.find(u => u.role === role) || null,
-        shifts: roleShifts.map(s => ({
-          ...s,
-          displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
-          // isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
-          isGuestMember: !!(
-  s.performer &&
-  !(s.performer.storeAccess ?? [s.performer.storeId]).includes(req.storeId)
-),
-        })),
-      };
-    });
+//       return {
+//         role,
+//         storeLabel,
+//         member: teamUsers.find(u => u.role === role) || null,
+//         shifts: roleShifts.map(s => ({
+//           ...s,
+//           displayMember: s.performer || teamUsers.find(u => u.role === role) || null,
+//           // isGuestMember: !!(s.performer && s.performer.storeId !== req.storeId),
+//           isGuestMember: !!(
+//   s.performer &&
+//   !(s.performer.storeAccess ?? [s.performer.storeId]).includes(req.storeId)
+// ),
+//         })),
+//       };
+//     });
     const storeUserIds = await prisma.user
       .findMany({ where: { storeId: req.storeId }, select: { id: true } })
       .then(us => us.map(u => u.id));
@@ -6212,11 +6168,20 @@ app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
     const role = req.query.role || req.userRole;
     const limit = parseInt(req.query.limit) || 30;
 
-    const shifts = await prisma.shift.findMany({
-      where: { teamRole: role, team: { storeId: req.storeId } },
-      orderBy: { startTime: 'desc' },
-      take: limit,
-    });
+    // const shifts = await prisma.shift.findMany({
+    //   where: { teamRole: role, team: { storeId: req.storeId } },
+    //   orderBy: { startTime: 'desc' },
+    //   take: limit,
+    // });
+    // Get shifts where the user checked in
+const shifts = await prisma.shift.findMany({
+  where: {
+    checkin: { userId: req.userId },
+    team: { storeId: req.storeId }
+  },
+  orderBy: { startTime: 'desc' },
+  take: limit,
+});
 
     const enriched = await Promise.all(shifts.map(enrichShift));
     res.json({ data: enriched });
@@ -7241,17 +7206,26 @@ while (usedSlots.includes(nextSlot)) nextSlot++;
     // const nextSlot = availableSlots[0] || null;
     const slotNumber = nextSlot ? parseInt(nextSlot.replace('TEAM', ''), 10) : null;
 
+    // res.json({
+    //   data: {
+    //     usedRoles,
+    //     availableSlots,
+    //     nextSlot,
+    //     nextSlotNumber: slotNumber,
+    //     totalSlots: ALL_TEAM_ROLES.length,
+    //     usedCount: usedRoles.length,
+    //     members: existingTeam,
+    //   },
+    // });
     res.json({
-      data: {
-        usedRoles,
-        availableSlots,
-        nextSlot,
-        nextSlotNumber: slotNumber,
-        totalSlots: ALL_TEAM_ROLES.length,
-        usedCount: usedRoles.length,
-        members: existingTeam,
-      },
-    });
+  data: {
+    nextSlot,
+    nextSlotNumber: nextSlot,
+    totalSlots: null,       // no limit anymore
+    usedCount: existingTeam.length,
+    members: existingTeam,
+  },
+});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -7264,7 +7238,6 @@ app.post('/api/create-member', authMiddleware, async (req, res) => {
     if (actor?.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Super admin only' });
 
     const { username, name, email, phone, password, roleType, storeAccess } = req.body;
-    // roleType: 'ADMIN' | 'TEAM_MEMBER'
 
     if (!username || !name || !password) {
       return res.status(400).json({ error: 'Username, name, and password are required' });
@@ -7273,25 +7246,20 @@ app.post('/api/create-member', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const ALL_TEAM_ROLES = ['TEAM1','TEAM2','TEAM3','TEAM4','TEAM5','TEAM6','TEAM7','TEAM8'];
-
-    let assignedRole;
-    if (roleType === 'ADMIN') {
-      assignedRole = 'ADMIN';
-    } else {
-      // Auto-assign next available TEAM slot in this store
+    // ── Find next available slot (only for TEAM_MEMBER) ──────────────────
+    let nextSlot = null;
+    if (roleType !== 'ADMIN') {
       const existingTeam = await prisma.user.findMany({
-        where: { role: { in: ALL_TEAM_ROLES }, storeId: req.storeId },
-        select: { role: true },
+        where: { role: 'TEAM_MEMBER', storeId: req.storeId },
+        select: { teamSlot: true },
+        orderBy: { teamSlot: 'asc' },
       });
-      const usedRoles = existingTeam.map(u => u.role);
-      assignedRole = ALL_TEAM_ROLES.find(r => !usedRoles.includes(r));
-      if (!assignedRole) {
-        return res.status(400).json({ error: 'All 8 team slots are filled for this store. Remove a member first.' });
-      }
+      const usedSlots = existingTeam.map(u => u.teamSlot).filter(Boolean);
+      nextSlot = 1;
+      while (usedSlots.includes(nextSlot)) nextSlot++;
     }
 
-    // Check username uniqueness within store
+    // ── Check username uniqueness within store ────────────────────────────
     const existing = await prisma.user.findFirst({
       where: { storeId: req.storeId, username: username.trim() },
     });
@@ -7310,25 +7278,21 @@ app.post('/api/create-member', authMiddleware, async (req, res) => {
         email: email?.trim() || null,
         phone: phone?.trim() || null,
         password: hashedPassword,
-        // role: assignedRole,
-        role: 'TEAM_MEMBER', teamSlot: nextSlot,
+        role: roleType === 'ADMIN' ? 'ADMIN' : 'TEAM_MEMBER',
+        teamSlot: roleType === 'ADMIN' ? null : nextSlot,
         status: 'ACTIVE',
         storeId: req.storeId,
         storeAccess: resolvedStoreAccess,
       },
     });
 
-    const slotNumber = assignedRole.startsWith('TEAM')
-      ? parseInt(assignedRole.replace('TEAM', ''), 10)
-      : null;
-
     res.status(201).json({
       data: { ...member, password: undefined },
-      message: assignedRole === 'ADMIN'
+      message: roleType === 'ADMIN'
         ? `Admin "${member.name}" created successfully`
-        : `Team Member "${member.name}" created — assigned to Team Slot ${slotNumber}`,
-      assignedRole,
-      slotNumber,
+        : `Team Member "${member.name}" created — assigned to Team Slot ${nextSlot}`,
+      assignedRole: member.role,
+      slotNumber: nextSlot,
     });
   } catch (err) {
     console.error('Create member error:', err);
