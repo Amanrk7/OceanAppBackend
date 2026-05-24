@@ -1473,7 +1473,8 @@ app.get('/api/player-edit-requests', authMiddleware, adminMiddleware, async (req
       currentStreak: true,
     }
   },
-        requester: { select: { id: true, name: true, role: true } },
+        // requester: { select: { id: true, name: true, role: true } },
+        requester: { select: { id: true, name: true, role: true, teamSlot: true } },
         reviewer: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
