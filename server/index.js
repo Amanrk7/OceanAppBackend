@@ -5137,7 +5137,10 @@ app.patch('/api/shifts/:id/end', authMiddleware, async (req, res) => {
       issuesResolved: null,
     };
 
-    const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
+    // const endMember = await prisma.user.findFirst({ where: { role: existing.teamRole }, select: { name: true } });
+    const endMember = checkin?.userId
+  ? await prisma.user.findUnique({ where: { id: checkin.userId }, select: { name: true } })
+  : null;
 
     notify('SHIFT_END', {
       memberName: endMember?.name,
