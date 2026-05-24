@@ -3080,7 +3080,14 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
         date: fmtTXDate(t.createdAt),
         gameStockBefore, gameStockAfter,
         createdAtISO: t.createdAt.toISOString(),   // ← NEW — used by CheckoutModal date filter
-        performedBy: t.performedBy ? { id: t.performedBy.id, name: t.performedBy.name, role: t.performedBy.role } : null,
+        // performedBy: t.performedBy ? { id: t.performedBy.id, name: t.performedBy.name, role: t.performedBy.role } : null,
+        // server.js — inside the transactions.map() formatter
+performedBy: t.performedBy ? { 
+  id: t.performedBy.id, 
+  name: t.performedBy.name, 
+  role: t.performedBy.role,
+  teamSlot: t.performedBy.teamSlot,  // ← add this
+} : null,
       };
     });
 
