@@ -169,10 +169,14 @@ app.post('/api/login', async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
+    // res.json({
+    //   success: true, token,
+    //   user: { id: user.id, username: user.username, name: user.name, email: user.email, role: user.role, balance: user.balance, tier: user.tier }
+    // });
     res.json({
-      success: true, token,
-      user: { id: user.id, username: user.username, name: user.name, email: user.email, role: user.role, balance: user.balance, tier: user.tier }
-    });
+  success: true, token,
+  user: { id: user.id, username: user.username, name: user.name, email: user.email, role: user.role, teamSlot: user.teamSlot, balance: user.balance, tier: user.tier }
+});
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed' });
@@ -193,10 +197,11 @@ app.get('/api/user', authMiddleware, async (req, res) => {
     const user = await prisma.user.findUnique({
       where: { id: req.userId },
       select: {
-        id: true, username: true, name: true, email: true, phone: true,
-        role: true, status: true, balance: true, tier: true, storeAccess: true,
-        totalWagered: true, totalWon: true, gamesPlayed: true, createdAt: true
-      }
+  id: true, username: true, name: true, email: true, phone: true,
+  role: true, teamSlot: true,                          // ← add teamSlot
+  status: true, balance: true, tier: true, storeAccess: true,
+  totalWagered: true, totalWon: true, gamesPlayed: true, createdAt: true
+}
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
@@ -6165,23 +6170,19 @@ const teams = members.map(member => {
 
 app.get('/api/reports/my-shifts', authMiddleware, async (req, res) => {
   try {
-    const role = req.query.role || req.userRole;
     const limit = parseInt(req.query.limit) || 30;
+    const allMembers = req.query.allMembers === 'true';
 
-    // const shifts = await prisma.shift.findMany({
-    //   where: { teamRole: role, team: { storeId: req.storeId } },
-    //   orderBy: { startTime: 'desc' },
-    //   take: limit,
-    // });
-    // Get shifts where the user checked in
-const shifts = await prisma.shift.findMany({
-  where: {
-    checkin: { userId: req.userId },
-    team: { storeId: req.storeId }
-  },
-  orderBy: { startTime: 'desc' },
-  take: limit,
-});
+    // Admins requesting allMembers get every shift for the store
+    const shiftWhere = allMembers
+      ? { team: { storeId: req.storeId } }
+      : { checkin: { userId: req.userId }, team: { storeId: req.storeId } };
+
+    const shifts = await prisma.shift.findMany({
+      where: shiftWhere,
+      orderBy: { startTime: 'desc' },
+      take: limit,
+    });
 
     const enriched = await Promise.all(shifts.map(enrichShift));
     res.json({ data: enriched });
