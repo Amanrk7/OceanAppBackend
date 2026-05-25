@@ -10,12 +10,36 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
-const MW_URL        = 'https://milkywayapp.xyz:8781/default.aspx';
-const MW_USERNAME   = 'lilymilkyy7';
-const MW_PASSWORD   = 'Vegas123';
-const SESSION_FILE  = path.join(__dirname, 'mw-session.json');
-const CAPTCHA_KEY   = process.env.TWOCAPTCHA_KEY || '';   // set in your .env
-const HEADLESS      = process.env.MW_HEADLESS !== 'false'; // set MW_HEADLESS=false to debug visually
+// const MW_URL        = 'https://milkywayapp.xyz:8781/default.aspx';
+// const MW_USERNAME   = 'lilymilkyy7';
+// const MW_PASSWORD   = 'Vegas123';
+// const SESSION_FILE  = path.join(__dirname, 'mw-session.json');
+// const CAPTCHA_KEY   = process.env.TWOCAPTCHA_KEY || '';   // set in your .env
+// const HEADLESS      = process.env.MW_HEADLESS !== 'false'; // set MW_HEADLESS=false to debug visually
+
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+const MW_LOGIN_URL = process.env.MW_LOGIN_URL || 'https://milkywayapp.xyz:8781/default.aspx';
+const MW_STORE_URL = process.env.MW_STORE_URL || 'https://milkywayapp.xyz:8781/Store.aspx';
+const MW_URL = MW_STORE_URL;
+
+const MW_USERNAME = process.env.MW_USERNAME || '';
+const MW_PASSWORD = process.env.MW_PASSWORD || '';
+
+const SESSION_FILE = path.join(__dirname, 'mw-session.json');
+const CAPTCHA_KEY = process.env.TWOCAPTCHA_KEY || '';
+const HEADLESS = process.env.MW_HEADLESS !== 'false';
+
+const CHROME_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
+
+const CHROME_HEADERS = {
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control': 'max-age=0',
+  'Upgrade-Insecure-Requests': '1',
+};
 
 // ─── STATE ───────────────────────────────────────────────────────────────────
 let browser   = null;
@@ -67,6 +91,20 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function log(msg) { console.log(`[MilkyWay] ${new Date().toISOString()} — ${msg}`); }
 
+async function assertNotRuntimeError(response, label = 'MilkyWay page') {
+  const status = response?.status();
+  const title = await page.title().catch(() => '');
+  const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+
+  if (
+    status >= 500 ||
+    title.includes('Runtime Error') ||
+    bodyText.includes("Server Error in '/' Application")
+  ) {
+    throw new Error(`${label} returned Runtime Error instead of real page. HTTP ${status}, title: ${title}`);
+  }
+}
+
 /** Load saved cookies into the browser context */
 async function loadSession() {
   try {
@@ -90,16 +128,30 @@ async function saveSession() {
 /** Returns true if we're already logged in (checks for a post-login element) */
 async function checkLoggedIn() {
   try {
-    await page.goto(MW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    // After login, MilkyWay shows a search / management UI — NOT the login form.
-    // Adjust this selector once you've observed the logged-in page.
-    const loggedInEl = await page.$('input[type="text"][placeholder], .search-box, #searchInput, .main-content');
-    if (loggedInEl) {
+    const response = await page.goto(MW_STORE_URL, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000,
+    });
+
+    await assertNotRuntimeError(response, 'MilkyWay store');
+
+    await page.waitForTimeout(2000);
+
+    const loginFields = await page.locator('#txtLoginName, #txtLoginPass, #btnLogin').count();
+    if (loginFields > 0) {
+      log('Saved session expired — login page detected.');
+      return false;
+    }
+
+    const pageHasContent = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+    if (pageHasContent && pageHasContent.length > 50) {
       log('Session still valid — skipping login.');
       return true;
     }
+
     return false;
-  } catch {
+  } catch (err) {
+    log(`checkLoggedIn failed: ${err.message}`);
     return false;
   }
 }
@@ -109,56 +161,72 @@ async function checkLoggedIn() {
  * Retries up to `maxAttempts` times in case of wrong CAPTCHA answer.
  */
 async function doLogin(maxAttempts = 3) {
+  if (!MW_USERNAME || !MW_PASSWORD) {
+    throw new Error('MW_USERNAME/MW_PASSWORD env vars are not set');
+  }
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     log(`Login attempt ${attempt}/${maxAttempts}…`);
 
-    await page.goto(MW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const response = await page.goto(MW_LOGIN_URL, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000,
+    });
 
-    // ── Fill username ──────────────────────────────────────────────────────
-    // The first .login-input-box input is username
-    const inputs = await page.$$('.login-input-box input');
-    if (inputs.length < 2) throw new Error('Could not find username/password fields');
-    await inputs[0].fill(MW_USERNAME);
-    await inputs[1].fill(MW_PASSWORD);
+    await assertNotRuntimeError(response, 'MilkyWay login');
 
-    // ── Solve CAPTCHA ──────────────────────────────────────────────────────
-    // The CAPTCHA image is rendered by VerifyImagePage.aspx
-    // It appears as an <img> inside .login-input-box-code
-    const captchaImg = await page.$('.login-input-box-code img');
-    if (!captchaImg) throw new Error('CAPTCHA image element not found');
+    await page.locator('#txtLoginName').waitFor({ timeout: 20000 });
+    await page.locator('#txtLoginPass').waitFor({ timeout: 20000 });
+    await page.locator('#txtVerifyCode').waitFor({ timeout: 20000 });
+    await page.locator('#ImageCheck').waitFor({ timeout: 20000 });
 
-    // Screenshot just the CAPTCHA image element → base64
+    await page.fill('#txtLoginName', MW_USERNAME);
+    await page.fill('#txtLoginPass', MW_PASSWORD);
+
+    const captchaImg = page.locator('#ImageCheck');
     const captchaBuffer = await captchaImg.screenshot();
     const captchaBase64 = captchaBuffer.toString('base64');
 
     let captchaText;
     try {
       captchaText = await solve2captcha(captchaBase64);
+      captchaText = String(captchaText || '').trim();
       log(`CAPTCHA solved: "${captchaText}"`);
     } catch (err) {
       log(`CAPTCHA solver error: ${err.message}`);
       throw err;
     }
 
-    // ── Enter CAPTCHA code ─────────────────────────────────────────────────
-    const codeInput = await page.$('.login-input-box-code input');
-    if (!codeInput) throw new Error('CAPTCHA input field not found');
-    await codeInput.fill(captchaText);
+    if (!captchaText) {
+      throw new Error('CAPTCHA solver returned empty text');
+    }
 
-    // ── Click login ────────────────────────────────────────────────────────
-    await page.click('.login-button-box');
-    await page.waitForTimeout(2000);
+    await page.fill('#txtVerifyCode', captchaText);
 
-    // ── Check result ───────────────────────────────────────────────────────
-    const stillOnLogin = await page.$('.login-button-box');
-    if (!stillOnLogin) {
+    await Promise.all([
+      page.waitForLoadState('domcontentloaded', { timeout: 60000 }).catch(() => {}),
+      page.click('#btnLogin'),
+    ]);
+
+    await page.waitForTimeout(3000);
+
+    const stillOnLogin = await page.locator('#txtLoginName, #txtLoginPass, #btnLogin').count();
+
+    if (stillOnLogin === 0) {
       log('Login successful.');
       await saveSession();
       return true;
     }
 
-    log(`Login failed (attempt ${attempt}) — wrong CAPTCHA or credentials?`);
-    // Loop: the page will show a fresh CAPTCHA on reload
+    const bodyText = await page.locator('body').innerText().catch(() => '');
+    log(`Login failed attempt ${attempt}. Page text preview: ${bodyText.slice(0, 300)}`);
+
+    try {
+      await page.locator('#ImageCheck').click({ timeout: 3000 });
+      await page.waitForTimeout(1000);
+    } catch {
+      // ignore captcha refresh failure
+    }
   }
 
   throw new Error(`Login failed after ${maxAttempts} attempts`);
@@ -172,19 +240,35 @@ async function doLogin(maxAttempts = 3) {
  */
 export async function warmMilkywaySession() {
   log('Warming session…');
+
   try {
-    browser = await chromium.launch({ headless: HEADLESS });
-    context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+
+    browser = await chromium.launch({
+      headless: HEADLESS,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
+
+    context = await browser.newContext({
+      userAgent: CHROME_UA,
+      ignoreHTTPSErrors: true,
+      locale: 'en-US',
+      viewport: { width: 1365, height: 768 },
+      extraHTTPHeaders: CHROME_HEADERS,
+    });
+
     page = await context.newPage();
 
     const loaded = await loadSession();
     if (loaded) {
       const valid = await checkLoggedIn();
-      if (valid) { isReady = true; return; }
+      if (valid) {
+        isReady = true;
+        return;
+      }
+
       log('Saved session expired — doing fresh login.');
     }
 
@@ -204,14 +288,24 @@ export async function warmMilkywaySession() {
  * Call once after warmMilkywaySession() resolves.
  */
 export function startMilkywayKeepAlive() {
-  const INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+  const INTERVAL_MS = 20 * 60 * 1000;
+
   setInterval(async () => {
     if (!page) return;
+
     try {
       log('Keep-alive ping…');
-      await page.goto(MW_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
-      const stillIn = !(await page.$('.login-button-box'));
-      if (!stillIn) {
+
+      const response = await page.goto(MW_STORE_URL, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000,
+      });
+
+      await assertNotRuntimeError(response, 'MilkyWay keep-alive');
+
+      const onLoginPage = await page.locator('#txtLoginName, #txtLoginPass, #btnLogin').count();
+
+      if (onLoginPage > 0) {
         log('Keep-alive: session expired — re-logging in.');
         isReady = false;
         await doLogin();
@@ -221,8 +315,10 @@ export function startMilkywayKeepAlive() {
       }
     } catch (err) {
       log(`Keep-alive error: ${err.message}`);
+      isReady = false;
     }
   }, INTERVAL_MS);
+
   log('Keep-alive started (every 20 min).');
 }
 
