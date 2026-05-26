@@ -4312,6 +4312,49 @@ app.post('/api/issues/:issueId/resolve', authMiddleware, async (req, res) => {
   }
 });
 
+
+// ═══════════════════════════════════════════════════════════════
+// DAILY PROFIT GOAL (per store, super-admin write)
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/settings/daily-goal', authMiddleware, async (req, res) => {
+  try {
+    const key = `daily_profit_goal_store_${req.storeId}`;
+    const setting = await prisma.systemSetting.findUnique({ where: { key } });
+    res.json({ goal: setting ? parseFloat(setting.value) : 1000 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/settings/daily-goal', authMiddleware, async (req, res) => {
+  try {
+    const actor = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { role: true },
+    });
+    if (actor?.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Only Super Admins can change the daily profit goal.' });
+    }
+
+    const goal = parseFloat(req.body.goal);
+    if (isNaN(goal) || goal < 0) {
+      return res.status(400).json({ error: 'goal must be a non-negative number' });
+    }
+
+    const key = `daily_profit_goal_store_${req.storeId}`;
+    const setting = await prisma.systemSetting.upsert({
+      where: { key },
+      create: { key, value: String(goal), category: 'dashboard' },
+      update: { value: String(goal) },
+    });
+
+    res.json({ goal: parseFloat(setting.value), message: `Daily goal updated to $${goal.toLocaleString()}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GET /api/players/:id/pending-bonuses ─────────────────────────
 // Returns all unclaimed milestone + referral weekly bonuses for dashboard display.
 app.get('/api/players/:id/pending-bonuses', authMiddleware, async (req, res) => {
