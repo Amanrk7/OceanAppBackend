@@ -48,6 +48,171 @@ dotenv.config();
 
 const prisma = new PrismaClient();
 
+// ═══════════════════════════════════════════════════════════════
+// MILKYWAY DECIMAL-SAFE SYNC QUEUE
+// MilkyWay appears to treat 0.01 as 1.00, so we NEVER send cents.
+// We accumulate cents locally and only send whole-dollar chunks.
+// ═══════════════════════════════════════════════════════════════
+
+const milkyWaySyncLocks = new Set();
+
+function toMoneyNumber(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function toMoneyDecimal(value) {
+  return new Prisma.Decimal(toMoneyNumber(value).toFixed(2));
+}
+
+function getWholeDollarPortion(value) {
+  const n = toMoneyNumber(value);
+
+  if (n >= 1) return Math.floor(n);
+  if (n <= -1) return Math.ceil(n);
+
+  return 0;
+}
+
+async function queueMilkyWayDelta({ userId, username, storeId = 1, delta, reason = '' }) {
+  const amount = toMoneyNumber(delta);
+
+  if (!userId || !username || amount === 0) return;
+
+  await prisma.milkyWaySyncState.upsert({
+    where: { userId },
+    create: {
+      userId,
+      storeId,
+      pendingDelta: toMoneyDecimal(amount),
+      lastError: null,
+    },
+    update: {
+      storeId,
+      pendingDelta: {
+        increment: toMoneyDecimal(amount),
+      },
+      lastError: null,
+    },
+  });
+
+  console.log(
+    `[MW Sync] Queued ${amount >= 0 ? '+' : ''}${amount.toFixed(2)} for "${username}"${reason ? ` — ${reason}` : ''}`
+  );
+
+  flushMilkyWayPendingForUser({ userId, username }).catch(err => {
+    console.error(`[MW Sync] Background flush failed for "${username}":`, err.message);
+  });
+}
+
+async function flushMilkyWayPendingForUser({ userId, username }) {
+  if (!userId) return;
+
+  if (milkyWaySyncLocks.has(userId)) {
+    console.log(`[MW Sync] Flush already running for userId=${userId}; skipping duplicate.`);
+    return;
+  }
+
+  milkyWaySyncLocks.add(userId);
+
+  try {
+    let playerUsername = username;
+
+    if (!playerUsername) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true },
+      });
+
+      playerUsername = user?.username;
+    }
+
+    if (!playerUsername) {
+      console.log(`[MW Sync] No MilkyWay username for userId=${userId}; leaving pending amount untouched.`);
+      return;
+    }
+
+    for (let i = 0; i < 10; i++) {
+      const state = await prisma.milkyWaySyncState.findUnique({
+        where: { userId },
+      });
+
+      if (!state) return;
+
+      const pending = toMoneyNumber(state.pendingDelta);
+      const whole = getWholeDollarPortion(pending);
+
+      if (whole === 0) {
+        console.log(
+          `[MW Sync] Pending for "${playerUsername}" is ${pending.toFixed(2)} — below $1.00, not syncing yet.`
+        );
+        return;
+      }
+
+      const syncAmount = Math.abs(whole);
+
+      console.log(
+        `[MW Sync] Flushing ${whole > 0 ? 'deposit' : 'cashout'} $${syncAmount.toFixed(2)} for "${playerUsername}" from pending ${pending.toFixed(2)}`
+      );
+
+      const result = whole > 0
+        ? await syncDeposit(playerUsername, syncAmount)
+        : await syncCashout(playerUsername, syncAmount);
+
+      if (!result?.ok) {
+        throw new Error(result?.error || 'MilkyWay sync failed');
+      }
+
+      const newPending = toMoneyNumber(pending - whole);
+
+      await prisma.milkyWaySyncState.update({
+        where: { userId },
+        data: {
+          pendingDelta: toMoneyDecimal(newPending),
+          lastSyncedAt: new Date(),
+          lastError: null,
+        },
+      });
+
+      console.log(
+        `✅ [MW Sync] Synced ${whole > 0 ? '+' : '-'}$${syncAmount.toFixed(2)} for "${playerUsername}". New pending: ${newPending.toFixed(2)}`
+      );
+    }
+  } catch (err) {
+    await prisma.milkyWaySyncState.update({
+      where: { userId },
+      data: { lastError: err.message },
+    }).catch(() => {});
+
+    console.error(`[MW Sync] Flush error for userId=${userId}:`, err.message);
+  } finally {
+    milkyWaySyncLocks.delete(userId);
+  }
+}
+
+async function flushAllMilkyWayPending() {
+  const states = await prisma.milkyWaySyncState.findMany({
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+        },
+      },
+    },
+  });
+
+  for (const state of states) {
+    const pending = toMoneyNumber(state.pendingDelta);
+
+    if (Math.abs(pending) >= 1 && state.user?.username) {
+      await flushMilkyWayPendingForUser({
+        userId: state.userId,
+        username: state.user.username,
+      });
+    }
+  }
+}
+
 // Safe accessor — works before AND after Prisma migration runs
 const safeFreeze = {
   findMany: (args) => prisma.streakFreeze ? prisma.streakFreeze.findMany(args).catch(() => []) : Promise.resolve([]),
