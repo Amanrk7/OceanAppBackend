@@ -2696,23 +2696,36 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
     }
 
      // ── Sync deposit to MilkyWay (non-blocking) ──────────────────
-    if (player.username) {
-      // syncDeposit(player.username, depositAmt).then(result => {
-      //   if (!result.ok) {
-      //     console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
-      //   }
-      // }).catch(() => {});
-      // console.log(`[MW Sync] Attempting deposit sync for "${player.username}" $${depositAmt}`);
-syncDeposit(player.username, depositAmt).then(result => {
-  if (result.ok) {
-    console.log(`✅ [MW Sync] Deposit synced for "${player.username}"`);
-  } else {
-    console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
-  }
-}).catch(err => {
-  console.error(`⚠️  [MW Sync] Deposit sync threw for "${player.username}":`, err.message);
-});
-    }
+//     if (player.username) {
+//       // syncDeposit(player.username, depositAmt).then(result => {
+//       //   if (!result.ok) {
+//       //     console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
+//       //   }
+//       // }).catch(() => {});
+//       // console.log(`[MW Sync] Attempting deposit sync for "${player.username}" $${depositAmt}`);
+// syncDeposit(player.username, depositAmt).then(result => {
+//   if (result.ok) {
+//     console.log(`✅ [MW Sync] Deposit synced for "${player.username}"`);
+//   } else {
+//     console.error(`⚠️  [MW Sync] Deposit sync failed for "${player.username}": ${result.error}`);
+//   }
+// }).catch(err => {
+//   console.error(`⚠️  [MW Sync] Deposit sync threw for "${player.username}":`, err.message);
+// });
+//     }
+
+    // ── Decimal-safe MilkyWay deposit sync ────────────────────────
+// Do NOT send cents directly to MilkyWay.
+// Queue locally and only flush whole-dollar chunks.
+if (player.username) {
+  await queueMilkyWayDelta({
+    userId: parseInt(playerId),
+    username: player.username,
+    storeId: req.storeId,
+    delta: depositAmt,
+    reason: `deposit_tx:${depositTx.id}`,
+  });
+}
     
     broadcastReconciliationUpdate(req.storeId);
 
@@ -3693,18 +3706,35 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req
     broadcastReconciliationUpdate(req.storeId);
 
 // ── Sync cashout to MilkyWay on approval ─────────────────────
-    const cashoutPlayer = await prisma.user.findUnique({
-      where: { id: tx.userId },
-      select: { username: true },
-    }).catch(() => null);
+    // const cashoutPlayer = await prisma.user.findUnique({
+    //   where: { id: tx.userId },
+    //   select: { username: true },
+    // }).catch(() => null);
 
-    if (cashoutPlayer?.username) {
-      syncCashout(cashoutPlayer.username, remaining).then(result => {
-        if (!result.ok) {
-          console.error(`⚠️  [MW Sync] Cashout sync failed for "${cashoutPlayer.username}": ${result.error}`);
-        }
-      }).catch(() => {});
-    }
+    // if (cashoutPlayer?.username) {
+    //   syncCashout(cashoutPlayer.username, remaining).then(result => {
+    //     if (!result.ok) {
+    //       console.error(`⚠️  [MW Sync] Cashout sync failed for "${cashoutPlayer.username}": ${result.error}`);
+    //     }
+    //   }).catch(() => {});
+    // }
+
+    // ── Decimal-safe MilkyWay cashout sync on approval ────────────
+// Queue negative amount. Only whole dollars will be sent to MilkyWay.
+const cashoutPlayer = await prisma.user.findUnique({
+  where: { id: tx.userId },
+  select: { username: true },
+}).catch(() => null);
+
+if (cashoutPlayer?.username && remaining > 0) {
+  await queueMilkyWayDelta({
+    userId: tx.userId,
+    username: cashoutPlayer.username,
+    storeId: req.storeId,
+    delta: -remaining,
+    reason: `cashout_tx:${transactionId}`,
+  });
+}
     // ─────────────────────────────────────────────────────────────
     
     res.json({
@@ -3799,6 +3829,23 @@ app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, asy
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsPartial);
+    // ── Decimal-safe MilkyWay sync for partial cashout payment ─────
+// Every paid portion becomes a negative pending delta.
+// MilkyWay only receives it once pending reaches a whole dollar.
+const partialCashoutPlayer = await prisma.user.findUnique({
+  where: { id: tx.userId },
+  select: { username: true },
+}).catch(() => null);
+
+if (partialCashoutPlayer?.username && partialAmt > 0) {
+  await queueMilkyWayDelta({
+    userId: tx.userId,
+    username: partialCashoutPlayer.username,
+    storeId: req.storeId,
+    delta: -partialAmt,
+    reason: `partial_cashout_tx:${transactionId}`,
+  });
+}
     checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined }, prisma);
     broadcastReconciliationUpdate(req.storeId);
     broadcastTaskUpdate('transaction_approved', { transactionId, storeId: req.storeId }, req.storeId);
@@ -7744,6 +7791,65 @@ app.post('/api/milkyway/test-sync', authMiddleware, adminMiddleware, async (req,
     res.status(500).json({ error: err.message });
   }
 });
+// GET /api/milkyway/pending — inspect pending MilkyWay cents
+app.get('/api/milkyway/pending', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const rows = await prisma.milkyWaySyncState.findMany({
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    res.json({
+      success: true,
+      data: rows.map(row => ({
+        userId: row.userId,
+        username: row.user?.username,
+        name: row.user?.name,
+        pendingDelta: parseFloat(row.pendingDelta),
+        lastSyncedAt: row.lastSyncedAt,
+        lastError: row.lastError,
+        updatedAt: row.updatedAt,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/milkyway/flush-pending — manually flush pending whole-dollar amounts
+app.post('/api/milkyway/flush-pending', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+
+    if (userId) {
+      const user = await prisma.user.findUnique({
+        where: { id: parseInt(userId) },
+        select: { id: true, username: true },
+      });
+
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      await flushMilkyWayPendingForUser({
+        userId: user.id,
+        username: user.username,
+      });
+    } else {
+      await flushAllMilkyWayPending();
+    }
+
+    res.json({ success: true, message: 'MilkyWay pending flush attempted.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // HEALTH CHECK
@@ -7774,8 +7880,16 @@ app.listen(PORT, () => {
   //     console.error('   Deposits/cashouts will not sync to MilkyWay until session is restored.');
   //     console.error('   Use POST /api/milkyway/relogin to retry.');
   //   });
+  // warmMilkywaySession()
+  // .then(() => startMilkywayKeepAlive())
+  // .catch(err => {
+  //   console.error('⚠️  [MilkyWay] Startup failed:', err.message);
+  // });
   warmMilkywaySession()
-  .then(() => startMilkywayKeepAlive())
+  .then(async () => {
+    startMilkywayKeepAlive();
+    await flushAllMilkyWayPending();
+  })
   .catch(err => {
     console.error('⚠️  [MilkyWay] Startup failed:', err.message);
   });
