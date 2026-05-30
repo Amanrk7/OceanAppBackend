@@ -262,6 +262,7 @@ model User {
   addedBy              User?          @relation("AddedByUser", fields: [addedById], references: [id])
   addedPlayers         User[]         @relation("AddedByUser")
   performedTransactions Transaction[] @relation("PerformedTransactions")
+  gameAccounts         GameAccount[]
 
   @@unique([storeId, username])
   @@index([role, storeId])           // "all players in store X"
@@ -270,6 +271,29 @@ model User {
   @@index([storeId])
 }
 
+model GameAccount {
+  id              Int      @id @default(autoincrement())
+  storeId         Int      @default(1)
+
+  userId          Int
+  gameId          String
+
+  provider        String   @default("MILKYWAY")
+  remoteAccountId String
+  remoteUsername  String?
+
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game            Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, gameId, remoteAccountId])
+  @@unique([userId, gameId])
+  @@index([storeId, remoteAccountId])
+  @@index([storeId, provider])
+}
 
 model PlayerEditRequest {
   id          Int      @id @default(autoincrement())
@@ -357,24 +381,26 @@ model ProfitStat {
 }
 
 model MilkyWaySyncState {
-  id             Int      @id @default(autoincrement())
-  userId         Int      @unique
-  storeId        Int      @default(1)
+  id              Int      @id @default(autoincrement())
 
-  // Positive = deposits waiting to be sent to MilkyWay.
-  // Negative = cashouts waiting to be sent to MilkyWay.
-  pendingDelta   Decimal  @default(0) @db.Decimal(10, 2)
+  storeId         Int      @default(1)
+  userId          Int
+  gameId          String
+  gameAccountId   Int      @unique
 
-  lastSyncedAt   DateTime?
-  lastError      String?
+  pendingDelta    Decimal  @default(0) @db.Decimal(10, 2)
+  lastError       String?
+  lastSyncedAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game            Game        @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  gameAccount     GameAccount @relation(fields: [gameAccountId], references: [id], onDelete: Cascade)
 
   @@index([storeId])
-  @@map("milkyway_sync_states")
+  @@index([userId])
+  @@index([gameId])
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -566,6 +592,8 @@ model Game {
   // ── NEW ──────────────────────────────────────────────────
   isShared   Boolean     @default(false)
   storeStocks GameStoreStock[]
+  gameAccounts GameAccount[]
+
 
   @@index([storeId])
   @@unique([storeId, name])
