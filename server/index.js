@@ -2776,19 +2776,20 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
     const updatedWallet = results[1];
     const depositTx = results[2];   // ← available now
     // ── Non-blocking sync to remote platform (fire-and-forget) ──────────
-if (form.gameId) {
-  routeSync({
-    prisma,
-    userId: parseInt(playerId),
-    gameId: form.gameId,
-    txType: 'deposit',
-    amount: depositAmt,
-  }).then(result => {
-    if (!result.ok && !result.skipped) {
-      console.error(`[SyncRouter] Deposit sync failed for player ${playerId}:`, result.error);
-    }
-  }).catch(() => {});
-}
+// FIX — use the `gameId` variable that's already destructured from req.body:
+// if (gameId) {
+//   routeSync({
+//     prisma,
+//     userId: parseInt(playerId),
+//     gameId,                  // ← correct
+//     txType: 'deposit',
+//     amount: depositAmt,
+//   }).then(result => {
+//     if (!result.ok && !result.skipped) {
+//       console.error(`[SyncRouter] Deposit sync failed for player ${playerId}:`, result.error);
+//     }
+//   }).catch(() => {});
+// }
     const walletBalanceAfter = parseFloat(updatedWallet.balance);
 
     if (bonusReferral && player.referredBy) {
@@ -2841,14 +2842,39 @@ if (form.gameId) {
     // ── Decimal-safe MilkyWay deposit sync ────────────────────────
 // Do NOT send cents directly to MilkyWay.
 // Queue locally and only flush whole-dollar chunks.
-if (player.username) {
-  await queueMilkyWayDelta({
+// if (player.username) {
+//   await queueMilkyWayDelta({
+//     userId: parseInt(playerId),
+//     username: player.username,
+//     storeId: req.storeId,
+//     delta: depositAmt,
+//     reason: `deposit_tx:${depositTx.id}`,
+//   });
+// }
+
+    // REPLACE WITH — only fall back to queue if routeSync had no GameAccount:
+if (gameId) {
+  routeSync({
+    prisma,
     userId: parseInt(playerId),
-    username: player.username,
-    storeId: req.storeId,
-    delta: depositAmt,
-    reason: `deposit_tx:${depositTx.id}`,
-  });
+    gameId,
+    txType: 'deposit',
+    amount: depositAmt,
+  }).then(result => {
+    if (!result.ok && !result.skipped) {
+      console.error(`[SyncRouter] Deposit sync failed for player ${playerId}:`, result.error);
+    }
+    // Legacy fallback: only use username queue if no GameAccount is linked yet
+    if (result.skipped && player.username) {
+      queueMilkyWayDelta({
+        userId: parseInt(playerId),
+        username: player.username,
+        storeId: req.storeId,
+        delta: depositAmt,
+        reason: `deposit_tx:${depositTx.id}`,
+      });
+    }
+  }).catch(() => {});
 }
     
     broadcastReconciliationUpdate(req.storeId);
@@ -4035,7 +4061,9 @@ app.get('/api/games', authMiddleware, async (req, res) => {
 app.post('/api/games', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     // const { name, slug, pointStock, status } = req.body;
-    const { name, slug, pointStock, status, isShared } = req.body;
+    // const { name, slug, pointStock, status, isShared } = req.body;
+    const { name, slug, pointStock, status, isShared, provider } = req.body;
+
     if (!name || !slug) return res.status(400).json({ error: 'Name and slug are required' });
     // ...
     const existing = await prisma.game.findFirst({ where: { storeId: req.storeId, OR: [{ name }, { slug }] } });
@@ -4863,7 +4891,16 @@ app.post('/api/milestone-bonuses/:id/claim', authMiddleware, async (req, res) =>
         data: { balance: { increment: bonusAmt } },
       }),
     ]);
-
+if (gameId && bonus.playerId) {
+  routeSync({
+    prisma,
+    userId: bonus.playerId,
+    gameId,
+    txType: 'bonus',
+    amount: bonusAmt,
+  }).catch(() => {});
+}
+    
     // ── Auto-complete any related BONUS_FOLLOWUP task ─────────────────────
     try {
       const relatedTask = await prisma.task.findFirst({
@@ -4985,6 +5022,15 @@ app.post('/api/referral-weekly-bonuses/:id/claim', authMiddleware, async (req, r
         data: { balance: { increment: bonusAmt } },
       }),
     ]);
+if (gameId && bonus.referrerId) {
+  routeSync({
+    prisma,
+    userId: bonus.referrerId,
+    gameId,
+    txType: 'bonus',
+    amount: bonusAmt,
+  }).catch(() => {});
+}
 
     checkThresholdsAndNotify({ gameId }, prisma).catch(() => { });
 
