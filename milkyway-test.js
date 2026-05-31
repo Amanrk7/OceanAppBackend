@@ -544,3 +544,49 @@ async function confirmAction() {
     log('No success toast detected (may still have worked).');
   }
 }
+
+// ADD at the bottom of milkyway-test.js
+
+/**
+ * syncDepositById(remoteId, amount)
+ * Uses the player's MilkyWay account ID (remoteAccountId from GameAccount table)
+ * instead of the OceanBets username.
+ */
+export async function syncDepositById(remoteId, amount) {
+  try {
+    await ensureReady();
+    log(`syncDepositById: remoteId="${remoteId}" $${amount}`);
+    await searchPlayer(remoteId);    // searchPlayer already accepts any string
+    await clickUpdate();
+    await clickRecharge();
+    await enterAmount(amount);
+    await confirmAction();
+    log(`syncDepositById OK: "${remoteId}" +$${amount}`);
+    return { ok: true };
+  } catch (err) {
+    log(`syncDepositById error (${remoteId} $${amount}): ${err.message}`);
+    isReady = false;
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * syncCashoutById(remoteId, amount)
+ */
+export async function syncCashoutById(remoteId, amount) {
+  try {
+    await ensureReady();
+    log(`syncCashoutById: remoteId="${remoteId}" $${amount}`);
+    await searchPlayer(remoteId);
+    await clickUpdate();
+    await clickRedeem();
+    await enterAmount(amount);
+    await confirmAction();
+    log(`syncCashoutById OK: "${remoteId}" -$${amount}`);
+    return { ok: true };
+  } catch (err) {
+    log(`syncCashoutById error (${remoteId} $${amount}): ${err.message}`);
+    isReady = false;
+    return { ok: false, error: err.message };
+  }
+}
