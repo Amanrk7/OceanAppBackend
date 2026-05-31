@@ -41,6 +41,8 @@ import {
 } from './auto-task-generator.js';
 // import { checkMilestoneBonuses, checkReferralWeeklyBonus } from './bonus-engine.js';
 import { checkMilestoneBonuses, checkReferralWeeklyBonus, checkMatchBonusTask, checkReferralBonusTask, checkStreakBonusTask } from './bonus-engine.js';
+import { routeSync } from './game-sync-router.js';
+
 
 
 
@@ -2319,7 +2321,22 @@ app.post('/api/bonuses', authMiddleware, async (req, res) => {
     }
 
     const results = await prisma.$transaction(ops);
+    // ── Sync bonus to remote platform ────────────────────────────────────
+if (gameId) {
+  routeSync({
+    prisma,
+    userId: parseInt(playerId),
+    gameId,
+    txType: 'bonus',
+    amount: bonusAmount,
+  }).then(result => {
+    if (!result.ok && !result.skipped) {
+      console.error(`[SyncRouter] Bonus sync failed for player ${playerId}:`, result.error);
+    }
+  }).catch(() => {});
+}
     checkThresholdsAndNotify({ gameId }, prisma);
+    
     broadcastSharedResourceUpdate(gameId, null, prisma).catch(() => { });
     const updatedGame = results[0];
     const updatedPlayer = results[1];
@@ -2392,6 +2409,99 @@ app.delete('/api/referral-bonuses/:id', authMiddleware, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to cancel referral bonus: ' + err.message });
+  }
+});
+
+// GET /api/players/:id/game-accounts — list all linked remote accounts
+app.get('/api/players/:id/game-accounts', authMiddleware, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const accounts = await prisma.gameAccount.findMany({
+      where: { userId },
+      include: { game: { select: { id: true, name: true, slug: true, provider: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ data: accounts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/players/:id/game-accounts — link a player to a game with their remote ID
+app.post('/api/players/:id/game-accounts', authMiddleware, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { gameId, remoteAccountId, remoteUsername, provider } = req.body;
+
+    if (!gameId || !remoteAccountId?.trim()) {
+      return res.status(400).json({ error: 'gameId and remoteAccountId are required' });
+    }
+
+    // Infer provider from the game record if not supplied
+    let resolvedProvider = provider;
+    if (!resolvedProvider) {
+      const game = await prisma.game.findUnique({ where: { id: gameId }, select: { provider: true } });
+      resolvedProvider = game?.provider || 'NONE';
+    }
+
+    const account = await prisma.gameAccount.upsert({
+      where: { userId_gameId: { userId, gameId } },
+      create: {
+        userId,
+        gameId,
+        remoteAccountId: remoteAccountId.trim(),
+        remoteUsername: remoteUsername?.trim() || null,
+        provider: resolvedProvider,
+        storeId: req.storeId,
+        isActive: true,
+      },
+      update: {
+        remoteAccountId: remoteAccountId.trim(),
+        remoteUsername: remoteUsername?.trim() || null,
+        provider: resolvedProvider,
+        isActive: true,
+      },
+      include: { game: { select: { id: true, name: true, provider: true } } },
+    });
+
+    res.status(201).json({ data: account, message: `Game account linked for ${account.game.name}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/players/:id/game-accounts/:gameId — update remote ID
+app.patch('/api/players/:id/game-accounts/:gameId', authMiddleware, async (req, res) => {
+  try {
+    const userId   = parseInt(req.params.id);
+    const { gameId } = req.params;
+    const { remoteAccountId, remoteUsername, isActive, provider } = req.body;
+
+    const updated = await prisma.gameAccount.update({
+      where: { userId_gameId: { userId, gameId } },
+      data: {
+        ...(remoteAccountId !== undefined && { remoteAccountId: remoteAccountId.trim() }),
+        ...(remoteUsername  !== undefined && { remoteUsername: remoteUsername?.trim() || null }),
+        ...(isActive        !== undefined && { isActive: Boolean(isActive) }),
+        ...(provider        !== undefined && { provider }),
+      },
+      include: { game: { select: { id: true, name: true } } },
+    });
+    res.json({ data: updated, message: 'Game account updated' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/players/:id/game-accounts/:gameId — unlink
+app.delete('/api/players/:id/game-accounts/:gameId', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const userId   = parseInt(req.params.id);
+    const { gameId } = req.params;
+    await prisma.gameAccount.delete({ where: { userId_gameId: { userId, gameId } } });
+    res.json({ message: 'Game account unlinked' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2665,6 +2775,20 @@ app.post('/api/transactions/deposit', authMiddleware, storeAccessMiddleware, asy
     const updatedPlayer = results[0];
     const updatedWallet = results[1];
     const depositTx = results[2];   // ← available now
+    // ── Non-blocking sync to remote platform (fire-and-forget) ──────────
+if (form.gameId) {
+  routeSync({
+    prisma,
+    userId: parseInt(playerId),
+    gameId: form.gameId,
+    txType: 'deposit',
+    amount: depositAmt,
+  }).then(result => {
+    if (!result.ok && !result.skipped) {
+      console.error(`[SyncRouter] Deposit sync failed for player ${playerId}:`, result.error);
+    }
+  }).catch(() => {});
+}
     const walletBalanceAfter = parseFloat(updatedWallet.balance);
 
     if (bonusReferral && player.referredBy) {
@@ -3700,6 +3824,21 @@ app.patch('/api/transactions/:transactionId/approve', authMiddleware, async (req
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsApprove);
+
+    // ── Sync cashout approval to remote platform ─────────────────────────
+if (tx.gameId && remaining > 0) {
+  routeSync({
+    prisma,
+    userId: tx.userId,
+    gameId: tx.gameId,
+    txType: 'cashout',
+    amount: remaining,
+  }).then(result => {
+    if (!result.ok && !result.skipped) {
+      console.error(`[SyncRouter] Cashout sync failed for tx ${transactionId}:`, result.error);
+    }
+  }).catch(() => {});
+}
     // checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined });
     checkThresholdsAndNotify({ walletId: wallet.id, gameId: tx.gameId || undefined }, prisma).catch(() => { });
     broadcastSharedResourceUpdate(tx.gameId || null, wallet?.id || null, prisma).catch(() => { });
@@ -3829,6 +3968,16 @@ app.post('/api/transactions/:transactionId/partial-payment', authMiddleware, asy
     }
 
     const [updatedTx, updatedWallet] = await prisma.$transaction(opsPartial);
+    // ── Sync partial payment to remote platform ───────────────────────────
+if (tx.gameId && partialAmt > 0) {
+  routeSync({
+    prisma,
+    userId: tx.userId,
+    gameId: tx.gameId,
+    txType: 'cashout',
+    amount: partialAmt,
+  }).catch(() => {});
+}
     // ── Decimal-safe MilkyWay sync for partial cashout payment ─────
 // Every paid portion becomes a negative pending delta.
 // MilkyWay only receives it once pending reaches a whole dollar.
@@ -3892,7 +4041,18 @@ app.post('/api/games', authMiddleware, adminMiddleware, async (req, res) => {
     const existing = await prisma.game.findFirst({ where: { storeId: req.storeId, OR: [{ name }, { slug }] } });
 
     if (existing) return res.status(409).json({ error: 'A game with that name or slug already exists' });
-    const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId, isShared: isShared === true } });
+    // const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId, isShared: isShared === true } });
+    const game = await prisma.game.create({
+  data: {
+    name: name.trim(),
+    slug: slug.trim(),
+    pointStock: pointStock ?? 0,
+    status: status ?? 'HEALTHY',
+    provider: provider ?? 'NONE',   // ← ADD
+    storeId: req.storeId,
+    isShared: isShared === true,
+  }
+});
     // const game = await prisma.game.create({ data: { name: name.trim(), slug: slug.trim(), pointStock: pointStock ?? 0, status: status ?? 'HEALTHY', storeId: req.storeId } });
 
     // res.status(201).json({ data: game, message: 'Game created successfully' });
@@ -3927,13 +4087,21 @@ app.patch('/api/games/:id', authMiddleware, adminMiddleware, async (req, res) =>
     const game = await prisma.game.findUnique({ where: { id } });
     if (!game) return res.status(404).json({ error: 'Game not found' });
 
+    // const updatedGame = await prisma.game.update({
+    //   where: { id },
+    //   data: {
+    //     ...(pointStock !== undefined && { pointStock }),
+    //     ...(status !== undefined && { status }),
+    //   },
+    // });
     const updatedGame = await prisma.game.update({
-      where: { id },
-      data: {
-        ...(pointStock !== undefined && { pointStock }),
-        ...(status !== undefined && { status }),
-      },
-    });
+  where: { id },
+  data: {
+    ...(pointStock !== undefined && { pointStock }),
+    ...(status    !== undefined && { status }),
+    ...(req.body.provider !== undefined && { provider: req.body.provider }), // ← ADD
+  },
+});
 
     // ── FIX: Log direct stock edits ───────────────────────────────────────────
     if (pointStock !== undefined && Math.round(pointStock) !== Math.round(game.pointStock)) {
@@ -7885,14 +8053,30 @@ app.listen(PORT, () => {
   // .catch(err => {
   //   console.error('⚠️  [MilkyWay] Startup failed:', err.message);
   // });
+  // warmMilkywaySession()
+  // .then(async () => {
+  //   startMilkywayKeepAlive();
+  //   await flushAllMilkyWayPending();
+  // })
+  // .catch(err => {
+  //   console.error('⚠️  [MilkyWay] Startup failed:', err.message);
+  // });
   warmMilkywaySession()
-  .then(async () => {
-    startMilkywayKeepAlive();
-    await flushAllMilkyWayPending();
-  })
-  .catch(err => {
-    console.error('⚠️  [MilkyWay] Startup failed:', err.message);
+    .then(() => startMilkywayKeepAlive())
+    .catch(err => console.error('⚠️ MilkyWay startup failed:', err.message));
+
+  import('./riversweep-sync.js').then(({ warmRiverSweepSession, startRiverSweepKeepAlive }) => {
+    warmRiverSweepSession()
+      .then(() => startRiverSweepKeepAlive())
+      .catch(err => console.error('⚠️ RiverSweep startup failed:', err.message));
   });
+
+  import('./gamevault-sync.js').then(({ warmGameVaultSession, startGameVaultKeepAlive }) => {
+    warmGameVaultSession()
+      .then(() => startGameVaultKeepAlive())
+      .catch(err => console.error('⚠️ GameVault startup failed:', err.message));
+  });
+});
 
   // Rest of startup...
   setTimeout(() => runStartupThresholdCheck(prisma), 10_000);
