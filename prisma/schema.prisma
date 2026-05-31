@@ -12,6 +12,13 @@ datasource db {
 // ENUMS
 // ═══════════════════════════════════════════════════════════════
 
+enum GameProvider {
+  MILKYWAY
+  RIVERSWEEP
+  GAMEVAULT
+  NONE
+}
+
 enum UserRole {
   PLAYER
   ADMIN
@@ -583,6 +590,7 @@ model Game {
   iconUrl    String?
   pointStock Float       @default(0)   // global stock (sum of all stores)
   status     GameStatus  @default(HEALTHY)
+  provider   GameProvider @default(NONE)
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
   expenses   Expense[]
